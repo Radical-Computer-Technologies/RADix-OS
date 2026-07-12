@@ -1,0 +1,23 @@
+:root {
+  --primary-color: #b91c1c;
+  --primary-dark-color: #7f1d1d;
+  --primary-light-color: #fecaca;
+  --page-background-color: #0b1018;
+  --page-foreground-color: #e5edf7;
+  --separator-color: #263244;
+  --fragment-background: #101827;
+  --code-background: #101827;
+}
+
+body {
+  letter-spacing: 0;
+}
+
+.contents a,
+.textblock a {
+  color: #ef4444;
+}
+
+.title {
+  color: #f8fafc;
+}

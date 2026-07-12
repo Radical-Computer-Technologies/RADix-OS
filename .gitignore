@@ -1,0 +1,10 @@
+build*/
+.cache/
+.radbuild/
+*.o
+*.d
+*.elf
+*.img
+*.iso
+*.lst
+*.map
