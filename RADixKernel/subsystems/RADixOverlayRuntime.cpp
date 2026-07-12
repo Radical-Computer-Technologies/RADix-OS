@@ -780,6 +780,7 @@ const char *display_output_type_name(rad_display_output_type_t type) {
         case RAD_DISPLAY_OUTPUT_GRUB: return "grub";
         case RAD_DISPLAY_OUTPUT_RP2350_HSTX: return "rp2350-hstx";
         case RAD_DISPLAY_OUTPUT_SPI_PANEL: return "spi-panel";
+        case RAD_DISPLAY_OUTPUT_BCM283X_MAILBOX: return "bcm283x-mailbox";
         default: return "unknown";
     }
 }

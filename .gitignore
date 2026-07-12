@@ -4,7 +4,9 @@ build*/
 *.o
 *.d
 *.elf
+*.ELF
 *.img
+*.IMG
 *.iso
 *.lst
 *.map

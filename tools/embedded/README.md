@@ -48,6 +48,22 @@ That builds:
 Use `--realtime` when validating lower-latency interrupt behavior for audio or
 control paths. Use `--c++20` only when an application needs C++20 features.
 
+## Build the standalone RADix Pi Zero 2 W payload
+
+The new Pi bring-up path separates Circle from the RADix runtime. Circle remains
+the intended first-stage loader, while the RADix-owned payload is built as
+`RADIXKRN.IMG` and does not link Circle:
+
+```bash
+make -C tools/embedded/radix_pi_zero2w
+tools/embedded/radix_pi_zero2w_smoke.sh
+```
+
+This payload currently brings up the RAD-owned BCM283x backend skeleton:
+PL011 serial, system timer reads, mailbox framebuffer registration, and
+`/dev/mmcblk0` registration. The eMMC command path, AArch64 EL0/MMU process
+path, and Slint shell parity are the next Pi-specific steps.
+
 ## Build the Slint source cache
 
 Embedded Slint builds should reuse one persistent source checkout instead of

@@ -20,6 +20,7 @@
 #include <radixkernel/rad_tty.h>
 #include <radixkernel/rad_pty.h>
 #include <radixkernel/rad_vfs.h>
+#include <radboot.h>
 
 #include <atomic>
 #include <cstdio>
@@ -426,6 +427,31 @@ bool testBootInfoAndRunLoop() {
     rad_kernel_config_t config{};
     config.backend_name = "linux_sim";
     ok &= expect(rad_kernel_init(&config) == RAD_STATUS_OK, "kernel should reinitialize after shutdown request");
+    return ok;
+}
+
+bool testPiHandoffAbi() {
+    rad_boot_handoff_t handoff{};
+    radboot_prepare_pi_handoff(&handoff, "RADIXKRN.IMG", 0x80000u, 0x120000u, 0x80000u);
+    bool ok = expect(handoff.magic == RAD_BOOT_HANDOFF_MAGIC, "Pi handoff magic should be set");
+    ok &= expect(handoff.version == RAD_BOOT_HANDOFF_VERSION, "Pi handoff version should be set");
+    ok &= expect(handoff.size == sizeof(rad_boot_handoff_t), "Pi handoff size should match ABI");
+    ok &= expect(std::string(handoff.boot.backend) == "bcm283x_pi", "Pi handoff should select bcm283x backend");
+    ok &= expect(std::string(handoff.boot.board) == "pi-zero-2w", "Pi handoff should name board");
+    ok &= expect(handoff.peripheral_base == 0x3f000000u && handoff.mailbox_base == 0x3f00b880u,
+        "Pi handoff should expose BCM283x peripheral and mailbox bases");
+    ok &= expect(radboot_validate_handoff(&handoff) == RAD_STATUS_INVALID_ARGUMENT,
+        "Pi handoff should require explicit clean CPU state flags");
+    handoff.flags = RAD_BOOT_HANDOFF_FLAG_SECONDARIES_PARKED
+        | RAD_BOOT_HANDOFF_FLAG_MMU_DISABLED
+        | RAD_BOOT_HANDOFF_FLAG_DCACHE_DISABLED
+        | RAD_BOOT_HANDOFF_FLAG_ICACHE_INVALIDATED
+        | RAD_BOOT_HANDOFF_FLAG_TLB_INVALIDATED
+        | RAD_BOOT_HANDOFF_FLAG_INTERRUPTS_MASKED;
+    ok &= expect(radboot_validate_handoff(&handoff) == RAD_STATUS_OK, "valid Pi handoff should validate");
+    handoff.magic = 0;
+    ok &= expect(radboot_validate_handoff(&handoff) == RAD_STATUS_INVALID_ARGUMENT,
+        "invalid Pi handoff magic should fail validation");
     return ok;
 }
 
@@ -1987,6 +2013,7 @@ int main() {
     bool ok = true;
     ok &= testKernelLifecycle();
     ok &= testBootInfoAndRunLoop();
+    ok &= testPiHandoffAbi();
     ok &= testTasksAndEvents();
     ok &= testPerfWorkAndWaitQueues();
     ok &= testMutexAndMemory();

@@ -1,5 +1,5 @@
-#ifndef RADEMBEDDEDKERNEL_H
-#define RADEMBEDDEDKERNEL_H
+#ifndef RADIXKERNEL_H
+#define RADIXKERNEL_H
 
 /**
  * @file radixkernel.h
@@ -72,6 +72,14 @@ extern "C" {
 #define RAD_BOOT_MAX_ARGS 16u ///< Public constant or ioctl helper.
 #define RAD_BOOT_MAX_MEMORY_REGIONS 8u ///< Public constant or ioctl helper.
 #define RAD_BOOT_MAX_STRING 64u ///< Public constant or ioctl helper.
+#define RAD_BOOT_HANDOFF_MAGIC 0x52414448u ///< Public constant or ioctl helper.
+#define RAD_BOOT_HANDOFF_VERSION 1u ///< Public constant or ioctl helper.
+#define RAD_BOOT_HANDOFF_FLAG_SECONDARIES_PARKED 0x00000001u ///< Public constant or ioctl helper.
+#define RAD_BOOT_HANDOFF_FLAG_MMU_DISABLED 0x00000002u ///< Public constant or ioctl helper.
+#define RAD_BOOT_HANDOFF_FLAG_DCACHE_DISABLED 0x00000004u ///< Public constant or ioctl helper.
+#define RAD_BOOT_HANDOFF_FLAG_ICACHE_INVALIDATED 0x00000008u ///< Public constant or ioctl helper.
+#define RAD_BOOT_HANDOFF_FLAG_TLB_INVALIDATED 0x00000010u ///< Public constant or ioctl helper.
+#define RAD_BOOT_HANDOFF_FLAG_INTERRUPTS_MASKED 0x00000020u ///< Public constant or ioctl helper.
 
 #define RAD_OVERLAY_MAGIC 0x4f444152u ///< Public constant or ioctl helper.
 #define RAD_OVERLAY_VERSION 1u ///< Public constant or ioctl helper.
@@ -310,7 +318,8 @@ typedef enum rad_display_output_type {
     RAD_DISPLAY_OUTPUT_CIRCLE = 1, ///< RAD_DISPLAY_OUTPUT_CIRCLE.
     RAD_DISPLAY_OUTPUT_GRUB = 2, ///< RAD_DISPLAY_OUTPUT_GRUB.
     RAD_DISPLAY_OUTPUT_RP2350_HSTX = 3, ///< RAD_DISPLAY_OUTPUT_RP2350_HSTX.
-    RAD_DISPLAY_OUTPUT_SPI_PANEL = 4 ///< RAD_DISPLAY_OUTPUT_SPI_PANEL.
+    RAD_DISPLAY_OUTPUT_SPI_PANEL = 4, ///< RAD_DISPLAY_OUTPUT_SPI_PANEL.
+    RAD_DISPLAY_OUTPUT_BCM283X_MAILBOX = 5 ///< RAD_DISPLAY_OUTPUT_BCM283X_MAILBOX.
 } rad_display_output_type_t; ///< Public typedef alias.
 
 /** @brief Public enumeration for rad_tty_mode_flags. */
@@ -380,6 +389,32 @@ typedef struct rad_boot_info {
     uint32_t arg_count; ///< Public structure field.
     rad_boot_arg_t args[RAD_BOOT_MAX_ARGS]; ///< Public structure field.
 } rad_boot_info_t; ///< Public typedef alias.
+
+/** @brief Public data structure for rad_boot_handoff. */
+typedef struct rad_boot_handoff {
+    uint32_t magic; ///< Public structure field.
+    uint32_t version; ///< Public structure field.
+    uint32_t size; ///< Public structure field.
+    uint32_t flags; ///< Public structure field.
+    rad_boot_info_t boot; ///< Public structure field.
+    uintptr_t kernel_image_base; ///< Public structure field.
+    uintptr_t kernel_image_size; ///< Public structure field.
+    uintptr_t kernel_entry; ///< Public structure field.
+    uintptr_t stack_base; ///< Public structure field.
+    uintptr_t stack_size; ///< Public structure field.
+    uintptr_t fdt_pointer; ///< Public structure field.
+    uintptr_t initrd_pointer; ///< Public structure field.
+    uintptr_t peripheral_base; ///< Public structure field.
+    uintptr_t mailbox_base; ///< Public structure field.
+    uintptr_t local_interrupt_base; ///< Public structure field.
+    uintptr_t arm_memory_base; ///< Public structure field.
+    uintptr_t arm_memory_size; ///< Public structure field.
+    uint32_t board_id; ///< Public structure field.
+    uint32_t entry_el; ///< Public structure field.
+    uint32_t core_count; ///< Public structure field.
+    uint32_t parked_core_mask; ///< Public structure field.
+    char payload_name[RAD_BOOT_MAX_STRING]; ///< Public structure field.
+} rad_boot_handoff_t; ///< Public typedef alias.
 
 /** @brief Public data structure for rad_memory_stats. */
 typedef struct rad_memory_stats {

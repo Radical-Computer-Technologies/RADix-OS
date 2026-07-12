@@ -5,9 +5,9 @@ option(RADIX_KERNEL_ENABLE_SD_FAT "Enable RADixKernel SD/FatFs integration point
 option(RADIX_KERNEL_ENABLE_SDIO_PIO "Enable optional RP235x PIO SDIO integration point" OFF)
 option(RADIX_KERNEL_ENABLE_PSRAM "Register backend PSRAM regions when available" OFF)
 option(RADIX_KERNEL_ENABLE_RP2350_HSTX_DVI "Expose the RP2350 HSTX/DVI framebuffer backend scaffold" OFF)
-set(RADIX_KERNEL_BACKEND "linux_sim" CACHE STRING "RADixKernel backend: linux_sim, rp235x_pico, or circle_pi")
+set(RADIX_KERNEL_BACKEND "linux_sim" CACHE STRING "RADixKernel backend: linux_sim, rp235x_pico, circle_pi, or bcm283x_pi")
 set(RADIX_KERNEL_SD_MODE "auto" CACHE STRING "RADixKernel SD mode: auto, spi, or pio_sdio")
-set_property(CACHE RADIX_KERNEL_BACKEND PROPERTY STRINGS linux_sim rp235x_pico circle_pi)
+set_property(CACHE RADIX_KERNEL_BACKEND PROPERTY STRINGS linux_sim rp235x_pico circle_pi bcm283x_pi)
 set_property(CACHE RADIX_KERNEL_SD_MODE PROPERTY STRINGS auto spi pio_sdio)
 
 set(RADIX_KERNEL_LIBRARY_TYPE SHARED)
@@ -35,6 +35,13 @@ elseif(RADIX_KERNEL_BACKEND STREQUAL "circle_pi")
         hal/circle/radixkernel_hal_circle.cpp
         hal/circle/radixkernel_runtime_newlib.cpp
     )
+elseif(RADIX_KERNEL_BACKEND STREQUAL "bcm283x_pi")
+    set(RADIX_KERNEL_LIBRARY_TYPE STATIC)
+    list(APPEND RADIX_KERNEL_SOURCES
+        core/RADixKernel_runtime.cpp
+        hal/bcm283x/radixkernel_hal_bcm283x.cpp
+        hal/circle/radixkernel_runtime_newlib.cpp
+    )
 else()
     message(FATAL_ERROR "Unsupported RADIX_KERNEL_BACKEND '${RADIX_KERNEL_BACKEND}'")
 endif()
@@ -55,6 +62,11 @@ foreach(RADIX_KERNEL_HEADER ${RADIX_KERNEL_HEADERS})
         COPYONLY
     )
 endforeach()
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/boot/radboot.h"
+    "${RADIX_KERNEL_BUILD_INCLUDE_DIR}/radboot.h"
+    COPYONLY
+)
 
 target_compile_features(RADixKernel PUBLIC cxx_std_20)
 

@@ -31,6 +31,9 @@ testing.
   legacy virtio-net RX/TX queue ownership markers for the x86 VM target.
 - RP2350 HSTX/DVI and SPI panel output are documented as framebuffer output
   goals, with backend completeness still target-dependent.
+- Pi Zero 2 W has an experimental standalone `bcm283x_pi` payload, handoff ABI,
+  PL011 serial path, timer reads, mailbox framebuffer path, and SD block-device
+  registration scaffold.
 - DMA is available through the generic core and first consumed by SPI-style
   transfer paths.
 
@@ -40,3 +43,6 @@ testing.
   semantics across every target, full ext4 journaling, USB stacks, PCIe,
   wire-level TCP, DHCP/DNS, and production networking are beyond the current
   Crimson beta surface.
+- The Pi Zero 2 W path still needs the Circle FAT loader jump, eMMC command
+  implementation, AArch64 EL0/MMU/fork/COW parity, USB input, and Slint shell
+  parity before it matches the x86 VM path.

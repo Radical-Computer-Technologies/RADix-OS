@@ -7,6 +7,11 @@
 #include <ctype.h>
 #include <stdio.h>
 
+#if defined(__cplusplus) && defined(__STDC_HOSTED__) && __STDC_HOSTED__ == 0
+extern "C" void *malloc(size_t);
+extern "C" void free(void*);
+#endif
+
 #ifndef RADIX_KERNEL_MAX_TASKS
 #define RADIX_KERNEL_MAX_TASKS 16u
 #endif

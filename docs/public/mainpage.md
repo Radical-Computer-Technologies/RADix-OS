@@ -16,6 +16,7 @@ This hub documents the experimental Crimson 0.1.0 kernel API.
   path.
 - @ref networking describes the experimental IPv4/UDP and TCP stream socket
   foundation.
+- @ref pi_zero2w tracks the experimental two-stage Pi Zero 2 W bring-up.
 - @ref minimal_examples provides short driver, framebuffer, input, VFS, and
   syscall examples.
 - @ref crimson_status separates stable-beta APIs from incomplete areas.
@@ -31,6 +32,7 @@ This hub documents the experimental Crimson 0.1.0 kernel API.
   audio, and serial APIs.
 - Experimental IPv4/UDP datagram and local TCP stream socket support for the
   x86 VM path.
+- Experimental Pi Zero 2 W `bcm283x_pi` payload and handoff ABI.
 - Overlay tree, IRQ domains/resources, modules, I2C, SPI, and DMA driver APIs.
 
 ## Filesystem Profile
