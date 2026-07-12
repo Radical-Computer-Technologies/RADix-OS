@@ -12,6 +12,7 @@
 #include <radixkernel/rad_module.h>
 #include <radixkernel/rad_mutex.h>
 #include <radixkernel/rad_posix.h>
+#include <radixkernel/rad_service.h>
 #include <radixkernel/rad_spi.h>
 #include <radixkernel/rad_task.h>
 #include <radixkernel/rad_terminal.h>
@@ -167,6 +168,7 @@ struct FakeBlock {
 struct FakeNet {
     rad_net_link_info_t info{};
     std::vector<uint8_t> lastPacket;
+    std::vector<uint8_t> rxPacket;
     int polls = 0;
 };
 
@@ -182,6 +184,18 @@ struct FakeModule {
     int inits = 0;
     int exits = 0;
     rad_status_t initStatus = RAD_STATUS_OK;
+};
+
+struct FakeService {
+    int starts = 0;
+    int stops = 0;
+    int polls = 0;
+    std::string backend;
+    std::string display;
+    std::string keyboard;
+    std::string pointer;
+    std::string terminal;
+    int order = 0;
 };
 
 struct FakeIrq {
@@ -206,6 +220,31 @@ rad_status_t fakeModuleInit(void* context) {
 void fakeModuleExit(void* context) {
     auto* module = static_cast<FakeModule*>(context);
     if (module) ++module->exits;
+}
+
+rad_status_t fakeServiceStart(void* context, const rad_service_config_t* config) {
+    auto* service = static_cast<FakeService*>(context);
+    if (!service || !config) return RAD_STATUS_INVALID_ARGUMENT;
+    ++service->starts;
+    service->backend = config->backend ? config->backend : "";
+    service->display = config->display ? config->display : "";
+    service->keyboard = config->keyboard ? config->keyboard : "";
+    service->pointer = config->pointer ? config->pointer : "";
+    service->terminal = config->terminal ? config->terminal : "";
+    service->order = config->order;
+    return RAD_STATUS_OK;
+}
+
+void fakeServiceStop(void* context) {
+    auto* service = static_cast<FakeService*>(context);
+    if (service) ++service->stops;
+}
+
+rad_status_t fakeServicePoll(void* context) {
+    auto* service = static_cast<FakeService*>(context);
+    if (!service) return RAD_STATUS_INVALID_ARGUMENT;
+    ++service->polls;
+    return RAD_STATUS_OK;
 }
 
 rad_status_t fakeWrite(void* context, const void* buffer, size_t size, size_t* bytesWritten) {
@@ -337,6 +376,17 @@ rad_status_t fakeNetIoctl(void* context, uint32_t request, void* argument) {
     }
     if (request == RAD_DEVICE_IOCTL_NET_POLL) {
         ++net->polls;
+        return RAD_STATUS_OK;
+    }
+    if (request == RAD_DEVICE_IOCTL_NET_RECV) {
+        auto* packet = static_cast<rad_net_packet_t*>(argument);
+        if (!packet || packet->size < sizeof(*packet) || !packet->data || !packet->length) return RAD_STATUS_INVALID_ARGUMENT;
+        if (net->rxPacket.empty()) return RAD_STATUS_NOT_FOUND;
+        const size_t count = std::min(packet->length, net->rxPacket.size());
+        std::memcpy(packet->data, net->rxPacket.data(), count);
+        packet->length = count;
+        net->rxPacket.clear();
+        ++net->info.rx_packets;
         return RAD_STATUS_OK;
     }
     return RAD_STATUS_NOT_SUPPORTED;
@@ -900,11 +950,46 @@ bool testNetCore() {
             && net.lastPacket.size() == sizeof(frame)
             && net.lastPacket[12] == 0x08,
         "network send should dispatch packet through ioctl");
+    net.rxPacket.assign(frame, frame + sizeof(frame));
+    uint8_t rx[32]{};
+    const intptr_t received = rad_net_receive(device, rx, sizeof(rx));
+    ok &= expect(received == static_cast<intptr_t>(sizeof(frame))
+            && rx[12] == 0x08
+            && net.info.rx_packets == 1,
+        "network receive should dispatch packet through ioctl");
     ok &= expect(rad_net_poll(device) == RAD_STATUS_OK && net.polls == 1,
         "network poll should dispatch through ioctl");
     rad_device_close(device);
     ok &= expect(rad_device_unregister("/dev/net-test0") == RAD_STATUS_OK,
         "network device should unregister");
+    return ok;
+}
+
+bool testUdpSocketCore() {
+    const int32_t server = static_cast<int32_t>(rad_syscall_dispatch(RAD_SYSCALL_SOCKET, RAD_AF_INET, RAD_SOCK_DGRAM, RAD_IPPROTO_UDP, 0, 0, 0));
+    const int32_t client = static_cast<int32_t>(rad_syscall_dispatch(RAD_SYSCALL_SOCKET, RAD_AF_INET, RAD_SOCK_DGRAM, RAD_IPPROTO_UDP, 0, 0, 0));
+    bool ok = expect(server >= 3 && client >= 3, "UDP sockets should allocate fds");
+    rad_sockaddr_in_t server_addr{};
+    server_addr.family = RAD_AF_INET;
+    server_addr.port = 9000;
+    server_addr.address = rad_ipv4_address_t{{10, 0, 2, 15}};
+    ok &= expect(rad_syscall_dispatch(RAD_SYSCALL_BIND, server, reinterpret_cast<uintptr_t>(&server_addr), sizeof(server_addr), 0, 0, 0) == RAD_STATUS_OK,
+        "UDP bind should attach local port");
+    const char payload[] = "radix-udp";
+    ok &= expect(rad_syscall_dispatch(RAD_SYSCALL_SENDTO, client, reinterpret_cast<uintptr_t>(payload), sizeof(payload), 0, reinterpret_cast<uintptr_t>(&server_addr), sizeof(server_addr)) == static_cast<intptr_t>(sizeof(payload)),
+        "UDP sendto should deliver datagram");
+    char buffer[32]{};
+    rad_sockaddr_in_t from{};
+    size_t from_len = sizeof(from);
+    const intptr_t got = rad_syscall_dispatch(RAD_SYSCALL_RECVFROM, server, reinterpret_cast<uintptr_t>(buffer), sizeof(buffer), 0, reinterpret_cast<uintptr_t>(&from), reinterpret_cast<uintptr_t>(&from_len));
+    ok &= expect(got == static_cast<intptr_t>(sizeof(payload))
+            && std::strcmp(buffer, payload) == 0
+            && from.family == RAD_AF_INET,
+        "UDP recvfrom should return payload and sender");
+    ok &= expect(rad_syscall_dispatch(RAD_SYSCALL_CONNECT, client, 0, 0, 0, 0, 0) == RAD_STATUS_NOT_SUPPORTED,
+        "TCP-style socket operations should remain unsupported");
+    rad_syscall_dispatch(RAD_SYSCALL_CLOSE, client, 0, 0, 0, 0, 0);
+    rad_syscall_dispatch(RAD_SYSCALL_CLOSE, server, 0, 0, 0, 0, 0);
     return ok;
 }
 
@@ -1653,6 +1738,89 @@ bool testSpiAndDmaCore() {
     return ok;
 }
 
+bool testServiceOverlayCore() {
+    const auto root = std::filesystem::temp_directory_path() / "radixkernel-service-overlay-test";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root);
+    const auto jsonPath = root / "services.radoverlay.json";
+    const auto blobPath = root / "services.radoverlay";
+    {
+        std::ofstream out(jsonPath);
+        out << R"json({
+  "name": "service-board",
+  "fragments": [
+    {
+      "target": "/services/rad-compositor",
+      "properties": {
+        "compatible": "rad,compositor",
+        "status": "okay",
+        "backend": "slint",
+        "display": "/dev/fb0",
+        "keyboard": "/dev/input/event0",
+        "pointer": "/dev/input/event1",
+        "terminal": "/dev/tty0",
+        "autostart": true,
+        "order": 50
+      }
+    }
+  ]
+})json";
+    }
+
+    FakeService service;
+    rad_service_descriptor_t descriptor{};
+    descriptor.size = sizeof(descriptor);
+    descriptor.name = "RADCompositor";
+    descriptor.compatible = "rad,compositor";
+    descriptor.capability = "compositor";
+    descriptor.default_order = 100;
+    descriptor.context = &service;
+    descriptor.start = fakeServiceStart;
+    descriptor.stop = fakeServiceStop;
+    descriptor.poll = fakeServicePoll;
+
+    bool ok = expect(rad_service_register(&descriptor) == RAD_STATUS_OK, "service should register");
+    const std::string command = "python3 tools/radoverlay_compile.py \"" + jsonPath.string() + "\" -o \"" + blobPath.string() + "\"";
+    ok &= expect(std::system(command.c_str()) == 0, "service radoverlay compiler should produce a blob");
+    ok &= expect(rad_vfs_mount_host("/svcov", root.string().c_str()) == RAD_STATUS_OK, "service overlay host path should mount");
+    ok &= expect(rad_overlay_load_file("/svcov/services.radoverlay") == RAD_STATUS_OK, "service overlay should load");
+
+    std::string terminal;
+    ok &= expect(rad_terminal_execute("bind", terminalWriter, &terminal) == RAD_STATUS_OK, "bind command should configure services");
+    ok &= expect(service.starts == 1, "autostart service should start once");
+    ok &= expect(service.backend == "slint" && service.display == "/dev/fb0" && service.keyboard == "/dev/input/event0"
+        && service.pointer == "/dev/input/event1" && service.terminal == "/dev/tty0" && service.order == 50,
+        "service start should receive overlay config");
+
+    ok &= expect(rad_service_poll_all() == RAD_STATUS_OK && service.polls == 1, "running service should poll");
+    rad_service_info_t services[4]{};
+    const size_t count = rad_service_list(services, 4);
+    bool listed = false;
+    for (size_t i = 0; i < count && i < 4; ++i) {
+        if (std::string(services[i].name) == "RADCompositor"
+            && services[i].state == RAD_SERVICE_RUNNING
+            && std::string(services[i].backend) == "slint"
+            && services[i].autostart == 1
+            && services[i].order == 50) {
+            listed = true;
+        }
+    }
+    ok &= expect(listed, "service list should expose configured running service");
+
+    terminal.clear();
+    ok &= expect(rad_terminal_execute("services", terminalWriter, &terminal) == RAD_STATUS_OK
+        && terminal.find("RADCompositor") != std::string::npos
+        && terminal.find("state=running") != std::string::npos
+        && terminal.find("backend=slint") != std::string::npos,
+        "services command should list configured service");
+
+    ok &= expect(rad_service_stop("RADCompositor") == RAD_STATUS_OK && service.stops == 1, "service should stop");
+    ok &= expect(rad_service_unregister("RADCompositor") == RAD_STATUS_OK, "service should unregister");
+    rad_vfs_unmount("/svcov");
+    std::filesystem::remove_all(root);
+    return ok;
+}
+
 bool testSerialTerminal() {
     FakeSerial serial;
     serial.input = "time\n";
@@ -1790,10 +1958,12 @@ int main() {
     ok &= testInputCore();
     ok &= testBlockCore();
     ok &= testNetCore();
+    ok &= testUdpSocketCore();
     ok &= testPosixSyscallCore();
     ok &= testFramebufferCore();
     ok &= testOverlayAndI2cCore();
     ok &= testSpiAndDmaCore();
+    ok &= testServiceOverlayCore();
     ok &= testTtyAndPtyCore();
     ok &= testIrqCore();
     ok &= testSerialTerminal();

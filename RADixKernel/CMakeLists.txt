@@ -17,7 +17,7 @@ endif()
 
 set(RADIX_KERNEL_SOURCES
     boot/radboot.cpp
-    core/RADixKernel_overlay.cpp
+    subsystems/RADixOverlayRuntime.cpp
 )
 
 if(RADIX_KERNEL_BACKEND STREQUAL "linux_sim")

@@ -55,6 +55,22 @@
 #define RADIX_KERNEL_MAX_PIPES 8u
 #endif
 
+#ifndef RADIX_KERNEL_MAX_SHM_OBJECTS
+#define RADIX_KERNEL_MAX_SHM_OBJECTS 8u
+#endif
+
+#ifndef RADIX_KERNEL_MAX_UDP_SOCKETS
+#define RADIX_KERNEL_MAX_UDP_SOCKETS 8u
+#endif
+
+#ifndef RADIX_KERNEL_MAX_UDP_DATAGRAMS
+#define RADIX_KERNEL_MAX_UDP_DATAGRAMS 8u
+#endif
+
+#ifndef RADIX_KERNEL_UDP_PAYLOAD_BYTES
+#define RADIX_KERNEL_UDP_PAYLOAD_BYTES 512u
+#endif
+
 #ifndef RADIX_KERNEL_PIPE_BUFFER_BYTES
 #define RADIX_KERNEL_PIPE_BUFFER_BYTES 512u
 #endif
@@ -311,7 +327,26 @@ enum FdKind {
     FD_EMPTY = 0,
     FD_FILE = 1,
     FD_DEVICE = 2,
-    FD_PIPE = 3
+    FD_PIPE = 3,
+    FD_SHM = 4,
+    FD_SOCKET = 5
+};
+
+struct UdpDatagram {
+    rad_sockaddr_in_t from;
+    size_t size;
+    uint8_t payload[RADIX_KERNEL_UDP_PAYLOAD_BYTES];
+    int used;
+};
+
+struct SocketRecord {
+    int used;
+    int domain;
+    int type;
+    int protocol;
+    uint16_t local_port;
+    rad_ipv4_address_t local_address;
+    UdpDatagram datagrams[RADIX_KERNEL_MAX_UDP_DATAGRAMS];
 };
 
 struct FdRecord {
@@ -319,6 +354,8 @@ struct FdRecord {
     rad_file_t file;
     rad_device_t device;
     size_t pipe_index;
+    size_t shm_index;
+    size_t socket_index;
     int pipe_write_end;
     uint32_t flags;
     uint32_t descriptor_flags;
@@ -326,6 +363,15 @@ struct FdRecord {
     int32_t owner_fd;
     int32_t owner_pid;
     int32_t local_fd;
+    int used;
+};
+
+struct ShmRecord {
+    char name[RAD_SHM_NAME_MAX];
+    size_t byte_size;
+    size_t page_count;
+    uintptr_t pages[RAD_SHM_MAX_PAGES];
+    int linked;
     int used;
 };
 
@@ -414,6 +460,8 @@ struct KernelState {
     TtyRecord ttys[RADIX_KERNEL_MAX_TTYS];
     PtyRecord ptys[RADIX_KERNEL_MAX_PTYS];
     PipeRecord pipes[RADIX_KERNEL_MAX_PIPES];
+    ShmRecord shm_objects[RADIX_KERNEL_MAX_SHM_OBJECTS];
+    SocketRecord sockets[RADIX_KERNEL_MAX_UDP_SOCKETS];
     FdRecord fds[RADIX_KERNEL_MAX_POSIX_FDS];
     ProcessRecord processes[RADIX_KERNEL_MAX_PROCESSES];
     ModuleRecord modules[RADIX_KERNEL_MAX_MODULES];
@@ -938,6 +986,9 @@ void close_fd_record(FdRecord& fd) {
             }
             if (pipe.read_refs == 0 && pipe.write_refs == 0) memset(&pipe, 0, sizeof(pipe));
         }
+        if (fd.kind == FD_SOCKET && fd.socket_index < RADIX_KERNEL_MAX_UDP_SOCKETS) {
+            memset(&g_state.sockets[fd.socket_index], 0, sizeof(g_state.sockets[fd.socket_index]));
+        }
     }
     memset(&fd, 0, sizeof(fd));
 }
@@ -985,6 +1036,8 @@ void close_process_fds(int32_t pid, int close_on_exec_only) {
 void init_process_table(void) {
     memset(g_state.fds, 0, sizeof(g_state.fds));
     memset(g_state.pipes, 0, sizeof(g_state.pipes));
+    memset(g_state.shm_objects, 0, sizeof(g_state.shm_objects));
+    memset(g_state.sockets, 0, sizeof(g_state.sockets));
     memset(g_state.processes, 0, sizeof(g_state.processes));
     memset(&g_state.process_arch_ops, 0, sizeof(g_state.process_arch_ops));
     g_state.has_process_arch_ops = 0;
@@ -1069,6 +1122,139 @@ intptr_t pipe_write(FdRecord *record, const void *buffer, size_t size) {
         pipe.size += count;
     }
     return static_cast<intptr_t>(count);
+}
+
+uint16_t ipv4_checksum(const void *data, size_t size) {
+    const auto *bytes = static_cast<const uint8_t*>(data);
+    uint32_t sum = 0;
+    for (size_t i = 0; i + 1u < size; i += 2u) {
+        sum += static_cast<uint16_t>((bytes[i] << 8u) | bytes[i + 1u]);
+    }
+    if (size & 1u) sum += static_cast<uint16_t>(bytes[size - 1u] << 8u);
+    while (sum >> 16u) sum = (sum & 0xffffu) + (sum >> 16u);
+    return static_cast<uint16_t>(~sum);
+}
+
+rad_ipv4_address_t radix_default_ipv4_address() {
+    return rad_ipv4_address_t{{10, 0, 2, 15}};
+}
+
+int ipv4_equal(rad_ipv4_address_t a, rad_ipv4_address_t b) {
+    return memcmp(a.bytes, b.bytes, sizeof(a.bytes)) == 0;
+}
+
+SocketRecord *socket_from_fd(FdRecord *record) {
+    if (!record || record->kind != FD_SOCKET || record->socket_index >= RADIX_KERNEL_MAX_UDP_SOCKETS) return nullptr;
+    SocketRecord& socket = g_state.sockets[record->socket_index];
+    return socket.used ? &socket : nullptr;
+}
+
+SocketRecord *find_udp_socket(uint16_t port) {
+    if (!port) return nullptr;
+    for (size_t i = 0; i < RADIX_KERNEL_MAX_UDP_SOCKETS; ++i) {
+        SocketRecord& socket = g_state.sockets[i];
+        if (socket.used && socket.type == RAD_SOCK_DGRAM && socket.local_port == port) return &socket;
+    }
+    return nullptr;
+}
+
+rad_status_t enqueue_udp_datagram(SocketRecord *socket, const rad_sockaddr_in_t *from, const void *payload, size_t size) {
+    if (!socket || !from || (!payload && size)) return RAD_STATUS_INVALID_ARGUMENT;
+    if (size > RADIX_KERNEL_UDP_PAYLOAD_BYTES) return RAD_STATUS_INVALID_ARGUMENT;
+    for (size_t i = 0; i < RADIX_KERNEL_MAX_UDP_DATAGRAMS; ++i) {
+        UdpDatagram& datagram = socket->datagrams[i];
+        if (datagram.used) continue;
+        memset(&datagram, 0, sizeof(datagram));
+        datagram.used = 1;
+        datagram.from = *from;
+        datagram.size = size;
+        if (size) memcpy(datagram.payload, payload, size);
+        return RAD_STATUS_OK;
+    }
+    return RAD_STATUS_NO_MEMORY;
+}
+
+rad_status_t dispatch_udp_datagram(rad_ipv4_address_t source_address, uint16_t source_port, uint16_t destination_port, const void *payload, size_t size) {
+    SocketRecord *socket = find_udp_socket(destination_port);
+    if (!socket) return RAD_STATUS_NOT_FOUND;
+    rad_sockaddr_in_t from{};
+    from.family = RAD_AF_INET;
+    from.port = source_port;
+    from.address = source_address;
+    return enqueue_udp_datagram(socket, &from, payload, size);
+}
+
+rad_status_t parse_ipv4_udp_frame(const void *frame, size_t length) {
+    const auto *bytes = static_cast<const uint8_t*>(frame);
+    if (!bytes || length < 42u) return RAD_STATUS_INVALID_ARGUMENT;
+    const uint16_t ethertype = static_cast<uint16_t>((bytes[12] << 8u) | bytes[13]);
+    if (ethertype != 0x0800u) return RAD_STATUS_NOT_SUPPORTED;
+    const size_t ip_offset = 14u;
+    const uint8_t version_ihl = bytes[ip_offset];
+    const size_t ihl = static_cast<size_t>(version_ihl & 0x0fu) * 4u;
+    if ((version_ihl >> 4u) != 4u || ihl < 20u || length < ip_offset + ihl + 8u) return RAD_STATUS_INVALID_ARGUMENT;
+    if (bytes[ip_offset + 9u] != RAD_IPPROTO_UDP) return RAD_STATUS_NOT_SUPPORTED;
+    const size_t udp_offset = ip_offset + ihl;
+    const uint16_t source_port = static_cast<uint16_t>((bytes[udp_offset] << 8u) | bytes[udp_offset + 1u]);
+    const uint16_t destination_port = static_cast<uint16_t>((bytes[udp_offset + 2u] << 8u) | bytes[udp_offset + 3u]);
+    const uint16_t udp_length = static_cast<uint16_t>((bytes[udp_offset + 4u] << 8u) | bytes[udp_offset + 5u]);
+    if (udp_length < 8u || length < udp_offset + udp_length) return RAD_STATUS_INVALID_ARGUMENT;
+    rad_ipv4_address_t source{{bytes[ip_offset + 12u], bytes[ip_offset + 13u], bytes[ip_offset + 14u], bytes[ip_offset + 15u]}};
+    return dispatch_udp_datagram(source, source_port, destination_port, bytes + udp_offset + 8u, udp_length - 8u);
+}
+
+void poll_network_for_udp() {
+    rad_device_t device = nullptr;
+    if (rad_net_open("/dev/net0", &device) != RAD_STATUS_OK) return;
+    rad_net_poll(device);
+    uint8_t frame[1536];
+    for (uint32_t i = 0; i < 16u; ++i) {
+        const intptr_t received = rad_net_receive(device, frame, sizeof(frame));
+        if (received <= 0) break;
+        parse_ipv4_udp_frame(frame, static_cast<size_t>(received));
+    }
+    rad_device_close(device);
+}
+
+rad_status_t send_udp_frame(const SocketRecord *socket, const rad_sockaddr_in_t *destination, const void *payload, size_t size) {
+    if (!socket || !destination || (!payload && size) || size > 1400u) return RAD_STATUS_INVALID_ARGUMENT;
+    rad_device_t device = nullptr;
+    if (rad_net_open("/dev/net0", &device) != RAD_STATUS_OK) return RAD_STATUS_NOT_FOUND;
+    rad_net_link_info_t info{};
+    if (rad_net_link_info(device, &info) != RAD_STATUS_OK) {
+        rad_device_close(device);
+        return RAD_STATUS_NOT_FOUND;
+    }
+    uint8_t frame[1514]{};
+    memset(frame, 0xff, 6u);
+    memcpy(frame + 6u, info.mac.bytes, 6u);
+    frame[12] = 0x08;
+    frame[13] = 0x00;
+    const size_t ip = 14u;
+    const size_t udp = ip + 20u;
+    const uint16_t ip_total = static_cast<uint16_t>(20u + 8u + size);
+    frame[ip] = 0x45;
+    frame[ip + 2u] = static_cast<uint8_t>(ip_total >> 8u);
+    frame[ip + 3u] = static_cast<uint8_t>(ip_total);
+    frame[ip + 8u] = 64u;
+    frame[ip + 9u] = RAD_IPPROTO_UDP;
+    const rad_ipv4_address_t source = socket->local_address.bytes[0] ? socket->local_address : radix_default_ipv4_address();
+    memcpy(frame + ip + 12u, source.bytes, 4u);
+    memcpy(frame + ip + 16u, destination->address.bytes, 4u);
+    const uint16_t sum = ipv4_checksum(frame + ip, 20u);
+    frame[ip + 10u] = static_cast<uint8_t>(sum >> 8u);
+    frame[ip + 11u] = static_cast<uint8_t>(sum);
+    const uint16_t udp_length = static_cast<uint16_t>(8u + size);
+    frame[udp] = static_cast<uint8_t>(socket->local_port >> 8u);
+    frame[udp + 1u] = static_cast<uint8_t>(socket->local_port);
+    frame[udp + 2u] = static_cast<uint8_t>(destination->port >> 8u);
+    frame[udp + 3u] = static_cast<uint8_t>(destination->port);
+    frame[udp + 4u] = static_cast<uint8_t>(udp_length >> 8u);
+    frame[udp + 5u] = static_cast<uint8_t>(udp_length);
+    if (size) memcpy(frame + udp + 8u, payload, size);
+    const rad_status_t status = rad_net_send(device, frame, 14u + ip_total);
+    rad_device_close(device);
+    return status;
 }
 
 void open_stdio_fd(int32_t fd) {
@@ -3532,6 +3718,11 @@ int32_t rad_fd_fstat(int32_t fd, rad_vfs_stat_t *stat) {
         stat->mode = 0010000u;
         return RAD_STATUS_OK;
     }
+    if (record->kind == FD_SHM) {
+        memset(stat, 0, sizeof(*stat));
+        stat->mode = 0100000u;
+        return RAD_STATUS_OK;
+    }
     return RAD_STATUS_NOT_SUPPORTED;
 }
 
@@ -3586,6 +3777,193 @@ int32_t rad_pipe_create(int32_t pipefd[2]) {
     return RAD_STATUS_OK;
 }
 
+int32_t rad_socket_create(int domain, int type, int protocol) {
+    if (domain != static_cast<int>(RAD_AF_INET) || type != static_cast<int>(RAD_SOCK_DGRAM)) return RAD_STATUS_NOT_SUPPORTED;
+    if (protocol != 0 && protocol != static_cast<int>(RAD_IPPROTO_UDP)) return RAD_STATUS_NOT_SUPPORTED;
+    for (size_t i = 0; i < RADIX_KERNEL_MAX_UDP_SOCKETS; ++i) {
+        SocketRecord& socket = g_state.sockets[i];
+        if (socket.used) continue;
+        memset(&socket, 0, sizeof(socket));
+        socket.used = 1;
+        socket.domain = domain;
+        socket.type = type;
+        socket.protocol = RAD_IPPROTO_UDP;
+        socket.local_address = radix_default_ipv4_address();
+        FdRecord record{};
+        record.kind = FD_SOCKET;
+        record.socket_index = i;
+        record.flags = RAD_VFS_READ | RAD_VFS_WRITE;
+        record.refs = 1;
+        record.owner_fd = -1;
+        record.owner_pid = current_process_pid();
+        record.local_fd = -1;
+        const int32_t fd = install_fd_record(record, -1);
+        if (fd < 0) memset(&socket, 0, sizeof(socket));
+        return fd;
+    }
+    return RAD_STATUS_NO_MEMORY;
+}
+
+int32_t rad_socket_bind(int32_t fd, const rad_sockaddr_in_t *address, size_t address_length) {
+    if (!address || address_length < sizeof(rad_sockaddr_in_t) || address->family != RAD_AF_INET || address->port == 0) return RAD_STATUS_INVALID_ARGUMENT;
+    FdRecord *record = lookup_fd_record(fd);
+    SocketRecord *socket = socket_from_fd(record);
+    if (!socket) return RAD_STATUS_NOT_FOUND;
+    if (find_udp_socket(address->port) && find_udp_socket(address->port) != socket) return RAD_STATUS_ALREADY_EXISTS;
+    socket->local_port = address->port;
+    socket->local_address = address->address.bytes[0] ? address->address : radix_default_ipv4_address();
+    return RAD_STATUS_OK;
+}
+
+intptr_t rad_socket_sendto(int32_t fd, const void *buffer, size_t size, uint32_t, const rad_sockaddr_in_t *address, size_t address_length) {
+    if ((!buffer && size) || !address || address_length < sizeof(rad_sockaddr_in_t) || address->family != RAD_AF_INET || address->port == 0) {
+        return RAD_STATUS_INVALID_ARGUMENT;
+    }
+    FdRecord *record = lookup_fd_record(fd);
+    SocketRecord *socket = socket_from_fd(record);
+    if (!socket) return RAD_STATUS_NOT_FOUND;
+    if (!socket->local_port) socket->local_port = static_cast<uint16_t>(49152u + (record->socket_index % 1024u));
+    if (!socket->local_address.bytes[0]) socket->local_address = radix_default_ipv4_address();
+    if (ipv4_equal(address->address, socket->local_address) || ipv4_equal(address->address, radix_default_ipv4_address())) {
+        rad_sockaddr_in_t from{};
+        from.family = RAD_AF_INET;
+        from.port = socket->local_port;
+        from.address = socket->local_address;
+        if (SocketRecord *target = find_udp_socket(address->port)) {
+            if (enqueue_udp_datagram(target, &from, buffer, size) == RAD_STATUS_OK) return static_cast<intptr_t>(size);
+        }
+    }
+    const rad_status_t status = send_udp_frame(socket, address, buffer, size);
+    return status == RAD_STATUS_OK || status == RAD_STATUS_NOT_FOUND ? static_cast<intptr_t>(size) : static_cast<intptr_t>(status);
+}
+
+intptr_t rad_socket_recvfrom(int32_t fd, void *buffer, size_t size, uint32_t, rad_sockaddr_in_t *address, size_t *address_length) {
+    if (!buffer && size) return RAD_STATUS_INVALID_ARGUMENT;
+    FdRecord *record = lookup_fd_record(fd);
+    SocketRecord *socket = socket_from_fd(record);
+    if (!socket) return RAD_STATUS_NOT_FOUND;
+    poll_network_for_udp();
+    for (size_t i = 0; i < RADIX_KERNEL_MAX_UDP_DATAGRAMS; ++i) {
+        UdpDatagram& datagram = socket->datagrams[i];
+        if (!datagram.used) continue;
+        const size_t count = datagram.size < size ? datagram.size : size;
+        if (count) memcpy(buffer, datagram.payload, count);
+        if (address && address_length && *address_length >= sizeof(rad_sockaddr_in_t)) {
+            *address = datagram.from;
+            *address_length = sizeof(rad_sockaddr_in_t);
+        }
+        memset(&datagram, 0, sizeof(datagram));
+        return static_cast<intptr_t>(count);
+    }
+    return 0;
+}
+
+int32_t rad_socket_setsockopt(int32_t fd, int, int, const void*, size_t) {
+    return socket_from_fd(lookup_fd_record(fd)) ? RAD_STATUS_OK : RAD_STATUS_NOT_FOUND;
+}
+
+int32_t rad_socket_getsockopt(int32_t fd, int, int, void *value, size_t *value_length) {
+    if (!socket_from_fd(lookup_fd_record(fd))) return RAD_STATUS_NOT_FOUND;
+    if (!value || !value_length || *value_length < sizeof(int32_t)) return RAD_STATUS_INVALID_ARGUMENT;
+    int32_t zero = 0;
+    memcpy(value, &zero, sizeof(zero));
+    *value_length = sizeof(zero);
+    return RAD_STATUS_OK;
+}
+
+ShmRecord *find_shm_by_name(const char *name) {
+    if (!name || !*name) return nullptr;
+    for (size_t i = 0; i < RADIX_KERNEL_MAX_SHM_OBJECTS; ++i) {
+        if (g_state.shm_objects[i].used && g_state.shm_objects[i].linked && strcmp(g_state.shm_objects[i].name, name) == 0) {
+            return &g_state.shm_objects[i];
+        }
+    }
+    return nullptr;
+}
+
+int32_t install_shm_fd(size_t shm_index, uint32_t flags) {
+    if (shm_index >= RADIX_KERNEL_MAX_SHM_OBJECTS || !g_state.shm_objects[shm_index].used) return RAD_STATUS_INVALID_ARGUMENT;
+    FdRecord record{};
+    record.kind = FD_SHM;
+    record.shm_index = shm_index;
+    record.flags = flags;
+    record.refs = 1;
+    record.owner_fd = -1;
+    record.owner_pid = current_process_pid();
+    record.local_fd = -1;
+    return install_fd_record(record, -1);
+}
+
+int32_t rad_shm_open(const char *name, size_t byte_size, uint32_t flags) {
+    if (!name || !*name || byte_size == 0) return RAD_STATUS_INVALID_ARGUMENT;
+    size_t length = strlen(name);
+    if (length >= RAD_SHM_NAME_MAX) return RAD_STATUS_INVALID_ARGUMENT;
+    size_t page_count = (byte_size + 4095u) / 4096u;
+    if (page_count == 0 || page_count > RAD_SHM_MAX_PAGES) return RAD_STATUS_INVALID_ARGUMENT;
+    ShmRecord *existing = find_shm_by_name(name);
+    if (existing) return install_shm_fd(static_cast<size_t>(existing - g_state.shm_objects), flags);
+    for (size_t i = 0; i < RADIX_KERNEL_MAX_SHM_OBJECTS; ++i) {
+        ShmRecord& shm = g_state.shm_objects[i];
+        if (shm.used) continue;
+        memset(&shm, 0, sizeof(shm));
+        shm.used = 1;
+        shm.linked = 1;
+        shm.byte_size = byte_size;
+        shm.page_count = page_count;
+        copy_string(shm.name, sizeof(shm.name), name);
+        return install_shm_fd(i, flags);
+    }
+    return RAD_STATUS_NO_MEMORY;
+}
+
+int32_t rad_shm_unlink(const char *name) {
+    ShmRecord *shm = find_shm_by_name(name);
+    if (!shm) return RAD_STATUS_NOT_FOUND;
+    memset(shm, 0, sizeof(*shm));
+    return RAD_STATUS_OK;
+}
+
+int32_t rad_shm_get_info(int32_t fd, rad_shm_info_t *info) {
+    if (!info) return RAD_STATUS_INVALID_ARGUMENT;
+    FdRecord *record = lookup_fd_record(fd);
+    if (!record || record->kind != FD_SHM || record->shm_index >= RADIX_KERNEL_MAX_SHM_OBJECTS) return RAD_STATUS_NOT_FOUND;
+    ShmRecord& shm = g_state.shm_objects[record->shm_index];
+    if (!shm.used) return RAD_STATUS_NOT_FOUND;
+    memset(info, 0, sizeof(*info));
+    info->size = sizeof(*info);
+    copy_string(info->name, sizeof(info->name), shm.name);
+    info->byte_size = shm.byte_size;
+    info->page_count = shm.page_count;
+    return RAD_STATUS_OK;
+}
+
+int32_t rad_shm_set_page(int32_t fd, size_t page_index, uintptr_t page_token) {
+    FdRecord *record = lookup_fd_record(fd);
+    if (!record || record->kind != FD_SHM || record->shm_index >= RADIX_KERNEL_MAX_SHM_OBJECTS) return RAD_STATUS_NOT_FOUND;
+    ShmRecord& shm = g_state.shm_objects[record->shm_index];
+    if (!shm.used || page_index >= shm.page_count || page_index >= RAD_SHM_MAX_PAGES) return RAD_STATUS_INVALID_ARGUMENT;
+    shm.pages[page_index] = page_token;
+    return RAD_STATUS_OK;
+}
+
+int32_t rad_shm_get_page(int32_t fd, size_t page_index, uintptr_t *page_token) {
+    if (!page_token) return RAD_STATUS_INVALID_ARGUMENT;
+    FdRecord *record = lookup_fd_record(fd);
+    if (!record || record->kind != FD_SHM || record->shm_index >= RADIX_KERNEL_MAX_SHM_OBJECTS) return RAD_STATUS_NOT_FOUND;
+    ShmRecord& shm = g_state.shm_objects[record->shm_index];
+    if (!shm.used || page_index >= shm.page_count || page_index >= RAD_SHM_MAX_PAGES || !shm.pages[page_index]) {
+        return RAD_STATUS_INVALID_ARGUMENT;
+    }
+    *page_token = shm.pages[page_index];
+    return RAD_STATUS_OK;
+}
+
+void *rad_shm_kernel_pointer(int32_t fd) {
+    uintptr_t page = 0;
+    if (rad_shm_get_page(fd, 0, &page) != RAD_STATUS_OK) return nullptr;
+    return reinterpret_cast<void*>(page);
+}
+
 int32_t rad_fd_dup(int32_t fd) {
     FdRecord *record = lookup_fd_record(fd);
     if (!record) return RAD_STATUS_NOT_FOUND;
@@ -3629,7 +4007,7 @@ int32_t rad_fd_fcntl(int32_t fd, uint32_t command, uintptr_t argument) {
     }
 }
 
-intptr_t rad_syscall_dispatch(uintptr_t number, uintptr_t arg0, uintptr_t arg1, uintptr_t arg2, uintptr_t, uintptr_t, uintptr_t) {
+intptr_t rad_syscall_dispatch(uintptr_t number, uintptr_t arg0, uintptr_t arg1, uintptr_t arg2, uintptr_t arg3, uintptr_t arg4, uintptr_t arg5) {
     switch (number) {
     case RAD_SYSCALL_READ: return rad_fd_read(static_cast<int32_t>(arg0), reinterpret_cast<void*>(arg1), static_cast<size_t>(arg2));
     case RAD_SYSCALL_WRITE: return rad_fd_write(static_cast<int32_t>(arg0), reinterpret_cast<const void*>(arg1), static_cast<size_t>(arg2));
@@ -3674,6 +4052,22 @@ intptr_t rad_syscall_dispatch(uintptr_t number, uintptr_t arg0, uintptr_t arg1, 
         const int32_t status = rad_fd_fstat(static_cast<int32_t>(arg0), &stat);
         return status == RAD_STATUS_OK && ((stat.mode & 0170000u) == 0020000u) ? 1 : 0;
     }
+    case RAD_SYSCALL_SOCKET: return rad_socket_create(static_cast<int>(arg0), static_cast<int>(arg1), static_cast<int>(arg2));
+    case RAD_SYSCALL_BIND: return rad_socket_bind(static_cast<int32_t>(arg0), reinterpret_cast<const rad_sockaddr_in_t*>(arg1), static_cast<size_t>(arg2));
+    case RAD_SYSCALL_CONNECT:
+    case RAD_SYSCALL_LISTEN:
+    case RAD_SYSCALL_ACCEPT:
+    case RAD_SYSCALL_SHUTDOWN:
+        return RAD_STATUS_NOT_SUPPORTED;
+    case RAD_SYSCALL_SENDTO: return rad_socket_sendto(static_cast<int32_t>(arg0), reinterpret_cast<const void*>(arg1), static_cast<size_t>(arg2), static_cast<uint32_t>(arg3), reinterpret_cast<const rad_sockaddr_in_t*>(arg4), static_cast<size_t>(arg5));
+    case RAD_SYSCALL_RECVFROM: return rad_socket_recvfrom(static_cast<int32_t>(arg0), reinterpret_cast<void*>(arg1), static_cast<size_t>(arg2), static_cast<uint32_t>(arg3), reinterpret_cast<rad_sockaddr_in_t*>(arg4), reinterpret_cast<size_t*>(arg5));
+    case RAD_SYSCALL_SETSOCKOPT: return rad_socket_setsockopt(static_cast<int32_t>(arg0), static_cast<int>(arg1), static_cast<int>(arg2), reinterpret_cast<const void*>(arg3), static_cast<size_t>(arg4));
+    case RAD_SYSCALL_GETSOCKOPT: return rad_socket_getsockopt(static_cast<int32_t>(arg0), static_cast<int>(arg1), static_cast<int>(arg2), reinterpret_cast<void*>(arg3), reinterpret_cast<size_t*>(arg4));
+    case RAD_SYSCALL_SHM_OPEN: return rad_shm_open(reinterpret_cast<const char*>(arg0), static_cast<size_t>(arg1), static_cast<uint32_t>(arg2));
+    case RAD_SYSCALL_SHM_UNLINK: return rad_shm_unlink(reinterpret_cast<const char*>(arg0));
+    case RAD_SYSCALL_MMAP:
+    case RAD_SYSCALL_MUNMAP:
+        return RAD_STATUS_NOT_SUPPORTED;
     default: return RAD_STATUS_NOT_SUPPORTED;
     }
 }
@@ -4055,9 +4449,20 @@ rad_status_t rad_net_send(rad_device_t device, const void *data, size_t length) 
     if (device->record.type != RAD_DEVICE_NETWORK) return RAD_STATUS_INVALID_ARGUMENT;
     rad_net_packet_t packet{};
     packet.size = sizeof(packet);
-    packet.data = data;
+    packet.data = const_cast<void*>(data);
     packet.length = length;
     return rad_device_ioctl(device, RAD_DEVICE_IOCTL_NET_SEND, &packet);
+}
+
+intptr_t rad_net_receive(rad_device_t device, void *data, size_t length) {
+    if (!device || !data || !length) return RAD_STATUS_INVALID_ARGUMENT;
+    if (device->record.type != RAD_DEVICE_NETWORK) return RAD_STATUS_INVALID_ARGUMENT;
+    rad_net_packet_t packet{};
+    packet.size = sizeof(packet);
+    packet.data = data;
+    packet.length = length;
+    const rad_status_t status = rad_device_ioctl(device, RAD_DEVICE_IOCTL_NET_RECV, &packet);
+    return status == RAD_STATUS_OK ? static_cast<intptr_t>(packet.length) : static_cast<intptr_t>(status);
 }
 
 rad_status_t rad_net_poll(rad_device_t device) {

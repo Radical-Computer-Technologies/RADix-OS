@@ -97,8 +97,16 @@ struct CpuTopologyProbe {
     uint64_t lapic_address;
 };
 
+struct X86FramebufferContext {
+    uint32_t *pixels = nullptr;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t stride_pixels = 0;
+};
+
 char g_transcript[8192];
 size_t g_transcript_size = 0;
+X86FramebufferContext g_x86_framebuffer_context{};
 int g_keyboard_input_seen = 0;
 int g_pointer_input_seen = 0;
 int g_module_probe_inits = 0;
@@ -315,7 +323,33 @@ rad_status_t register_framebuffer(const Mb2FramebufferTag *fb) {
     config.modes[0].stride_bytes = fb->pitch;
     config.modes[0].pixel_format = RAD_PIXEL_FORMAT_XRGB8888;
     config.primary = 1;
+    g_x86_framebuffer_context.pixels = reinterpret_cast<uint32_t*>(static_cast<uintptr_t>(fb->addr));
+    g_x86_framebuffer_context.width = fb->width;
+    g_x86_framebuffer_context.height = fb->height;
+    g_x86_framebuffer_context.stride_pixels = fb->pitch / sizeof(uint32_t);
     rad_framebuffer_ops_t ops{};
+    ops.context = &g_x86_framebuffer_context;
+    ops.present = [](void *context, const rad_framebuffer_present_t *present) -> rad_status_t {
+        auto *fb_context = static_cast<X86FramebufferContext*>(context);
+        if (!fb_context || !fb_context->pixels || !present || !present->pixels || present->stride_bytes < present->rect.width * sizeof(uint32_t)) {
+            return RAD_STATUS_INVALID_ARGUMENT;
+        }
+        const uint32_t src_stride = present->stride_bytes / sizeof(uint32_t);
+        const uint32_t x0 = present->rect.x;
+        const uint32_t y0 = present->rect.y;
+        if (x0 >= fb_context->width || y0 >= fb_context->height) return RAD_STATUS_OK;
+        uint32_t width = present->rect.width;
+        uint32_t height = present->rect.height;
+        if (x0 + width > fb_context->width) width = fb_context->width - x0;
+        if (y0 + height > fb_context->height) height = fb_context->height - y0;
+        const auto *src_base = static_cast<const uint32_t*>(present->pixels);
+        for (uint32_t row = 0; row < height; ++row) {
+            const uint32_t *src = src_base + static_cast<size_t>(y0 + row) * src_stride + x0;
+            uint32_t *dst = fb_context->pixels + static_cast<size_t>(y0 + row) * fb_context->stride_pixels + x0;
+            memcpy(dst, src, static_cast<size_t>(width) * sizeof(uint32_t));
+        }
+        return RAD_STATUS_OK;
+    };
     return rad_framebuffer_register_ex(&config, &ops);
 }
 

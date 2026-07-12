@@ -49,6 +49,7 @@ extern "C" {
 #define RAD_IOCTL_TYPE_INPUT 'K' ///< Public constant or ioctl helper.
 #define RAD_IOCTL_TYPE_BLOCK 'B' ///< Public constant or ioctl helper.
 #define RAD_IOCTL_TYPE_NET 'N' ///< Public constant or ioctl helper.
+#define RAD_IOCTL_TYPE_COMPOSITOR 'C' ///< Public constant or ioctl helper.
 
 #define RAD_DEVICE_IOCTL_I2C_TRANSFER RAD_IOWR(RAD_IOCTL_TYPE_I2C, 1u, struct rad_i2c_transfer) ///< Public constant or ioctl helper.
 #define RAD_DEVICE_IOCTL_SPI_TRANSFER RAD_IOWR(RAD_IOCTL_TYPE_SPI, 1u, struct rad_spi_transfer) ///< Public constant or ioctl helper.
@@ -63,6 +64,10 @@ extern "C" {
 #define RAD_DEVICE_IOCTL_NET_LINK_INFO RAD_IOR(RAD_IOCTL_TYPE_NET, 1u, struct rad_net_link_info) ///< Public constant or ioctl helper.
 #define RAD_DEVICE_IOCTL_NET_SEND RAD_IOW(RAD_IOCTL_TYPE_NET, 2u, struct rad_net_packet) ///< Public constant or ioctl helper.
 #define RAD_DEVICE_IOCTL_NET_POLL RAD_IO(RAD_IOCTL_TYPE_NET, 3u) ///< Public constant or ioctl helper.
+#define RAD_DEVICE_IOCTL_NET_RECV RAD_IOWR(RAD_IOCTL_TYPE_NET, 4u, struct rad_net_packet) ///< Public constant or ioctl helper.
+#define RAD_DEVICE_IOCTL_COMPOSITOR_CREATE_SURFACE RAD_IOWR(RAD_IOCTL_TYPE_COMPOSITOR, 1u, struct rad_compositor_ipc_surface) ///< Public constant or ioctl helper.
+#define RAD_DEVICE_IOCTL_COMPOSITOR_QUEUE_DAMAGE RAD_IOW(RAD_IOCTL_TYPE_COMPOSITOR, 2u, struct rad_compositor_ipc_damage) ///< Public constant or ioctl helper.
+#define RAD_DEVICE_IOCTL_FRAMEBUFFER_PRESENT RAD_IOW(RAD_IOCTL_TYPE_FRAMEBUFFER, 3u, struct rad_framebuffer_present) ///< Public constant or ioctl helper.
 
 #define RAD_BOOT_MAX_ARGS 16u ///< Public constant or ioctl helper.
 #define RAD_BOOT_MAX_MEMORY_REGIONS 8u ///< Public constant or ioctl helper.
@@ -79,12 +84,25 @@ extern "C" {
 #define RAD_COMPATIBLE_MAX 64u ///< Public constant or ioctl helper.
 #define RAD_MODULE_NAME_MAX 32u ///< Public constant or ioctl helper.
 #define RAD_MODULE_MAX_INFO 32u ///< Public constant or ioctl helper.
+#define RAD_SERVICE_NAME_MAX 32u ///< Public constant or ioctl helper.
+#define RAD_SERVICE_COMPATIBLE_MAX 64u ///< Public constant or ioctl helper.
+#define RAD_SERVICE_CAPABILITY_MAX 32u ///< Public constant or ioctl helper.
 #define RAD_IRQ_NAME_MAX 32u ///< Public constant or ioctl helper.
 #define RAD_IRQ_DOMAIN_NAME_MAX 32u ///< Public constant or ioctl helper.
 #define RAD_IRQ_MAX_RESOURCES 4u ///< Public constant or ioctl helper.
 #define RAD_FRAMEBUFFER_NAME_MAX 64u ///< Public constant or ioctl helper.
 #define RAD_DISPLAY_CONNECTOR_MAX 32u ///< Public constant or ioctl helper.
 #define RAD_FRAMEBUFFER_MAX_MODES 8u ///< Public constant or ioctl helper.
+#define RAD_SHM_NAME_MAX 64u ///< Public constant or ioctl helper.
+#define RAD_SHM_MAX_PAGES 16u ///< Public constant or ioctl helper.
+#define RAD_MMAP_PROT_READ 1u ///< Public constant or ioctl helper.
+#define RAD_MMAP_PROT_WRITE 2u ///< Public constant or ioctl helper.
+#define RAD_MMAP_SHARED 1u ///< Public constant or ioctl helper.
+#define RAD_MMAP_PRIVATE 2u ///< Public constant or ioctl helper.
+#define RAD_COMPOSITOR_DAMAGE_EXPOSED 1u ///< Public constant or ioctl helper.
+#define RAD_AF_INET 2u ///< Public constant or ioctl helper.
+#define RAD_SOCK_DGRAM 2u ///< Public constant or ioctl helper.
+#define RAD_IPPROTO_UDP 17u ///< Public constant or ioctl helper.
 #define RAD_PERF_NAME_MAX 32u ///< Public constant or ioctl helper.
 #define RAD_TIMER_NAME_MAX 32u ///< Public constant or ioctl helper.
 #define RAD_INPUT_QUEUE_NAME_MAX 64u ///< Public constant or ioctl helper.
@@ -144,7 +162,11 @@ typedef enum rad_posix_syscall {
     RAD_SYSCALL_RECVFROM = 31, ///< RAD_SYSCALL_RECVFROM.
     RAD_SYSCALL_SHUTDOWN = 32, ///< RAD_SYSCALL_SHUTDOWN.
     RAD_SYSCALL_SETSOCKOPT = 33, ///< RAD_SYSCALL_SETSOCKOPT.
-    RAD_SYSCALL_GETSOCKOPT = 34 ///< RAD_SYSCALL_GETSOCKOPT.
+    RAD_SYSCALL_GETSOCKOPT = 34, ///< RAD_SYSCALL_GETSOCKOPT.
+    RAD_SYSCALL_MMAP = 35, ///< RAD_SYSCALL_MMAP.
+    RAD_SYSCALL_MUNMAP = 36, ///< RAD_SYSCALL_MUNMAP.
+    RAD_SYSCALL_SHM_OPEN = 37, ///< RAD_SYSCALL_SHM_OPEN.
+    RAD_SYSCALL_SHM_UNLINK = 38 ///< RAD_SYSCALL_SHM_UNLINK.
 } rad_posix_syscall_t; ///< Public typedef alias.
 
 /** @brief Public enumeration for rad_process_state. */
@@ -188,7 +210,8 @@ typedef enum rad_device_type {
     RAD_DEVICE_PTY = 7, ///< RAD_DEVICE_PTY.
     RAD_DEVICE_INPUT = 8, ///< RAD_DEVICE_INPUT.
     RAD_DEVICE_BLOCK = 9, ///< RAD_DEVICE_BLOCK.
-    RAD_DEVICE_NETWORK = 10 ///< RAD_DEVICE_NETWORK.
+    RAD_DEVICE_NETWORK = 10, ///< RAD_DEVICE_NETWORK.
+    RAD_DEVICE_COMPOSITOR = 11 ///< RAD_DEVICE_COMPOSITOR.
 } rad_device_type_t; ///< Public typedef alias.
 
 /** @brief Public enumeration for rad_input_event_type. */
@@ -522,7 +545,7 @@ typedef struct rad_ipv4_address {
 /** @brief Public data structure for rad_net_packet. */
 typedef struct rad_net_packet {
     uint32_t size; ///< Public structure field.
-    const void *data; ///< Public structure field.
+    void *data; ///< Public structure field.
     size_t length; ///< Public structure field.
 } rad_net_packet_t; ///< Public typedef alias.
 
@@ -535,6 +558,14 @@ typedef struct rad_net_link_info {
     uint64_t tx_packets; ///< Public structure field.
     uint64_t rx_packets; ///< Public structure field.
 } rad_net_link_info_t; ///< Public typedef alias.
+
+/** @brief Public data structure for rad_sockaddr_in. */
+typedef struct rad_sockaddr_in {
+    uint16_t family; ///< Public structure field.
+    uint16_t port; ///< Public structure field.
+    rad_ipv4_address_t address; ///< Public structure field.
+    uint8_t zero[8]; ///< Public structure field.
+} rad_sockaddr_in_t; ///< Public typedef alias.
 
 /** @brief Public data structure for rad_posix_timeval. */
 typedef struct rad_posix_timeval {
@@ -655,6 +686,14 @@ typedef struct rad_framebuffer_info {
     void *pixels; ///< Public structure field.
 } rad_framebuffer_info_t; ///< Public typedef alias.
 
+/** @brief Public data structure for rad_framebuffer_present. */
+typedef struct rad_framebuffer_present {
+    uint32_t size; ///< Public structure field.
+    void *pixels; ///< Public structure field.
+    uint32_t stride_bytes; ///< Public structure field.
+    rad_framebuffer_rect_t rect; ///< Public structure field.
+} rad_framebuffer_present_t; ///< Public typedef alias.
+
 /** @brief Public data structure for rad_display_mode. */
 typedef struct rad_display_mode {
     uint32_t width; ///< Public structure field.
@@ -668,6 +707,7 @@ typedef struct rad_display_mode {
 typedef struct rad_framebuffer_ops {
     void *context; ///< Public structure field.
     rad_status_t (*flush)(void *context, const rad_framebuffer_rect_t *rect);///< Public callback slot.
+    rad_status_t (*present)(void *context, const rad_framebuffer_present_t *present);///< Public callback slot.
     rad_status_t (*set_mode)(void *context, const rad_display_mode_t *mode);///< Public callback slot.
     rad_status_t (*blank)(void *context, int blanked);///< Public callback slot.
     uint64_t (*get_vsync_counter)(void *context);///< Public callback slot.
@@ -702,6 +742,39 @@ typedef struct rad_framebuffer_display_info {
     rad_display_mode_t modes[RAD_FRAMEBUFFER_MAX_MODES]; ///< Public structure field.
     int primary; ///< Public structure field.
 } rad_framebuffer_display_info_t; ///< Public typedef alias.
+
+/** @brief Public data structure for rad_shm_info. */
+typedef struct rad_shm_info {
+    uint32_t size; ///< Public structure field.
+    char name[RAD_SHM_NAME_MAX]; ///< Public structure field.
+    size_t byte_size; ///< Public structure field.
+    size_t page_count; ///< Public structure field.
+} rad_shm_info_t; ///< Public typedef alias.
+
+/** @brief Public data structure for rad_compositor_ipc_surface. */
+typedef struct rad_compositor_ipc_surface {
+    uint32_t size; ///< Public structure field.
+    int32_t shm_fd; ///< Public structure field.
+    uint32_t width; ///< Public structure field.
+    uint32_t height; ///< Public structure field.
+    uint32_t stride_pixels; ///< Public structure field.
+    int32_t x; ///< Public structure field.
+    int32_t y; ///< Public structure field.
+    int32_t z; ///< Public structure field.
+    uint32_t flags; ///< Public structure field.
+    uint32_t surface_id; ///< Public structure field.
+} rad_compositor_ipc_surface_t; ///< Public typedef alias.
+
+/** @brief Public data structure for rad_compositor_ipc_damage. */
+typedef struct rad_compositor_ipc_damage {
+    uint32_t size; ///< Public structure field.
+    uint32_t surface_id; ///< Public structure field.
+    int32_t x; ///< Public structure field.
+    int32_t y; ///< Public structure field.
+    int32_t width; ///< Public structure field.
+    int32_t height; ///< Public structure field.
+    uint32_t flags; ///< Public structure field.
+} rad_compositor_ipc_damage_t; ///< Public typedef alias.
 
 /** @brief Public data structure for rad_i2c_transfer. */
 typedef struct rad_i2c_transfer {
@@ -841,6 +914,15 @@ typedef enum rad_module_state {
     RAD_MODULE_EXITED = 4 ///< RAD_MODULE_EXITED.
 } rad_module_state_t; ///< Public typedef alias.
 
+/** @brief Public enumeration for rad_service_state. */
+typedef enum rad_service_state {
+    RAD_SERVICE_REGISTERED = 1, ///< RAD_SERVICE_REGISTERED.
+    RAD_SERVICE_CONFIGURED = 2, ///< RAD_SERVICE_CONFIGURED.
+    RAD_SERVICE_RUNNING = 3, ///< RAD_SERVICE_RUNNING.
+    RAD_SERVICE_FAILED = 4, ///< RAD_SERVICE_FAILED.
+    RAD_SERVICE_STOPPED = 5 ///< RAD_SERVICE_STOPPED.
+} rad_service_state_t; ///< Public typedef alias.
+
 /** @brief Public data structure for rad_module_info. */
 typedef struct rad_module_info {
     char name[RAD_MODULE_NAME_MAX]; ///< Public structure field.
@@ -849,6 +931,49 @@ typedef struct rad_module_info {
     rad_module_state_t state; ///< Public structure field.
     int32_t last_status; ///< Public structure field.
 } rad_module_info_t; ///< Public typedef alias.
+
+/** @brief Public data structure for rad_service_config. */
+typedef struct rad_service_config {
+    uint32_t size; ///< Public structure field.
+    const char *tree_path; ///< Public structure field.
+    const char *backend; ///< Public structure field.
+    const char *display; ///< Public structure field.
+    const char *keyboard; ///< Public structure field.
+    const char *pointer; ///< Public structure field.
+    const char *terminal; ///< Public structure field.
+    int autostart; ///< Public structure field.
+    int order; ///< Public structure field.
+} rad_service_config_t; ///< Public typedef alias.
+
+/** @brief Public data structure for rad_service_descriptor. */
+typedef struct rad_service_descriptor {
+    uint32_t size; ///< Public structure field.
+    const char *name; ///< Public structure field.
+    const char *compatible; ///< Public structure field.
+    const char *capability; ///< Public structure field.
+    int default_order; ///< Public structure field.
+    rad_status_t (*start)(void *context, const rad_service_config_t *config);///< Public callback slot.
+    void (*stop)(void *context);///< Public callback slot.
+    rad_status_t (*poll)(void *context);///< Public callback slot.
+    void *context; ///< Public structure field.
+} rad_service_descriptor_t; ///< Public typedef alias.
+
+/** @brief Public data structure for rad_service_info. */
+typedef struct rad_service_info {
+    char name[RAD_SERVICE_NAME_MAX]; ///< Public structure field.
+    char compatible[RAD_SERVICE_COMPATIBLE_MAX]; ///< Public structure field.
+    char capability[RAD_SERVICE_CAPABILITY_MAX]; ///< Public structure field.
+    char tree_path[RAD_TREE_MAX_PATH]; ///< Public structure field.
+    char backend[RAD_TREE_MAX_VALUE]; ///< Public structure field.
+    char display[RAD_TREE_MAX_VALUE]; ///< Public structure field.
+    char keyboard[RAD_TREE_MAX_VALUE]; ///< Public structure field.
+    char pointer[RAD_TREE_MAX_VALUE]; ///< Public structure field.
+    char terminal[RAD_TREE_MAX_VALUE]; ///< Public structure field.
+    rad_service_state_t state; ///< Public structure field.
+    int autostart; ///< Public structure field.
+    int order; ///< Public structure field.
+    int32_t last_status; ///< Public structure field.
+} rad_service_info_t; ///< Public typedef alias.
 
 /** @brief Public data structure for rad_driver_info. */
 typedef struct rad_driver_info {
@@ -1126,6 +1251,13 @@ int32_t rad_process_reap(int32_t pid, int32_t *status); ///< Public RADix kernel
 rad_status_t rad_module_register(const rad_module_descriptor_t *descriptor); ///< Public RADix kernel API entry point.
 rad_status_t rad_module_unregister(const char *name); ///< Public RADix kernel API entry point.
 size_t rad_module_list(rad_module_info_t *modules, size_t capacity); ///< Public RADix kernel API entry point.
+rad_status_t rad_service_register(const rad_service_descriptor_t *descriptor); ///< Public RADix kernel API entry point.
+rad_status_t rad_service_unregister(const char *name); ///< Public RADix kernel API entry point.
+rad_status_t rad_service_configure_tree(rad_tree_node_t node); ///< Public RADix kernel API entry point.
+rad_status_t rad_service_start(const char *name); ///< Public RADix kernel API entry point.
+rad_status_t rad_service_stop(const char *name); ///< Public RADix kernel API entry point.
+rad_status_t rad_service_poll_all(void); ///< Public RADix kernel API entry point.
+size_t rad_service_list(rad_service_info_t *services, size_t capacity); ///< Public RADix kernel API entry point.
 
 rad_status_t rad_irq_register(uint32_t irq, const char *name, rad_irq_handler_t handler, void *context); ///< Public RADix kernel API entry point.
 rad_status_t rad_irq_unregister(uint32_t irq); ///< Public RADix kernel API entry point.
@@ -1153,6 +1285,12 @@ int32_t rad_fd_dup(int32_t fd); ///< Public RADix kernel API entry point.
 int32_t rad_fd_dup2(int32_t old_fd, int32_t new_fd); ///< Public RADix kernel API entry point.
 int32_t rad_fd_fcntl(int32_t fd, uint32_t command, uintptr_t argument); ///< Public RADix kernel API entry point.
 int32_t rad_pipe_create(int32_t pipefd[2]); ///< Public RADix kernel API entry point.
+int32_t rad_shm_open(const char *name, size_t byte_size, uint32_t flags); ///< Public RADix kernel API entry point.
+int32_t rad_shm_unlink(const char *name); ///< Public RADix kernel API entry point.
+int32_t rad_shm_get_info(int32_t fd, rad_shm_info_t *info); ///< Public RADix kernel API entry point.
+int32_t rad_shm_set_page(int32_t fd, size_t page_index, uintptr_t page_token); ///< Public RADix kernel API entry point.
+int32_t rad_shm_get_page(int32_t fd, size_t page_index, uintptr_t *page_token); ///< Public RADix kernel API entry point.
+void *rad_shm_kernel_pointer(int32_t fd); ///< Public RADix kernel API entry point.
 
 intptr_t rad_syscall_dispatch(uintptr_t number, uintptr_t arg0, uintptr_t arg1, uintptr_t arg2, uintptr_t arg3, uintptr_t arg4, uintptr_t arg5); ///< Public RADix kernel API entry point.
 
@@ -1201,7 +1339,14 @@ rad_status_t rad_net_device_register(const char *name, const rad_device_ops_t *o
 rad_status_t rad_net_open(const char *name, rad_device_t *device); ///< Public RADix kernel API entry point.
 rad_status_t rad_net_link_info(rad_device_t device, rad_net_link_info_t *info); ///< Public RADix kernel API entry point.
 rad_status_t rad_net_send(rad_device_t device, const void *data, size_t length); ///< Public RADix kernel API entry point.
+intptr_t rad_net_receive(rad_device_t device, void *data, size_t length); ///< Public RADix kernel API entry point.
 rad_status_t rad_net_poll(rad_device_t device); ///< Public RADix kernel API entry point.
+int32_t rad_socket_create(int domain, int type, int protocol); ///< Public RADix kernel API entry point.
+int32_t rad_socket_bind(int32_t fd, const rad_sockaddr_in_t *address, size_t address_length); ///< Public RADix kernel API entry point.
+intptr_t rad_socket_sendto(int32_t fd, const void *buffer, size_t size, uint32_t flags, const rad_sockaddr_in_t *address, size_t address_length); ///< Public RADix kernel API entry point.
+intptr_t rad_socket_recvfrom(int32_t fd, void *buffer, size_t size, uint32_t flags, rad_sockaddr_in_t *address, size_t *address_length); ///< Public RADix kernel API entry point.
+int32_t rad_socket_setsockopt(int32_t fd, int level, int option, const void *value, size_t value_length); ///< Public RADix kernel API entry point.
+int32_t rad_socket_getsockopt(int32_t fd, int level, int option, void *value, size_t *value_length); ///< Public RADix kernel API entry point.
 
 rad_status_t rad_framebuffer_register(const char *name, const rad_framebuffer_info_t *info, const rad_framebuffer_ops_t *ops); ///< Public RADix kernel API entry point.
 rad_status_t rad_framebuffer_register_ex(const rad_framebuffer_config_t *config, const rad_framebuffer_ops_t *ops); ///< Public RADix kernel API entry point.
@@ -1218,6 +1363,7 @@ rad_status_t rad_framebuffer_get_vsync_counter(rad_framebuffer_t framebuffer, ui
 rad_status_t rad_framebuffer_clear(rad_framebuffer_t framebuffer, uint32_t color); ///< Public RADix kernel API entry point.
 rad_status_t rad_framebuffer_draw_text(rad_framebuffer_t framebuffer, uint32_t cell_x, uint32_t cell_y, const char *text, uint32_t foreground, uint32_t background); ///< Public RADix kernel API entry point.
 rad_status_t rad_framebuffer_flush(rad_framebuffer_t framebuffer, const rad_framebuffer_rect_t *rect); ///< Public RADix kernel API entry point.
+rad_status_t rad_framebuffer_present(rad_framebuffer_t framebuffer, const rad_framebuffer_present_t *present); ///< Public RADix kernel API entry point.
 size_t rad_framebuffer_list(rad_framebuffer_info_t *framebuffers, char names[][64], size_t capacity); ///< Public RADix kernel API entry point.
 size_t rad_framebuffer_list_ex(rad_framebuffer_display_info_t *framebuffers, size_t capacity); ///< Public RADix kernel API entry point.
 

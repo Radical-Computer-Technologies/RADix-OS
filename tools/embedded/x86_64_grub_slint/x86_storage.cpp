@@ -76,6 +76,8 @@ struct VirtioNetDevice {
     rad_mac_address_t mac;
     uint64_t tx_packets;
     uint64_t rx_packets;
+    uint8_t rx_frame[1536];
+    size_t rx_frame_size;
 };
 
 alignas(4096) uint8_t g_queue_memory[MaxVirtioBlockDevices][12288];
@@ -333,6 +335,17 @@ rad_status_t net_ioctl(void *context, uint32_t request, void *argument) {
     if (request == RAD_DEVICE_IOCTL_NET_POLL) {
         return RAD_STATUS_OK;
     }
+    if (request == RAD_DEVICE_IOCTL_NET_RECV) {
+        auto *packet = static_cast<rad_net_packet_t*>(argument);
+        if (!packet || packet->size < sizeof(*packet) || !packet->data || !packet->length) return RAD_STATUS_INVALID_ARGUMENT;
+        if (device->rx_frame_size == 0) return RAD_STATUS_NOT_FOUND;
+        const size_t count = device->rx_frame_size < packet->length ? device->rx_frame_size : packet->length;
+        memcpy(packet->data, device->rx_frame, count);
+        packet->length = count;
+        device->rx_frame_size = 0;
+        ++device->rx_packets;
+        return RAD_STATUS_OK;
+    }
     return RAD_STATUS_NOT_SUPPORTED;
 }
 
@@ -475,6 +488,26 @@ extern "C" int x86_network_self_test(void) {
         rad_debug_marker("RADIX_ARP_OK");
         rad_debug_marker("RADIX_IPV4_OK");
         rad_debug_marker("RADIX_UDP_OK");
+        const int32_t server = rad_socket_create(RAD_AF_INET, RAD_SOCK_DGRAM, RAD_IPPROTO_UDP);
+        const int32_t client = rad_socket_create(RAD_AF_INET, RAD_SOCK_DGRAM, RAD_IPPROTO_UDP);
+        rad_sockaddr_in_t address{};
+        address.family = RAD_AF_INET;
+        address.port = 9000;
+        address.address = rad_ipv4_address_t{{10, 0, 2, 15}};
+        const char payload[] = "radix udp vm";
+        char received[32]{};
+        rad_sockaddr_in_t from{};
+        size_t from_len = sizeof(from);
+        if (server >= 0 && client >= 0
+            && rad_socket_bind(server, &address, sizeof(address)) == RAD_STATUS_OK
+            && rad_socket_sendto(client, payload, sizeof(payload), 0, &address, sizeof(address)) == static_cast<intptr_t>(sizeof(payload))
+            && rad_socket_recvfrom(server, received, sizeof(received), 0, &from, &from_len) == static_cast<intptr_t>(sizeof(payload))
+            && memcmp(received, payload, sizeof(payload)) == 0) {
+            rad_debug_marker("RADIX_UDP_RX_OK");
+            rad_debug_marker("RADIX_SOCKET_DGRAM_OK");
+        }
+        if (client >= 0) rad_fd_close(client);
+        if (server >= 0) rad_fd_close(server);
         return 1;
     }
     return 0;

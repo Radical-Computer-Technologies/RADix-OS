@@ -22,6 +22,8 @@ constexpr uint64_t UserExitMagic = 0x5241445845584954ull;
 constexpr uintptr_t UserBase = 0x3ffff000u;
 constexpr uintptr_t UserLimit = 0x41000000u;
 constexpr uintptr_t UserStackTop = 0x40800000u;
+constexpr uintptr_t UserMmapBase = 0x40900000u;
+constexpr uintptr_t UserMmapLimit = 0x41000000u;
 constexpr size_t UserStackSize = 0x4000u;
 constexpr uint64_t PageSize = 4096u;
 constexpr size_t MaxInitImage = 65536u;
@@ -87,6 +89,7 @@ struct X86UserProcess {
     int envc;
     char env[MaxUserEnvs][MaxUserArgBytes];
     uint64_t initial_rsp;
+    uint64_t next_mmap;
     x86_address_space_t address_space;
     uint64_t entry;
     rad_task_t task;
@@ -115,6 +118,10 @@ uint64_t min_u64(uint64_t a, uint64_t b) {
 
 uint64_t max_u64(uint64_t a, uint64_t b) {
     return a > b ? a : b;
+}
+
+uint64_t align_up(uint64_t value, uint64_t alignment) {
+    return (value + alignment - 1u) & ~(alignment - 1u);
 }
 
 void copy_string(char *dst, size_t dst_size, const char *src) {
@@ -371,6 +378,7 @@ rad_status_t load_user_program(X86UserProcess *process, const char *path) {
     x86_vm_activate_kernel_address_space();
     process->address_space = new_space;
     process->entry = entry;
+    process->next_mmap = UserMmapBase;
     strncpy(process->path, path, sizeof(process->path) - 1u);
     process->path[sizeof(process->path) - 1u] = '\0';
     rad_process_mark_exec(process->pid, path);
@@ -469,6 +477,7 @@ rad_status_t x86_user_fork_from_frame(const x86_user_trap_frame_t *frame, int32_
     child->pid = child_pid;
     child->parent_pid = parent->pid;
     child->entry = parent->entry;
+    child->next_mmap = parent->next_mmap;
     child->exit_code = 0;
     strncpy(child->path, parent->path, sizeof(child->path) - 1u);
     child->path[sizeof(child->path) - 1u] = '\0';
@@ -526,6 +535,58 @@ void x86_process_reaped_arch(void *, int32_t pid, int32_t) {
     }
 }
 
+long x86_sys_shm_open(uint64_t name_user, uint64_t byte_size, uint64_t flags) {
+    char name[RAD_SHM_NAME_MAX]{};
+    const rad_status_t copied = x86_copy_string_from_user(name, sizeof(name), name_user);
+    if (copied != RAD_STATUS_OK) return copied;
+    const int32_t fd = rad_shm_open(name, static_cast<size_t>(byte_size), static_cast<uint32_t>(flags));
+    if (fd < 0) return fd;
+    rad_shm_info_t info{};
+    if (rad_shm_get_info(fd, &info) != RAD_STATUS_OK) return fd;
+    for (size_t i = 0; i < info.page_count; ++i) {
+        uintptr_t page = 0;
+        if (rad_shm_get_page(fd, i, &page) == RAD_STATUS_OK && page) continue;
+        const uint64_t physical = x86_vm_alloc_page();
+        if (!physical) return RAD_STATUS_NO_MEMORY;
+        memset(reinterpret_cast<void*>(static_cast<uintptr_t>(physical)), 0, PageSize);
+        const int32_t status = rad_shm_set_page(fd, i, static_cast<uintptr_t>(physical));
+        if (status != RAD_STATUS_OK) {
+            x86_vm_free_page(physical);
+            return status;
+        }
+    }
+    rad_debug_marker("RADIX_SHM_OPEN_OK");
+    return fd;
+}
+
+long x86_sys_mmap(uint64_t requested, uint64_t length, uint64_t prot, uint64_t flags, uint64_t fd, uint64_t offset) {
+    (void)requested;
+    if (length == 0 || offset != 0 || !(flags & RAD_MMAP_SHARED)) return RAD_STATUS_NOT_SUPPORTED;
+    X86UserProcess *process = find_user_process(rad_process_current_pid());
+    if (!process) return RAD_STATUS_NOT_FOUND;
+    rad_shm_info_t info{};
+    const int32_t info_status = rad_shm_get_info(static_cast<int32_t>(fd), &info);
+    if (info_status != RAD_STATUS_OK) return info_status;
+    if (length > info.byte_size) return RAD_STATUS_INVALID_ARGUMENT;
+    const uint64_t mapping_size = align_up(length, PageSize);
+    uint64_t va = align_up(process->next_mmap, PageSize);
+    if (va < UserMmapBase) va = UserMmapBase;
+    if (mapping_size > UserMmapLimit - va) return RAD_STATUS_NO_MEMORY;
+    const size_t pages = static_cast<size_t>(mapping_size / PageSize);
+    if (pages > info.page_count) return RAD_STATUS_INVALID_ARGUMENT;
+    for (size_t i = 0; i < pages; ++i) {
+        uintptr_t physical = 0;
+        const int32_t page_status = rad_shm_get_page(static_cast<int32_t>(fd), i, &physical);
+        if (page_status != RAD_STATUS_OK) return page_status;
+        if (!x86_vm_map_shared_page(&process->address_space, va + i * PageSize, static_cast<uint64_t>(physical), (prot & RAD_MMAP_PROT_WRITE) != 0)) {
+            return RAD_STATUS_NO_MEMORY;
+        }
+    }
+    process->next_mmap = va + mapping_size;
+    rad_debug_marker("RADIX_MMAP_SHARED_OK");
+    return static_cast<long>(va);
+}
+
 extern "C" long x86_syscall_dispatch_frame(x86_user_trap_frame_t *frame) {
     if (!frame) return RAD_STATUS_INVALID_ARGUMENT;
     if (frame->rax == RAD_SYSCALL_FORK || frame->rax == LinuxSysFork) {
@@ -538,9 +599,6 @@ extern "C" long x86_syscall_dispatch_frame(x86_user_trap_frame_t *frame) {
 extern "C" long x86_syscall_dispatch(unsigned long number, unsigned long arg0, unsigned long arg1,
                                       unsigned long arg2, unsigned long arg3, unsigned long arg4,
                                       unsigned long arg5) {
-    (void)arg3;
-    (void)arg4;
-    (void)arg5;
     if (number == RAD_SYSCALL_EXIT) {
         if (X86UserProcess *process = find_user_process(rad_process_current_pid())) {
             process->exit_code = static_cast<int32_t>(arg0);
@@ -784,6 +842,79 @@ extern "C" long x86_syscall_dispatch(unsigned long number, unsigned long arg0, u
         const int32_t status = rad_fd_fstat(static_cast<int32_t>(arg0), &stat);
         return status == RAD_STATUS_OK && ((stat.mode & 0170000u) == 0020000u) ? 1 : 0;
     }
+    case RAD_SYSCALL_SOCKET:
+        return rad_socket_create(static_cast<int>(arg0), static_cast<int>(arg1), static_cast<int>(arg2));
+    case RAD_SYSCALL_BIND: {
+        if (!user_range_ok(arg1, arg2) || arg2 < sizeof(rad_sockaddr_in_t)) return RAD_STATUS_INVALID_ARGUMENT;
+        rad_sockaddr_in_t address{};
+        if (x86_copy_from_user(&address, arg1, sizeof(address)) != RAD_STATUS_OK) return RAD_STATUS_INVALID_ARGUMENT;
+        return rad_socket_bind(static_cast<int32_t>(arg0), &address, sizeof(address));
+    }
+    case RAD_SYSCALL_CONNECT:
+    case RAD_SYSCALL_LISTEN:
+    case RAD_SYSCALL_ACCEPT:
+    case RAD_SYSCALL_SHUTDOWN:
+        return RAD_STATUS_NOT_SUPPORTED;
+    case RAD_SYSCALL_SENDTO: {
+        if (!user_range_ok(arg1, arg2) || !user_range_ok(arg4, arg5) || arg5 < sizeof(rad_sockaddr_in_t) || arg2 > 1400u) return RAD_STATUS_INVALID_ARGUMENT;
+        uint8_t payload[1400];
+        rad_sockaddr_in_t address{};
+        if (x86_copy_from_user(payload, arg1, static_cast<size_t>(arg2)) != RAD_STATUS_OK) return RAD_STATUS_INVALID_ARGUMENT;
+        if (x86_copy_from_user(&address, arg4, sizeof(address)) != RAD_STATUS_OK) return RAD_STATUS_INVALID_ARGUMENT;
+        return rad_socket_sendto(static_cast<int32_t>(arg0), payload, static_cast<size_t>(arg2), static_cast<uint32_t>(arg3), &address, sizeof(address));
+    }
+    case RAD_SYSCALL_RECVFROM: {
+        if (!user_range_ok(arg1, arg2) || arg2 > 1400u) return RAD_STATUS_INVALID_ARGUMENT;
+        uint8_t payload[1400];
+        rad_sockaddr_in_t address{};
+        size_t address_length = sizeof(address);
+        if (arg5) {
+            if (!user_range_ok(arg5, sizeof(size_t))) return RAD_STATUS_INVALID_ARGUMENT;
+            if (x86_copy_from_user(&address_length, arg5, sizeof(address_length)) != RAD_STATUS_OK) return RAD_STATUS_INVALID_ARGUMENT;
+        }
+        const intptr_t received = rad_socket_recvfrom(static_cast<int32_t>(arg0), payload, static_cast<size_t>(arg2), static_cast<uint32_t>(arg3), arg4 ? &address : nullptr, arg5 ? &address_length : nullptr);
+        if (received <= 0) return static_cast<long>(received);
+        if (x86_copy_to_user(arg1, payload, static_cast<size_t>(received)) != RAD_STATUS_OK) return RAD_STATUS_INVALID_ARGUMENT;
+        if (arg4 && address_length >= sizeof(rad_sockaddr_in_t)) {
+            if (!user_range_ok(arg4, sizeof(address))) return RAD_STATUS_INVALID_ARGUMENT;
+            if (x86_copy_to_user(arg4, &address, sizeof(address)) != RAD_STATUS_OK) return RAD_STATUS_INVALID_ARGUMENT;
+        }
+        if (arg5 && x86_copy_to_user(arg5, &address_length, sizeof(address_length)) != RAD_STATUS_OK) return RAD_STATUS_INVALID_ARGUMENT;
+        return static_cast<long>(received);
+    }
+    case RAD_SYSCALL_SETSOCKOPT: {
+        uint8_t value[64];
+        const void *value_ptr = nullptr;
+        if (arg4) {
+            if (arg4 > sizeof(value) || !user_range_ok(arg3, arg4)) return RAD_STATUS_INVALID_ARGUMENT;
+            if (x86_copy_from_user(value, arg3, static_cast<size_t>(arg4)) != RAD_STATUS_OK) return RAD_STATUS_INVALID_ARGUMENT;
+            value_ptr = value;
+        }
+        return rad_socket_setsockopt(static_cast<int32_t>(arg0), static_cast<int>(arg1), static_cast<int>(arg2), value_ptr, static_cast<size_t>(arg4));
+    }
+    case RAD_SYSCALL_GETSOCKOPT: {
+        if (!arg3 || !arg4 || !user_range_ok(arg4, sizeof(size_t))) return RAD_STATUS_INVALID_ARGUMENT;
+        size_t value_length = 0;
+        if (x86_copy_from_user(&value_length, arg4, sizeof(value_length)) != RAD_STATUS_OK || value_length > 64u) return RAD_STATUS_INVALID_ARGUMENT;
+        uint8_t value[64]{};
+        const int32_t status = rad_socket_getsockopt(static_cast<int32_t>(arg0), static_cast<int>(arg1), static_cast<int>(arg2), value, &value_length);
+        if (status != RAD_STATUS_OK) return status;
+        if (!user_range_ok(arg3, value_length)) return RAD_STATUS_INVALID_ARGUMENT;
+        if (x86_copy_to_user(arg3, value, value_length) != RAD_STATUS_OK) return RAD_STATUS_INVALID_ARGUMENT;
+        return x86_copy_to_user(arg4, &value_length, sizeof(value_length));
+    }
+    case RAD_SYSCALL_SHM_OPEN:
+        return x86_sys_shm_open(arg0, arg1, arg2);
+    case RAD_SYSCALL_SHM_UNLINK: {
+        char name[RAD_SHM_NAME_MAX]{};
+        const rad_status_t copied = x86_copy_string_from_user(name, sizeof(name), arg0);
+        if (copied != RAD_STATUS_OK) return copied;
+        return rad_shm_unlink(name);
+    }
+    case RAD_SYSCALL_MMAP:
+        return x86_sys_mmap(arg0, arg1, arg2, arg3, arg4, arg5);
+    case RAD_SYSCALL_MUNMAP:
+        return user_range_ok(arg0, arg1) ? RAD_STATUS_OK : RAD_STATUS_INVALID_ARGUMENT;
     default:
         return RAD_STATUS_NOT_SUPPORTED;
     }

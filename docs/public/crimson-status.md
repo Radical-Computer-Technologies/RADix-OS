@@ -21,8 +21,13 @@ testing.
 
 - POSIX process and syscall coverage is usable for the current shell tests but
   not a complete Unix userspace contract.
-- Network APIs currently describe device/link/send/poll shape before full
-  TCP/UDP stack work.
+- Shared-memory `mmap`/`shm_open` support is present for the x86 compositor
+  smoke path, but not yet a complete POSIX memory-mapping implementation.
+- RADCompositor supports dirty-rectangle software composition and shm-backed
+  producer surfaces; full Slint userspace apps and hardware page flip are still
+  follow-up work.
+- Network APIs now include device/link/send/receive/poll shape plus an
+  experimental IPv4/UDP datagram socket path for the x86 VM target.
 - RP2350 HSTX/DVI and SPI panel output are documented as framebuffer output
   goals, with backend completeness still target-dependent.
 - DMA is available through the generic core and first consumed by SPI-style
@@ -31,5 +36,6 @@ testing.
 ## Not Yet Complete
 
 - Full POSIX userland compatibility, dynamic ELF loading, complete fork/exec
-  semantics across every target, full ext4 journaling, USB stacks, PCIe, and
-  production networking are beyond the current Crimson beta surface.
+  semantics across every target, full ext4 journaling, USB stacks, PCIe, TCP,
+  DHCP/DNS, and production networking are beyond the current Crimson beta
+  surface.

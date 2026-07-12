@@ -287,6 +287,10 @@ extern "C" void x86_vm_free_page(uint64_t physical_address) {
     if (g_summary.reserved_pages > 0) --g_summary.reserved_pages;
 }
 
+extern "C" int x86_vm_retain_page(uint64_t physical_address) {
+    return retain_page(physical_address);
+}
+
 extern "C" int x86_vm_create_address_space(x86_address_space_t *space) {
     if (!space) return 0;
     memset(space, 0, sizeof(*space));
@@ -304,6 +308,17 @@ extern "C" int x86_vm_map_user_page(x86_address_space_t *space, uint64_t virtual
     const uint64_t flags = PteUser | (writable ? PteWrite : 0);
     if (!map_page(space, align_down(virtual_address, PageSize), physical_address, flags)) return 0;
     return record_owned_page(space, physical_address);
+}
+
+extern "C" int x86_vm_map_shared_page(x86_address_space_t *space, uint64_t virtual_address, uint64_t physical_address, int writable) {
+    if (!space || virtual_address < UserBase || virtual_address >= UserLimit) return 0;
+    if (!x86_vm_retain_page(physical_address)) return 0;
+    const uint64_t flags = PteUser | (writable ? PteWrite : 0);
+    if (!map_page(space, align_down(virtual_address, PageSize), physical_address, flags) || !record_owned_page(space, physical_address)) {
+        x86_vm_free_page(physical_address);
+        return 0;
+    }
+    return 1;
 }
 
 extern "C" int x86_vm_clone_cow(x86_address_space_t *child, x86_address_space_t *parent) {

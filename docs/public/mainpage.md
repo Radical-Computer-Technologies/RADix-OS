@@ -12,6 +12,9 @@ This hub documents the experimental Crimson 0.1.0 kernel API.
 - @ref api_structure explains the public ABI shape and subsystem ownership.
 - @ref api_groups provides a subsystem-oriented API index.
 - @ref device_tree_guide documents the runtime overlay/device-tree model.
+- @ref radcompositor describes the experimental Slint/RADCompositor windowing
+  path.
+- @ref networking describes the experimental IPv4/UDP and datagram socket path.
 - @ref minimal_examples provides short driver, framebuffer, input, VFS, and
   syscall examples.
 - @ref crimson_status separates stable-beta APIs from incomplete areas.
@@ -22,9 +25,10 @@ This hub documents the experimental Crimson 0.1.0 kernel API.
   performance counters.
 - Tasks, scheduler state, wait queues, mutexes, events, and timer sources.
 - Processes, file descriptors, syscall dispatch, programs, and POSIX-inspired
-  VFS entry points.
+  VFS, shared-memory, and memory-mapping entry points.
 - Device registry, ioctl, block, network, framebuffer/display, input, TTY, PTY,
   audio, and serial APIs.
+- Experimental IPv4/UDP datagram socket support for the x86 VM path.
 - Overlay tree, IRQ domains/resources, modules, I2C, SPI, and DMA driver APIs.
 
 ## Filesystem Profile

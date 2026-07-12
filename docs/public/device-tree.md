@@ -73,8 +73,36 @@ and future SPI panel backends share the same kernel framebuffer API.
 }
 ```
 
+## Boot Services
+
+Overlays may seed early boot services under `/services`. This is intentionally a
+small boot-time contract, not a systemd replacement. The long-term owner for
+service launch policy is the external `RADServiceManager` first process.
+
+```json
+{
+  "target": "/services/rad-compositor",
+  "properties": {
+    "compatible": "rad,compositor",
+    "status": "okay",
+    "backend": "slint",
+    "display": "/dev/fb0",
+    "keyboard": "/dev/input/event0",
+    "pointer": "/dev/input/event1",
+    "terminal": "/dev/tty0",
+    "autostart": true,
+    "order": 50
+  }
+}
+```
+
+The kernel records service configuration, starts trusted early services when
+requested, and exposes the `services` terminal command. Scheduling internals,
+process policy, restart behavior, and dependency resolution stay outside the
+overlay format for now.
+
 ## Current Limits
 
 Crimson 0.1.0 overlays are a compact runtime binding format, not a full Linux
 DTB replacement. They intentionally cover the current RADix buses, IRQ domains,
-boot metadata, and framebuffer selection first.
+boot metadata, framebuffer selection, and boot-service seeds first.

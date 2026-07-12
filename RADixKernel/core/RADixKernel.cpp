@@ -132,7 +132,8 @@ enum class FdKind {
     Empty,
     File,
     Device,
-    Pipe
+    Pipe,
+    Socket
 };
 
 struct PipeObject {
@@ -141,11 +142,26 @@ struct PipeObject {
     int write_refs = 0;
 };
 
+struct UdpDatagramObject {
+    rad_sockaddr_in_t from{};
+    std::vector<unsigned char> payload;
+};
+
+struct SocketObject {
+    int domain = 0;
+    int type = 0;
+    int protocol = 0;
+    uint16_t local_port = 0;
+    rad_ipv4_address_t local_address{{10, 0, 2, 15}};
+    std::deque<UdpDatagramObject> datagrams;
+};
+
 struct FdObject {
     FdKind kind = FdKind::Empty;
     rad_file_t file = nullptr;
     rad_device_t device = nullptr;
     PipeObject *pipe = nullptr;
+    SocketObject *socket = nullptr;
     bool pipe_write_end = false;
     uint32_t flags = 0;
     int refs = 1;
@@ -500,6 +516,7 @@ void close_fd_object(FdObject *object) {
         else --object->pipe->read_refs;
         if (object->pipe->read_refs <= 0 && object->pipe->write_refs <= 0) delete object->pipe;
     }
+    delete object->socket;
     delete object;
 }
 
@@ -2213,6 +2230,11 @@ int32_t rad_fd_fstat(int32_t fd, rad_vfs_stat_t *stat) {
         stat->mode = 0010000u;
         return RAD_STATUS_OK;
     }
+    if (object->kind == FdKind::Socket) {
+        *stat = {};
+        stat->mode = 0140000u;
+        return RAD_STATUS_OK;
+    }
     return RAD_STATUS_NOT_SUPPORTED;
 }
 
@@ -2255,6 +2277,113 @@ int32_t rad_pipe_create(int32_t pipefd[2]) {
     return RAD_STATUS_OK;
 }
 
+namespace {
+bool ipv4_equal_host(rad_ipv4_address_t a, rad_ipv4_address_t b) {
+    return std::memcmp(a.bytes, b.bytes, sizeof(a.bytes)) == 0;
+}
+
+rad_ipv4_address_t default_ipv4_host() {
+    return rad_ipv4_address_t{{10, 0, 2, 15}};
+}
+
+SocketObject *lookup_socket_object(int32_t fd) {
+    FdObject *object = lookup_fd_object(fd);
+    return object && object->kind == FdKind::Socket ? object->socket : nullptr;
+}
+
+SocketObject *find_bound_udp_socket_locked(uint16_t port) {
+    for (auto& [slot, entry] : state().fds) {
+        (void)slot;
+        FdObject *object = entry.object;
+        if (!object || object->kind != FdKind::Socket || !object->socket) continue;
+        if (object->socket->type == static_cast<int>(RAD_SOCK_DGRAM) && object->socket->local_port == port) {
+            return object->socket;
+        }
+    }
+    return nullptr;
+}
+}
+
+int32_t rad_socket_create(int domain, int type, int protocol) {
+    if (domain != static_cast<int>(RAD_AF_INET) || type != static_cast<int>(RAD_SOCK_DGRAM)) return RAD_STATUS_NOT_SUPPORTED;
+    if (protocol != 0 && protocol != static_cast<int>(RAD_IPPROTO_UDP)) return RAD_STATUS_NOT_SUPPORTED;
+    auto *object = new (std::nothrow) FdObject;
+    auto *socket = new (std::nothrow) SocketObject;
+    if (!object || !socket) {
+        delete object;
+        delete socket;
+        return RAD_STATUS_NO_MEMORY;
+    }
+    socket->domain = domain;
+    socket->type = type;
+    socket->protocol = RAD_IPPROTO_UDP;
+    object->kind = FdKind::Socket;
+    object->socket = socket;
+    object->flags = RAD_VFS_READ | RAD_VFS_WRITE;
+    return install_fd(object);
+}
+
+int32_t rad_socket_bind(int32_t fd, const rad_sockaddr_in_t *address, size_t address_length) {
+    if (!address || address_length < sizeof(rad_sockaddr_in_t) || address->family != RAD_AF_INET || address->port == 0) return RAD_STATUS_INVALID_ARGUMENT;
+    SocketObject *socket = lookup_socket_object(fd);
+    if (!socket) return RAD_STATUS_NOT_FOUND;
+    std::lock_guard<std::mutex> lock(state().mutex);
+    SocketObject *existing = find_bound_udp_socket_locked(address->port);
+    if (existing && existing != socket) return RAD_STATUS_ALREADY_EXISTS;
+    socket->local_port = address->port;
+    socket->local_address = address->address.bytes[0] ? address->address : default_ipv4_host();
+    return RAD_STATUS_OK;
+}
+
+intptr_t rad_socket_sendto(int32_t fd, const void *buffer, size_t size, uint32_t, const rad_sockaddr_in_t *address, size_t address_length) {
+    if ((!buffer && size) || !address || address_length < sizeof(rad_sockaddr_in_t) || address->family != RAD_AF_INET || address->port == 0) return RAD_STATUS_INVALID_ARGUMENT;
+    SocketObject *socket = lookup_socket_object(fd);
+    if (!socket) return RAD_STATUS_NOT_FOUND;
+    if (!socket->local_port) socket->local_port = 49152u;
+    if (!socket->local_address.bytes[0]) socket->local_address = default_ipv4_host();
+    std::lock_guard<std::mutex> lock(state().mutex);
+    SocketObject *target = find_bound_udp_socket_locked(address->port);
+    if (target && (ipv4_equal_host(address->address, target->local_address) || ipv4_equal_host(address->address, default_ipv4_host()))) {
+        UdpDatagramObject datagram;
+        datagram.from.family = RAD_AF_INET;
+        datagram.from.port = socket->local_port;
+        datagram.from.address = socket->local_address;
+        const auto *bytes = static_cast<const unsigned char*>(buffer);
+        datagram.payload.assign(bytes, bytes + size);
+        target->datagrams.push_back(std::move(datagram));
+    }
+    return static_cast<intptr_t>(size);
+}
+
+intptr_t rad_socket_recvfrom(int32_t fd, void *buffer, size_t size, uint32_t, rad_sockaddr_in_t *address, size_t *address_length) {
+    if (!buffer && size) return RAD_STATUS_INVALID_ARGUMENT;
+    SocketObject *socket = lookup_socket_object(fd);
+    if (!socket) return RAD_STATUS_NOT_FOUND;
+    if (socket->datagrams.empty()) return 0;
+    UdpDatagramObject datagram = std::move(socket->datagrams.front());
+    socket->datagrams.pop_front();
+    const size_t count = std::min(size, datagram.payload.size());
+    if (count) std::memcpy(buffer, datagram.payload.data(), count);
+    if (address && address_length && *address_length >= sizeof(rad_sockaddr_in_t)) {
+        *address = datagram.from;
+        *address_length = sizeof(rad_sockaddr_in_t);
+    }
+    return static_cast<intptr_t>(count);
+}
+
+int32_t rad_socket_setsockopt(int32_t fd, int, int, const void*, size_t) {
+    return lookup_socket_object(fd) ? RAD_STATUS_OK : RAD_STATUS_NOT_FOUND;
+}
+
+int32_t rad_socket_getsockopt(int32_t fd, int, int, void *value, size_t *value_length) {
+    if (!lookup_socket_object(fd)) return RAD_STATUS_NOT_FOUND;
+    if (!value || !value_length || *value_length < sizeof(int32_t)) return RAD_STATUS_INVALID_ARGUMENT;
+    int32_t zero = 0;
+    std::memcpy(value, &zero, sizeof(zero));
+    *value_length = sizeof(zero);
+    return RAD_STATUS_OK;
+}
+
 int32_t rad_fd_dup(int32_t fd) {
     FdEntry *entry = lookup_fd_entry(fd);
     if (!entry || !entry->object) return RAD_STATUS_NOT_FOUND;
@@ -2288,7 +2417,7 @@ int32_t rad_fd_fcntl(int32_t fd, uint32_t command, uintptr_t argument) {
     }
 }
 
-intptr_t rad_syscall_dispatch(uintptr_t number, uintptr_t arg0, uintptr_t arg1, uintptr_t arg2, uintptr_t, uintptr_t, uintptr_t) {
+intptr_t rad_syscall_dispatch(uintptr_t number, uintptr_t arg0, uintptr_t arg1, uintptr_t arg2, uintptr_t arg3, uintptr_t arg4, uintptr_t arg5) {
     switch (number) {
     case RAD_SYSCALL_READ: return rad_fd_read(static_cast<int32_t>(arg0), reinterpret_cast<void*>(arg1), static_cast<size_t>(arg2));
     case RAD_SYSCALL_WRITE: return rad_fd_write(static_cast<int32_t>(arg0), reinterpret_cast<const void*>(arg1), static_cast<size_t>(arg2));
@@ -2333,6 +2462,17 @@ intptr_t rad_syscall_dispatch(uintptr_t number, uintptr_t arg0, uintptr_t arg1, 
         const int32_t status = rad_fd_fstat(static_cast<int32_t>(arg0), &stat);
         return status == RAD_STATUS_OK && ((stat.mode & 0170000u) == 0020000u) ? 1 : 0;
     }
+    case RAD_SYSCALL_SOCKET: return rad_socket_create(static_cast<int>(arg0), static_cast<int>(arg1), static_cast<int>(arg2));
+    case RAD_SYSCALL_BIND: return rad_socket_bind(static_cast<int32_t>(arg0), reinterpret_cast<const rad_sockaddr_in_t*>(arg1), static_cast<size_t>(arg2));
+    case RAD_SYSCALL_CONNECT:
+    case RAD_SYSCALL_LISTEN:
+    case RAD_SYSCALL_ACCEPT:
+    case RAD_SYSCALL_SHUTDOWN:
+        return RAD_STATUS_NOT_SUPPORTED;
+    case RAD_SYSCALL_SENDTO: return rad_socket_sendto(static_cast<int32_t>(arg0), reinterpret_cast<const void*>(arg1), static_cast<size_t>(arg2), static_cast<uint32_t>(arg3), reinterpret_cast<const rad_sockaddr_in_t*>(arg4), static_cast<size_t>(arg5));
+    case RAD_SYSCALL_RECVFROM: return rad_socket_recvfrom(static_cast<int32_t>(arg0), reinterpret_cast<void*>(arg1), static_cast<size_t>(arg2), static_cast<uint32_t>(arg3), reinterpret_cast<rad_sockaddr_in_t*>(arg4), reinterpret_cast<size_t*>(arg5));
+    case RAD_SYSCALL_SETSOCKOPT: return rad_socket_setsockopt(static_cast<int32_t>(arg0), static_cast<int>(arg1), static_cast<int>(arg2), reinterpret_cast<const void*>(arg3), static_cast<size_t>(arg4));
+    case RAD_SYSCALL_GETSOCKOPT: return rad_socket_getsockopt(static_cast<int32_t>(arg0), static_cast<int>(arg1), static_cast<int>(arg2), reinterpret_cast<void*>(arg3), reinterpret_cast<size_t*>(arg4));
     default: return RAD_STATUS_NOT_SUPPORTED;
     }
 }
@@ -2633,9 +2773,20 @@ rad_status_t rad_net_send(rad_device_t device, const void *data, size_t length) 
     if (device->record.type != RAD_DEVICE_NETWORK) return RAD_STATUS_INVALID_ARGUMENT;
     rad_net_packet_t packet{};
     packet.size = sizeof(packet);
-    packet.data = data;
+    packet.data = const_cast<void*>(data);
     packet.length = length;
     return rad_device_ioctl(device, RAD_DEVICE_IOCTL_NET_SEND, &packet);
+}
+
+intptr_t rad_net_receive(rad_device_t device, void *data, size_t length) {
+    if (!device || !data || !length) return RAD_STATUS_INVALID_ARGUMENT;
+    if (device->record.type != RAD_DEVICE_NETWORK) return RAD_STATUS_INVALID_ARGUMENT;
+    rad_net_packet_t packet{};
+    packet.size = sizeof(packet);
+    packet.data = data;
+    packet.length = length;
+    const rad_status_t status = rad_device_ioctl(device, RAD_DEVICE_IOCTL_NET_RECV, &packet);
+    return status == RAD_STATUS_OK ? static_cast<intptr_t>(packet.length) : static_cast<intptr_t>(status);
 }
 
 rad_status_t rad_net_poll(rad_device_t device) {

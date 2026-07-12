@@ -2,8 +2,9 @@
 #include <radboot.h>
 #include <radixkernel/radixkernel.h>
 
-#include "RADixDesktopShell.h"
-#include "shell.h"
+#include "RADCompositorModel.h"
+#include "RADCompositorCore.h"
+#include "RADCompositor.h"
 
 #include <cstdlib>
 #include <cstring>
@@ -111,6 +112,114 @@ rad_status_t register_framebuffer() {
     rad_framebuffer_ops_t ops{};
     return rad_framebuffer_register_ex(&fb, &ops);
 }
+
+struct CompositorSelfTestResult {
+    bool surfaceCreate = false;
+    bool offscreenRender = false;
+    bool blit = false;
+    bool hitTest = false;
+    bool inputTranslate = false;
+    bool zOrder = false;
+    bool alpha = false;
+    bool damageQueue = false;
+    bool copyForward = false;
+    bool exposedDamage = false;
+    bool emptyFrame = false;
+};
+
+CompositorSelfTestResult run_compositor_self_test() {
+    CompositorSelfTestResult result;
+    uint32_t target[16u * 16u]{};
+    uint32_t shadow[16u * 16u]{};
+    uint32_t desktop[16u * 16u]{};
+    uint32_t front[8u * 8u]{};
+    uint32_t alpha[4u * 4u]{};
+    for (uint32_t& pixel : desktop) pixel = 0xff0000ffu;
+    for (uint32_t& pixel : shadow) pixel = 0xff07111fu;
+    for (uint32_t& pixel : front) pixel = 0xffff0000u;
+    for (uint32_t& pixel : alpha) pixel = 0x8000ff00u;
+
+    rad_compositor_t compositor{};
+    if (rad_compositor_init(&compositor, target, 16, 16, 16) != RAD_STATUS_OK) return result;
+    rad_compositor_set_framebuffers(&compositor, shadow, 16, target, 16);
+
+    uint32_t desktopId = 0;
+    rad_compositor_surface_config_t desktopConfig{};
+    desktopConfig.size = sizeof(desktopConfig);
+    desktopConfig.app_id = "desktop";
+    desktopConfig.title = "Desktop";
+    desktopConfig.width = 16;
+    desktopConfig.height = 16;
+    desktopConfig.z = 0;
+    desktopConfig.pixels = desktop;
+    desktopConfig.stride_pixels = 16;
+    result.surfaceCreate = rad_compositor_create_surface(&compositor, &desktopConfig, &desktopId) == RAD_STATUS_OK;
+
+    uint32_t frontId = 0;
+    rad_compositor_surface_config_t frontConfig{};
+    frontConfig.size = sizeof(frontConfig);
+    frontConfig.app_id = "terminal";
+    frontConfig.title = "Terminal";
+    frontConfig.x = 4;
+    frontConfig.y = 4;
+    frontConfig.width = 8;
+    frontConfig.height = 8;
+    frontConfig.z = 10;
+    frontConfig.pixels = front;
+    frontConfig.stride_pixels = 8;
+    result.surfaceCreate = result.surfaceCreate && rad_compositor_create_surface(&compositor, &frontConfig, &frontId) == RAD_STATUS_OK;
+    result.offscreenRender = front[0] == 0xffff0000u && desktop[0] == 0xff0000ffu;
+    result.zOrder = rad_compositor_focus_surface(&compositor, frontId) == RAD_STATUS_OK;
+
+    rad_compositor_input_result_t input{};
+    result.hitTest = rad_compositor_hit_test(&compositor, 5, 5, &input) == RAD_STATUS_OK
+        && input.surface_id == frontId
+        && input.local_x == 1
+        && input.local_y == 1;
+    rad_input_event_t event{};
+    event.size = sizeof(event);
+    event.type = RAD_INPUT_EVENT_POINTER_BUTTON;
+    event.x = 6;
+    event.y = 7;
+    result.inputTranslate = rad_compositor_dispatch_input(&compositor, &event, &input) == RAD_STATUS_OK
+        && input.surface_id == frontId
+        && input.local_x == 2
+        && input.local_y == 3;
+
+    result.blit = rad_compositor_compose_frame(&compositor) == RAD_STATUS_OK
+        && target[0] == 0xff0000ffu
+        && target[5u * 16u + 5u] == 0xffff0000u;
+    result.copyForward = compositor.last_present_rect_count > 0;
+    result.emptyFrame = rad_compositor_compose_frame(&compositor) == RAD_STATUS_OK
+        && compositor.last_present_rect_count == 0;
+    rad_compositor_rect_t dirty{1, 1, 2, 2};
+    result.damageQueue = rad_compositor_queue_damage(&compositor, frontId, &dirty, 0) == RAD_STATUS_OK
+        && rad_compositor_compose_frame(&compositor) == RAD_STATUS_OK
+        && compositor.last_present_rect_count > 0;
+    rad_compositor_rect_t exposed{4, 4, 8, 8};
+    result.exposedDamage = rad_compositor_queue_damage(&compositor, frontId, &exposed, RAD_COMPOSITOR_DAMAGE_EXPOSED) == RAD_STATUS_OK
+        && rad_compositor_compose_frame(&compositor) == RAD_STATUS_OK
+        && compositor.last_present_rect_count > 0;
+
+    uint32_t alphaId = 0;
+    rad_compositor_surface_config_t alphaConfig{};
+    alphaConfig.size = sizeof(alphaConfig);
+    alphaConfig.app_id = "alpha";
+    alphaConfig.title = "Alpha";
+    alphaConfig.x = 0;
+    alphaConfig.y = 0;
+    alphaConfig.width = 4;
+    alphaConfig.height = 4;
+    alphaConfig.z = 20;
+    alphaConfig.flags = RAD_COMPOSITOR_SURFACE_ALPHA;
+    alphaConfig.pixels = alpha;
+    alphaConfig.stride_pixels = 4;
+    result.alpha = rad_compositor_create_surface(&compositor, &alphaConfig, &alphaId) == RAD_STATUS_OK
+        && rad_compositor_compose_frame(&compositor) == RAD_STATUS_OK
+        && target[0] != 0x8000ff00u
+        && target[0] != 0xff0000ffu;
+    return result;
+}
 }
 
 int main(int argc, char **argv) {
@@ -152,11 +261,13 @@ int main(int argc, char **argv) {
     bool windowResizeObserved = false;
     bool terminalCloseObserved = false;
     bool terminalRelaunchObserved = false;
+    CompositorSelfTestResult compositorSelfTest{};
+    if (self_test) compositorSelfTest = run_compositor_self_test();
 
     auto ui = RadOsShell::create();
-    RADixShell::DesktopShellModel desktop;
+    RADCompositor::Model desktop;
     auto refreshShell = [&]() {
-        const RADixShell::DesktopWindow *terminalWindow = desktop.terminalWindow();
+        const RADCompositor::Window *terminalWindow = desktop.terminalWindow();
         ui->set_backend(ss(std::string(rad_kernel_backend_name()) + " / " + rad_kernel_version_string()));
         ui->set_status(ss(std::string("framebuffer=primary shell=radlib state=") + desktop.statusText()));
         ui->set_terminal(ss(terminal));
@@ -171,10 +282,10 @@ int main(int argc, char **argv) {
             ui->set_terminal_window_width(static_cast<float>(terminalWindow->bounds.width));
             ui->set_terminal_window_height(static_cast<float>(terminalWindow->bounds.height));
             ui->set_terminal_window_focused(terminalWindow->focused);
-            if (terminalWindow->state != RADixShell::DesktopWindowState::Closed) terminalWindowObserved = true;
+            if (terminalWindow->state != RADCompositor::WindowState::Closed) terminalWindowObserved = true;
         }
         if (desktop.terminalLaunching()) terminalLoadingObserved = true;
-        if (desktop.terminalState() == RADixShell::TerminalAppState::Running) terminalReadyObserved = true;
+        if (desktop.terminalState() == RADCompositor::TerminalAppState::Running) terminalReadyObserved = true;
         if (!desktop.windows().empty() && !desktop.apps().empty()) windowManagerObserved = true;
         if (desktop.applicationsMenuOpen()) menuOpenObserved = true;
     };
@@ -216,25 +327,25 @@ int main(int argc, char **argv) {
         refreshShell();
     });
     ui->on_focus_terminal_window([&]() {
-        if (const RADixShell::DesktopWindow *window = desktop.terminalWindow()) {
+        if (const RADCompositor::Window *window = desktop.terminalWindow()) {
             desktop.focusWindow(window->id);
         }
         refreshShell();
     });
     ui->on_close_terminal_window([&]() {
-        if (const RADixShell::DesktopWindow *window = desktop.terminalWindow()) {
+        if (const RADCompositor::Window *window = desktop.terminalWindow()) {
             desktop.closeWindow(window->id);
         }
         refreshShell();
     });
     ui->on_move_terminal_window([&](float dx, float dy) {
-        if (const RADixShell::DesktopWindow *window = desktop.terminalWindow()) {
+        if (const RADCompositor::Window *window = desktop.terminalWindow()) {
             desktop.moveWindow(window->id, static_cast<int32_t>(dx), static_cast<int32_t>(dy));
         }
         refreshShell();
     });
     ui->on_resize_terminal_window([&](float dx, float dy) {
-        if (const RADixShell::DesktopWindow *window = desktop.terminalWindow()) {
+        if (const RADCompositor::Window *window = desktop.terminalWindow()) {
             desktop.resizeWindow(window->id, static_cast<int32_t>(dx), static_cast<int32_t>(dy));
         }
         refreshShell();
@@ -247,23 +358,23 @@ int main(int argc, char **argv) {
             menuEscapeObserved = true;
             refreshShell();
         }
-        if (const RADixShell::DesktopWindow *window = desktop.terminalWindow()) {
+        if (const RADCompositor::Window *window = desktop.terminalWindow()) {
             const auto before = window->bounds;
             desktop.moveWindow(window->id, 12, 8);
-            const RADixShell::DesktopWindow *moved = desktop.terminalWindow();
+            const RADCompositor::Window *moved = desktop.terminalWindow();
             windowMoveObserved = moved && moved->bounds.x == before.x + 12 && moved->bounds.y == before.y + 8;
             desktop.resizeWindow(window->id, 24, 16);
-            const RADixShell::DesktopWindow *resized = desktop.terminalWindow();
+            const RADCompositor::Window *resized = desktop.terminalWindow();
             windowResizeObserved = resized && resized->bounds.width == before.width + 24 && resized->bounds.height == before.height + 16;
             refreshShell();
         }
-        if (const RADixShell::DesktopWindow *window = desktop.terminalWindow()) {
+        if (const RADCompositor::Window *window = desktop.terminalWindow()) {
             desktop.closeWindow(window->id);
-            terminalCloseObserved = desktop.terminalState() == RADixShell::TerminalAppState::Closed;
+            terminalCloseObserved = desktop.terminalState() == RADCompositor::TerminalAppState::Closed;
             refreshShell();
         }
         launchTerminal();
-        terminalRelaunchObserved = desktop.terminalState() == RADixShell::TerminalAppState::Running;
+        terminalRelaunchObserved = desktop.terminalState() == RADCompositor::TerminalAppState::Running;
     }
     ui->show();
     RADUi::run();
@@ -284,6 +395,17 @@ int main(int argc, char **argv) {
         if (windowResizeObserved) std::cout << "RADIX_SLINT_WINDOW_RESIZE_OK\n";
         if (terminalCloseObserved) std::cout << "RADIX_SLINT_TERMINAL_CLOSE_OK\n";
         if (terminalRelaunchObserved) std::cout << "RADIX_SLINT_TERMINAL_RELAUNCH_OK\n";
+        if (compositorSelfTest.surfaceCreate) std::cout << "RADIX_COMPOSITOR_SURFACE_CREATE_OK\n";
+        if (compositorSelfTest.offscreenRender) std::cout << "RADIX_COMPOSITOR_OFFSCREEN_RENDER_OK\n";
+        if (compositorSelfTest.blit) std::cout << "RADIX_COMPOSITOR_BLIT_OK\n";
+        if (compositorSelfTest.hitTest) std::cout << "RADIX_COMPOSITOR_HIT_TEST_OK\n";
+        if (compositorSelfTest.inputTranslate) std::cout << "RADIX_COMPOSITOR_INPUT_TRANSLATE_OK\n";
+        if (compositorSelfTest.zOrder) std::cout << "RADIX_COMPOSITOR_Z_ORDER_OK\n";
+        if (compositorSelfTest.alpha) std::cout << "RADIX_COMPOSITOR_ALPHA_OK\n";
+        if (compositorSelfTest.damageQueue) std::cout << "RADIX_COMPOSITOR_DAMAGE_QUEUE_OK\n";
+        if (compositorSelfTest.copyForward) std::cout << "RADIX_COMPOSITOR_COPY_FORWARD_OK\n";
+        if (compositorSelfTest.exposedDamage) std::cout << "RADIX_COMPOSITOR_EXPOSED_DAMAGE_OK\n";
+        if (compositorSelfTest.emptyFrame) std::cout << "RADIX_COMPOSITOR_EMPTY_FRAME_SKIP_OK\n";
     }
     rad_kernel_shutdown();
     return checksum ? EXIT_SUCCESS : EXIT_FAILURE;

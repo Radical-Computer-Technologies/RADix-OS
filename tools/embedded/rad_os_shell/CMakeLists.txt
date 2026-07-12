@@ -42,16 +42,20 @@ add_subdirectory("${RADLIB_ROOT}/RADUi" "${CMAKE_BINARY_DIR}/RADUi")
 
 add_executable(rad_os_shell
     main.cpp
-    RADixDesktopShell.cpp
+    "${RADIX_OS_ROOT}/services/RADCompositor/RADCompositorModel.cpp"
+    "${RADIX_OS_ROOT}/services/RADCompositor/RADCompositorCore.cpp"
 )
 
 target_compile_features(rad_os_shell PRIVATE cxx_std_20)
 target_include_directories(rad_os_shell PRIVATE
     "${RADIX_OS_ROOT}/RADixKernel/boot"
+    "${RADIX_OS_ROOT}/services/RADCompositor"
 )
 target_link_libraries(rad_os_shell PRIVATE RADixKernel RADCore RADUi Slint::Slint)
 
-SLINT_TARGET_SOURCES(rad_os_shell shell.slint)
+target_compile_definitions(rad_os_shell PRIVATE SLINT_BACKEND=1)
+
+SLINT_TARGET_SOURCES(rad_os_shell "${RADIX_OS_ROOT}/services/RADCompositor/RADCompositor.slint")
 
 
 if(DEFINED SLINT_SDK_DIR)

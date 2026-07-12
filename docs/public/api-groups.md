@@ -30,6 +30,14 @@ specialized devices: block, network, framebuffer, input, TTY, PTY, audio, and
 serial. Ioctl request macros follow a Linux-style direction/type/number/size
 layout.
 
+## Networking
+
+The experimental network path registers `/dev/net0` on the x86 VM when
+virtio-net is present, supports Ethernet frame send/receive operations, and
+provides a small IPv4/UDP datagram socket subset through the POSIX-inspired
+syscall table. TCP-style calls are intentionally unsupported until UDP RX is
+stable.
+
 ## Driver Binding
 
 Modules advertise name, bus, and compatibility metadata. I2C and SPI controllers
@@ -47,3 +55,12 @@ resources that drivers can enable, disable, and attach handlers to.
 Framebuffers describe memory layout, output type, connector, available modes,
 and primary display state. Input queues provide a shared event path for keyboard,
 pointer, terminal, Slint, shell, and future GUI consumers.
+
+## Experimental Compositor
+
+RADCompositor is the current Slint-backed windowing service. It renders desktop
+and application surfaces into off-screen buffers, tracks dirty rectangles,
+composes damaged regions into a software back buffer, presents only dirty
+framebuffer rectangles, and translates global pointer events into per-surface
+Slint input events. The x86 smoke path also accepts a shm-backed userspace
+surface through `/dev/compositor0`.

@@ -10,8 +10,8 @@ mb2_header_start:
     .short 5
     .short 0
     .long 20
-    .long 1024
-    .long 768
+    .long 1920
+    .long 1080
     .long 32
 
     .align 8

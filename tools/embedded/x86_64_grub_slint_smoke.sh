@@ -43,6 +43,17 @@ if [[ -d "${slint_sdk}" && "${RADLIB_SKIP_HOST_SLINT_SMOKE:-0}" != "1" ]]; then
     grep -q "RADIX_SLINT_WINDOW_RESIZE_OK" "${log_dir}/rad-os-shell-slint-smoke.log"
     grep -q "RADIX_SLINT_TERMINAL_CLOSE_OK" "${log_dir}/rad-os-shell-slint-smoke.log"
     grep -q "RADIX_SLINT_TERMINAL_RELAUNCH_OK" "${log_dir}/rad-os-shell-slint-smoke.log"
+    grep -q "RADIX_COMPOSITOR_SURFACE_CREATE_OK" "${log_dir}/rad-os-shell-slint-smoke.log"
+    grep -q "RADIX_COMPOSITOR_OFFSCREEN_RENDER_OK" "${log_dir}/rad-os-shell-slint-smoke.log"
+    grep -q "RADIX_COMPOSITOR_BLIT_OK" "${log_dir}/rad-os-shell-slint-smoke.log"
+    grep -q "RADIX_COMPOSITOR_HIT_TEST_OK" "${log_dir}/rad-os-shell-slint-smoke.log"
+    grep -q "RADIX_COMPOSITOR_INPUT_TRANSLATE_OK" "${log_dir}/rad-os-shell-slint-smoke.log"
+    grep -q "RADIX_COMPOSITOR_Z_ORDER_OK" "${log_dir}/rad-os-shell-slint-smoke.log"
+    grep -q "RADIX_COMPOSITOR_ALPHA_OK" "${log_dir}/rad-os-shell-slint-smoke.log"
+    grep -q "RADIX_COMPOSITOR_DAMAGE_QUEUE_OK" "${log_dir}/rad-os-shell-slint-smoke.log"
+    grep -q "RADIX_COMPOSITOR_COPY_FORWARD_OK" "${log_dir}/rad-os-shell-slint-smoke.log"
+    grep -q "RADIX_COMPOSITOR_EXPOSED_DAMAGE_OK" "${log_dir}/rad-os-shell-slint-smoke.log"
+    grep -q "RADIX_COMPOSITOR_EMPTY_FRAME_SKIP_OK" "${log_dir}/rad-os-shell-slint-smoke.log"
 else
     echo "Skipping hosted Slint smoke; set SLINT_SDK_DIR or unset RADLIB_SKIP_HOST_SLINT_SMOKE."
 fi
@@ -59,8 +70,9 @@ fat_img="${x86_build}/radix-fat32.img"
 rm -f "${qemu_log}" "${monitor_sock}"
 set +e
 timeout "${qemu_timeout}" qemu-system-x86_64 \
-    -m "${RADLIB_X86_QEMU_MEMORY:-512M}" \
+    -m "${RADLIB_X86_QEMU_MEMORY:-768M}" \
     -smp "${qemu_smp}" \
+    -vga std \
     -cdrom "${x86_build}/radixkernel-x86-64-grub-slint.iso" \
     -drive "if=none,id=radixdisk,format=raw,file=${rootfs_img}" \
     -device "virtio-blk-pci,drive=radixdisk,disable-modern=on" \
@@ -78,7 +90,7 @@ for _ in $(seq 1 80); do
     [[ -S "${monitor_sock}" ]] && break
     sleep 0.1
 done
-for _ in $(seq 1 "${RADLIB_X86_INPUT_READY_POLLS:-140}"); do
+for _ in $(seq 1 "${RADLIB_X86_INPUT_READY_POLLS:-400}"); do
     grep -q "RAD x86_64 Slint terminal ready" "${qemu_log}" 2>/dev/null && break
     sleep 0.1
 done
@@ -119,6 +131,24 @@ grep -q "RADIX_SLINT_WINDOW_MOVE_OK" "${qemu_log}"
 grep -q "RADIX_SLINT_WINDOW_RESIZE_OK" "${qemu_log}"
 grep -q "RADIX_SLINT_TERMINAL_CLOSE_OK" "${qemu_log}"
 grep -q "RADIX_SLINT_TERMINAL_RELAUNCH_OK" "${qemu_log}"
+grep -q "RADIX_COMPOSITOR_SURFACE_CREATE_OK" "${qemu_log}"
+grep -q "RADIX_COMPOSITOR_OFFSCREEN_RENDER_OK" "${qemu_log}"
+grep -q "RADIX_COMPOSITOR_BLIT_OK" "${qemu_log}"
+grep -q "RADIX_COMPOSITOR_HIT_TEST_OK" "${qemu_log}"
+grep -q "RADIX_COMPOSITOR_INPUT_TRANSLATE_OK" "${qemu_log}"
+grep -q "RADIX_COMPOSITOR_Z_ORDER_OK" "${qemu_log}"
+grep -q "RADIX_COMPOSITOR_ALPHA_OK" "${qemu_log}"
+grep -q "RADIX_SHM_OPEN_OK" "${qemu_log}"
+grep -q "RADIX_MMAP_SHARED_OK" "${qemu_log}"
+grep -q "RADIX_SHM_USER_PATTERN_OK" "${qemu_log}"
+grep -q "RADIX_COMPOSITOR_IPC_SURFACE_OK" "${qemu_log}"
+grep -q "RADIX_COMPOSITOR_DAMAGE_QUEUE_OK" "${qemu_log}"
+grep -q "RADIX_COMPOSITOR_COPY_FORWARD_OK" "${qemu_log}"
+grep -q "RADIX_COMPOSITOR_EXPOSED_DAMAGE_OK" "${qemu_log}"
+grep -q "RADIX_FRAMEBUFFER_DIRTY_PRESENT_OK" "${qemu_log}"
+grep -q "RADIX_COMPOSITOR_EMPTY_FRAME_SKIP_OK" "${qemu_log}"
+grep -q "RADIX_SHM_PROCESS_SUBMIT_OK" "${qemu_log}"
+grep -q "RADIX_SHM_PROCESS_IPC_OK" "${qemu_log}"
 grep -q "RADIX_X86_CPU_OK" "${qemu_log}"
 grep -q "RADIX_IRQ_CORE_OK" "${qemu_log}"
 grep -q "RADIX_PIC_REMAP_OK" "${qemu_log}"
@@ -196,6 +226,8 @@ grep -q "RADIX_ETH_TX_OK" "${qemu_log}"
 grep -q "RADIX_ARP_OK" "${qemu_log}"
 grep -q "RADIX_IPV4_OK" "${qemu_log}"
 grep -q "RADIX_UDP_OK" "${qemu_log}"
+grep -q "RADIX_UDP_RX_OK" "${qemu_log}"
+grep -q "RADIX_SOCKET_DGRAM_OK" "${qemu_log}"
 grep -q "RADIX_EXT4_MOUNT_OK" "${qemu_log}"
 grep -q "RADIX_EXT4_ROOTFS_OK" "${qemu_log}"
 grep -q "RADIX_EXT4_RW_OK" "${qemu_log}"

@@ -64,20 +64,22 @@ add_executable(radixkernel_x86_64_grub_slint
     hal_x86_64.cpp
     runtime.cpp
     "${RADIX_OS_ROOT}/RADixKernel/boot/radboot.cpp"
-    "${RADIX_OS_ROOT}/RADixKernel/core/RADixKernel_overlay.cpp"
+    "${RADIX_OS_ROOT}/RADixKernel/subsystems/RADixOverlayRuntime.cpp"
     "${RADIX_OS_ROOT}/RADixKernel/core/RADixKernel_embedded.cpp"
+    "${RADIX_OS_ROOT}/services/RADCompositor/RADCompositorCore.cpp"
 )
 
 target_include_directories(radixkernel_x86_64_grub_slint PRIVATE
     "${RADIX_OS_ROOT}"
     "${RADIX_OS_ROOT}/RADixKernel/headers"
     "${RADIX_OS_ROOT}/RADixKernel/boot"
+    "${RADIX_OS_ROOT}/services/RADCompositor"
 )
 
 target_link_libraries(radixkernel_x86_64_grub_slint PRIVATE Slint::Slint)
 
 SLINT_TARGET_SOURCES(radixkernel_x86_64_grub_slint
-    "${RADIX_OS_ROOT}/tools/embedded/rad_os_shell/shell.slint"
+    "${RADIX_OS_ROOT}/services/RADCompositor/RADCompositor.slint"
 )
 
 target_compile_options(radixkernel_x86_64_grub_slint PRIVATE
@@ -87,6 +89,7 @@ target_compile_options(radixkernel_x86_64_grub_slint PRIVATE
 
 target_compile_definitions(radixkernel_x86_64_grub_slint PRIVATE
     SLINT_FEATURE_FREESTANDING
+    SLINT_BACKEND=1
     RADLIB_EMBEDDED_NO_CPP_WRAPPERS=1
     RADIX_KERNEL_BACKEND_x86_64_grub=1
     RADIX_KERNEL_MAX_DEVICES=32
@@ -111,6 +114,7 @@ set(ISO_PATH "${CMAKE_BINARY_DIR}/radixkernel-x86-64-grub-slint.iso")
 set(RADIX_INIT_ELF "${CMAKE_BINARY_DIR}/radix-init.elf")
 set(RADIX_RADSH_ELF "${CMAKE_BINARY_DIR}/radix-radsh.elf")
 set(RADIX_SH_ELF "${CMAKE_BINARY_DIR}/radix-sh.elf")
+set(RADIX_RADGFX_ELF "${CMAKE_BINARY_DIR}/radix-radgfx-smoke.elf")
 set(RADIX_ROOTFS_DIR "${CMAKE_BINARY_DIR}/rootfs")
 set(RADIX_EXT2_ROOTFS_IMAGE "${CMAKE_BINARY_DIR}/radix-rootfs.ext2")
 set(RADIX_ROOTFS_IMAGE "${CMAKE_BINARY_DIR}/radix-rootfs.ext4")
@@ -151,6 +155,17 @@ add_custom_command(
 )
 
 add_custom_command(
+    OUTPUT "${RADIX_RADGFX_ELF}"
+    COMMAND "${X86_64_LINUX_GNU_GCC_EXECUTABLE}" -nostdlib -static -no-pie
+            -Wl,-Ttext=0x40000000
+            -Wl,--build-id=none
+            -o "${RADIX_RADGFX_ELF}"
+            "${CMAKE_CURRENT_LIST_DIR}/user_radgfx.S"
+    DEPENDS "${CMAKE_CURRENT_LIST_DIR}/user_radgfx.S"
+    VERBATIM
+)
+
+add_custom_command(
     OUTPUT "${RADIX_EXT2_ROOTFS_IMAGE}"
     COMMAND ${CMAKE_COMMAND} -E rm -f "${RADIX_EXT2_ROOTFS_IMAGE}"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${RADIX_ROOTFS_DIR}"
@@ -161,8 +176,9 @@ add_custom_command(
     COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "write ${RADIX_INIT_ELF} /bin/init" "${RADIX_EXT2_ROOTFS_IMAGE}"
     COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "write ${RADIX_RADSH_ELF} /bin/radsh" "${RADIX_EXT2_ROOTFS_IMAGE}"
     COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "write ${RADIX_SH_ELF} /bin/sh" "${RADIX_EXT2_ROOTFS_IMAGE}"
+    COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "write ${RADIX_RADGFX_ELF} /bin/radgfx-smoke" "${RADIX_EXT2_ROOTFS_IMAGE}"
     COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "write ${CMAKE_CURRENT_LIST_DIR}/test_script.sh /bin/test.sh" "${RADIX_EXT2_ROOTFS_IMAGE}"
-    DEPENDS "${RADIX_INIT_ELF}" "${RADIX_RADSH_ELF}" "${RADIX_SH_ELF}" "${CMAKE_CURRENT_LIST_DIR}/test_script.sh"
+    DEPENDS "${RADIX_INIT_ELF}" "${RADIX_RADSH_ELF}" "${RADIX_SH_ELF}" "${RADIX_RADGFX_ELF}" "${CMAKE_CURRENT_LIST_DIR}/test_script.sh"
     VERBATIM
 )
 
@@ -179,9 +195,10 @@ add_custom_command(
     COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "write ${RADIX_INIT_ELF} /bin/init" "${RADIX_ROOTFS_IMAGE}"
     COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "write ${RADIX_RADSH_ELF} /bin/radsh" "${RADIX_ROOTFS_IMAGE}"
     COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "write ${RADIX_SH_ELF} /bin/sh" "${RADIX_ROOTFS_IMAGE}"
+    COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "write ${RADIX_RADGFX_ELF} /bin/radgfx-smoke" "${RADIX_ROOTFS_IMAGE}"
     COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "write ${CMAKE_CURRENT_LIST_DIR}/test_script.sh /bin/test.sh" "${RADIX_ROOTFS_IMAGE}"
     COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "write ${RADIX_EXT4_WRITE_SEED} /tmp/radwrite.txt" "${RADIX_ROOTFS_IMAGE}"
-    DEPENDS "${RADIX_INIT_ELF}" "${RADIX_RADSH_ELF}" "${RADIX_SH_ELF}" "${CMAKE_CURRENT_LIST_DIR}/test_script.sh"
+    DEPENDS "${RADIX_INIT_ELF}" "${RADIX_RADSH_ELF}" "${RADIX_SH_ELF}" "${RADIX_RADGFX_ELF}" "${CMAKE_CURRENT_LIST_DIR}/test_script.sh"
     VERBATIM
 )
 

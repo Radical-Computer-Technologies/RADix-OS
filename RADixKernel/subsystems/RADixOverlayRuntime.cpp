@@ -107,6 +107,10 @@ struct rad_irq_domain_handle {
 #define RADIX_KERNEL_MAX_IRQ_DOMAINS 16u
 #endif
 
+#ifndef RADIX_KERNEL_MAX_SERVICES
+#define RADIX_KERNEL_MAX_SERVICES 16u
+#endif
+
 #ifndef RADIX_KERNEL_SPI_AUTO_DMA_THRESHOLD
 #define RADIX_KERNEL_SPI_AUTO_DMA_THRESHOLD 64u
 #endif
@@ -239,6 +243,24 @@ struct FramebufferRecord {
     int open_count;
 };
 
+struct ServiceRecord {
+    rad_service_descriptor_t descriptor;
+    char name[RAD_SERVICE_NAME_MAX];
+    char compatible[RAD_SERVICE_COMPATIBLE_MAX];
+    char capability[RAD_SERVICE_CAPABILITY_MAX];
+    char tree_path[RAD_TREE_MAX_PATH];
+    char backend[RAD_TREE_MAX_VALUE];
+    char display[RAD_TREE_MAX_VALUE];
+    char keyboard[RAD_TREE_MAX_VALUE];
+    char pointer[RAD_TREE_MAX_VALUE];
+    char terminal[RAD_TREE_MAX_VALUE];
+    rad_service_state_t state;
+    int autostart;
+    int order;
+    int32_t last_status;
+    int used;
+};
+
 struct OverlayState {
     TreeNode nodes[RADIX_KERNEL_MAX_TREE_NODES];
     TreeProperty props[RADIX_KERNEL_MAX_TREE_PROPS];
@@ -253,6 +275,7 @@ struct OverlayState {
     rad_dma_channel_handle dma_channels[RADIX_KERNEL_MAX_DMA_CHANNELS];
     FramebufferRecord framebuffers[RADIX_KERNEL_MAX_FRAMEBUFFERS];
     rad_irq_domain_handle irq_domains[RADIX_KERNEL_MAX_IRQ_DOMAINS];
+    ServiceRecord services[RADIX_KERNEL_MAX_SERVICES];
 };
 
 OverlayState g_overlay{};
@@ -761,6 +784,109 @@ const char *display_output_type_name(rad_display_output_type_t type) {
     }
 }
 
+const char *service_state_name(rad_service_state_t state) {
+    switch (state) {
+    case RAD_SERVICE_REGISTERED: return "registered";
+    case RAD_SERVICE_CONFIGURED: return "configured";
+    case RAD_SERVICE_RUNNING: return "running";
+    case RAD_SERVICE_FAILED: return "failed";
+    case RAD_SERVICE_STOPPED: return "stopped";
+    default: return "unknown";
+    }
+}
+
+ServiceRecord *find_service_by_name(const char *name) {
+    if (!name) return nullptr;
+    for (size_t i = 0; i < RADIX_KERNEL_MAX_SERVICES; ++i) {
+        if (g_overlay.services[i].used && strcmp(g_overlay.services[i].name, name) == 0) return &g_overlay.services[i];
+    }
+    return nullptr;
+}
+
+ServiceRecord *find_service_by_compatible(const char *compatible) {
+    if (!compatible) return nullptr;
+    for (size_t i = 0; i < RADIX_KERNEL_MAX_SERVICES; ++i) {
+        if (g_overlay.services[i].used && strcmp(g_overlay.services[i].compatible, compatible) == 0) return &g_overlay.services[i];
+    }
+    return nullptr;
+}
+
+rad_service_config_t service_config_for_record(ServiceRecord& service) {
+    rad_service_config_t config{};
+    config.size = sizeof(config);
+    config.tree_path = service.tree_path;
+    config.backend = service.backend;
+    config.display = service.display;
+    config.keyboard = service.keyboard;
+    config.pointer = service.pointer;
+    config.terminal = service.terminal;
+    config.autostart = service.autostart;
+    config.order = service.order;
+    return config;
+}
+
+int tree_status_is_disabled(TreeNode *node) {
+    TreeProperty *status = find_property_mut(node, "status");
+    return status && status->type == RAD_TREE_PROP_STRING && strcmp(status->string_value, "disabled") == 0;
+}
+
+void copy_optional_service_string(TreeNode *node, const char *property, char *destination, size_t destination_size) {
+    TreeProperty *value = find_property_mut(node, property);
+    if (value && (value->type == RAD_TREE_PROP_STRING || value->type == RAD_TREE_PROP_STRING_ARRAY)) {
+        copy_string(destination, destination_size, value->string_value);
+    }
+}
+
+rad_status_t configure_service_node(TreeNode *node) {
+    if (!node || strncmp(node->path, "/services/", 10) != 0) return RAD_STATUS_OK;
+    TreeProperty *compatible = find_property_mut(node, "compatible");
+    if (!compatible || compatible->type != RAD_TREE_PROP_STRING) return RAD_STATUS_OK;
+    ServiceRecord *service = find_service_by_compatible(compatible->string_value);
+    if (!service) return RAD_STATUS_OK;
+    copy_string(service->tree_path, sizeof(service->tree_path), node->path);
+    service->autostart = 0;
+    service->order = service->descriptor.default_order;
+    copy_optional_service_string(node, "backend", service->backend, sizeof(service->backend));
+    copy_optional_service_string(node, "display", service->display, sizeof(service->display));
+    copy_optional_service_string(node, "keyboard", service->keyboard, sizeof(service->keyboard));
+    copy_optional_service_string(node, "pointer", service->pointer, sizeof(service->pointer));
+    copy_optional_service_string(node, "terminal", service->terminal, sizeof(service->terminal));
+    TreeProperty *autostart = find_property_mut(node, "autostart");
+    if (autostart && autostart->type == RAD_TREE_PROP_BOOL) service->autostart = autostart->bool_value ? 1 : 0;
+    TreeProperty *order = find_property_mut(node, "order");
+    if (order && order->type == RAD_TREE_PROP_U32) service->order = static_cast<int>(order->u32_value);
+    if (tree_status_is_disabled(node)) {
+        service->state = RAD_SERVICE_STOPPED;
+        node->bound = 0;
+        return RAD_STATUS_OK;
+    }
+    if (service->state == RAD_SERVICE_RUNNING) {
+        node->bound = 1;
+        return RAD_STATUS_OK;
+    }
+    if (service->state != RAD_SERVICE_RUNNING) service->state = RAD_SERVICE_CONFIGURED;
+    node->bound = 1;
+    if (service->autostart) {
+        rad_service_config_t config = service_config_for_record(*service);
+        const rad_status_t status = service->descriptor.start
+            ? service->descriptor.start(service->descriptor.context, &config)
+            : RAD_STATUS_OK;
+        service->last_status = status;
+        service->state = status == RAD_STATUS_OK ? RAD_SERVICE_RUNNING : RAD_SERVICE_FAILED;
+        return status;
+    }
+    return RAD_STATUS_OK;
+}
+
+rad_status_t bind_service_tree(void) {
+    for (size_t i = 0; i < RADIX_KERNEL_MAX_TREE_NODES; ++i) {
+        if (!g_overlay.nodes[i].used) continue;
+        const rad_status_t status = configure_service_node(&g_overlay.nodes[i]);
+        if (status != RAD_STATUS_OK) return status;
+    }
+    return RAD_STATUS_OK;
+}
+
 uint16_t rgb565_from_xrgb(uint32_t color) {
     const uint32_t r = (color >> 16) & 0xffu;
     const uint32_t g = (color >> 8) & 0xffu;
@@ -848,6 +974,12 @@ rad_status_t framebuffer_device_ioctl(void *context, uint32_t request, void *arg
         if (record->ops.flush) return record->ops.flush(record->ops.context, rect);
         return RAD_STATUS_OK;
     }
+    if (request == RAD_DEVICE_IOCTL_FRAMEBUFFER_PRESENT) {
+        const auto *present = static_cast<const rad_framebuffer_present_t*>(argument);
+        if (record->ops.present) return record->ops.present(record->ops.context, present);
+        if (record->ops.flush && present) return record->ops.flush(record->ops.context, &present->rect);
+        return RAD_STATUS_OK;
+    }
     return RAD_STATUS_NOT_SUPPORTED;
 }
 
@@ -859,6 +991,7 @@ void write_line(rad_terminal_write_t write, void *context, const char *line) {
 
 rad_status_t bind_spi_tree(void);
 rad_status_t bind_framebuffer_tree(void);
+rad_status_t bind_service_tree(void);
 
 rad_status_t cmd_overlays(int, const char**, rad_terminal_write_t write, void *write_context, void*) {
     char line[192];
@@ -896,6 +1029,8 @@ rad_status_t cmd_bind(int, const char**, rad_terminal_write_t write, void *write
     if (spi_status != RAD_STATUS_OK) return spi_status;
     const rad_status_t fb_status = bind_framebuffer_tree();
     if (fb_status != RAD_STATUS_OK) return fb_status;
+    const rad_status_t service_status = bind_service_tree();
+    if (service_status != RAD_STATUS_OK) return service_status;
     write_line(write, write_context, "bindings refreshed");
     return RAD_STATUS_OK;
 }
@@ -1044,6 +1179,33 @@ rad_status_t cmd_fb(int, const char**, rad_terminal_write_t write, void *write_c
     return RAD_STATUS_OK;
 }
 
+rad_status_t cmd_services(int, const char**, rad_terminal_write_t write, void *write_context, void*) {
+    char line[320];
+    size_t count = 0;
+    for (size_t i = 0; i < RADIX_KERNEL_MAX_SERVICES; ++i) {
+        const ServiceRecord& service = g_overlay.services[i];
+        if (!service.used) continue;
+        snprintf(line, sizeof(line), "%s compatible=%s capability=%s state=%s autostart=%d order=%d backend=%s display=%s keyboard=%s pointer=%s terminal=%s path=%s status=%d",
+            service.name,
+            service.compatible,
+            service.capability,
+            service_state_name(service.state),
+            service.autostart,
+            service.order,
+            service.backend,
+            service.display,
+            service.keyboard,
+            service.pointer,
+            service.terminal,
+            service.tree_path,
+            static_cast<int>(service.last_status));
+        write_line(write, write_context, line);
+        ++count;
+    }
+    if (count == 0) write_line(write, write_context, "no services");
+    return RAD_STATUS_OK;
+}
+
 rad_status_t bind_spi_tree(void) {
     for (size_t i = 0; i < RADIX_KERNEL_MAX_TREE_NODES; ++i) {
         if (!g_overlay.nodes[i].used) continue;
@@ -1144,6 +1306,7 @@ void rad_overlay_register_terminal_commands(void) {
     rad_terminal_register_command("dma", "List RAD DMA channel status", cmd_dma, nullptr);
     rad_terminal_register_command("irq-tree", "List RAD IRQ domains and tree resources", cmd_irq_tree, nullptr);
     rad_terminal_register_command("fb", "List RAD framebuffers", cmd_fb, nullptr);
+    rad_terminal_register_command("services", "List RAD boot services", cmd_services, nullptr);
 }
 
 rad_status_t rad_overlay_load_memory(const void *data, size_t size) {
@@ -1255,7 +1418,9 @@ rad_status_t rad_overlay_apply_boot(void) {
     if (status != RAD_STATUS_OK) return status;
     status = bind_spi_tree();
     if (status != RAD_STATUS_OK) return status;
-    return bind_framebuffer_tree();
+    status = bind_framebuffer_tree();
+    if (status != RAD_STATUS_OK) return status;
+    return bind_service_tree();
 }
 
 size_t rad_overlay_list(rad_overlay_info_t *overlays, size_t capacity) {
@@ -1374,6 +1539,109 @@ rad_status_t rad_tree_get_property_string(rad_tree_node_t node, const char *name
     if (prop->type != RAD_TREE_PROP_STRING && prop->type != RAD_TREE_PROP_STRING_ARRAY) return RAD_STATUS_INVALID_ARGUMENT;
     copy_string(buffer, size, prop->string_value);
     return RAD_STATUS_OK;
+}
+
+rad_status_t rad_service_register(const rad_service_descriptor_t *descriptor) {
+    if (!descriptor || !descriptor->name || !descriptor->compatible) return RAD_STATUS_INVALID_ARGUMENT;
+    if (descriptor->size && descriptor->size < sizeof(rad_service_descriptor_t)) return RAD_STATUS_INVALID_ARGUMENT;
+    if (find_service_by_name(descriptor->name)) return RAD_STATUS_ALREADY_EXISTS;
+    for (size_t i = 0; i < RADIX_KERNEL_MAX_SERVICES; ++i) {
+        ServiceRecord& service = g_overlay.services[i];
+        if (service.used) continue;
+        memset(&service, 0, sizeof(service));
+        service.used = 1;
+        service.descriptor = *descriptor;
+        service.state = RAD_SERVICE_REGISTERED;
+        service.order = descriptor->default_order;
+        service.last_status = RAD_STATUS_OK;
+        copy_string(service.name, sizeof(service.name), descriptor->name);
+        copy_string(service.compatible, sizeof(service.compatible), descriptor->compatible);
+        copy_string(service.capability, sizeof(service.capability), descriptor->capability ? descriptor->capability : "");
+        bind_service_tree();
+        return RAD_STATUS_OK;
+    }
+    return RAD_STATUS_NO_MEMORY;
+}
+
+rad_status_t rad_service_unregister(const char *name) {
+    ServiceRecord *service = find_service_by_name(name);
+    if (!service) return RAD_STATUS_NOT_FOUND;
+    if (service->state == RAD_SERVICE_RUNNING && service->descriptor.stop) {
+        service->descriptor.stop(service->descriptor.context);
+    }
+    for (size_t i = 0; i < RADIX_KERNEL_MAX_TREE_NODES; ++i) {
+        if (g_overlay.nodes[i].used && strcmp(g_overlay.nodes[i].path, service->tree_path) == 0) {
+            g_overlay.nodes[i].bound = 0;
+        }
+    }
+    memset(service, 0, sizeof(*service));
+    return RAD_STATUS_OK;
+}
+
+rad_status_t rad_service_configure_tree(rad_tree_node_t node) {
+    return configure_service_node(reinterpret_cast<TreeNode*>(node));
+}
+
+rad_status_t rad_service_start(const char *name) {
+    ServiceRecord *service = find_service_by_name(name);
+    if (!service) return RAD_STATUS_NOT_FOUND;
+    if (service->state == RAD_SERVICE_RUNNING) return RAD_STATUS_OK;
+    rad_service_config_t config = service_config_for_record(*service);
+    const rad_status_t status = service->descriptor.start
+        ? service->descriptor.start(service->descriptor.context, &config)
+        : RAD_STATUS_OK;
+    service->last_status = status;
+    service->state = status == RAD_STATUS_OK ? RAD_SERVICE_RUNNING : RAD_SERVICE_FAILED;
+    return status;
+}
+
+rad_status_t rad_service_stop(const char *name) {
+    ServiceRecord *service = find_service_by_name(name);
+    if (!service) return RAD_STATUS_NOT_FOUND;
+    if (service->state != RAD_SERVICE_RUNNING) return RAD_STATUS_OK;
+    if (service->descriptor.stop) service->descriptor.stop(service->descriptor.context);
+    service->state = RAD_SERVICE_STOPPED;
+    service->last_status = RAD_STATUS_OK;
+    return RAD_STATUS_OK;
+}
+
+rad_status_t rad_service_poll_all(void) {
+    for (size_t i = 0; i < RADIX_KERNEL_MAX_SERVICES; ++i) {
+        ServiceRecord& service = g_overlay.services[i];
+        if (!service.used || service.state != RAD_SERVICE_RUNNING || !service.descriptor.poll) continue;
+        const rad_status_t status = service.descriptor.poll(service.descriptor.context);
+        if (status != RAD_STATUS_OK) {
+            service.last_status = status;
+            service.state = RAD_SERVICE_FAILED;
+            return status;
+        }
+    }
+    return RAD_STATUS_OK;
+}
+
+size_t rad_service_list(rad_service_info_t *services, size_t capacity) {
+    size_t count = 0;
+    for (size_t i = 0; i < RADIX_KERNEL_MAX_SERVICES; ++i) {
+        const ServiceRecord& service = g_overlay.services[i];
+        if (!service.used) continue;
+        if (services && count < capacity) {
+            copy_string(services[count].name, sizeof(services[count].name), service.name);
+            copy_string(services[count].compatible, sizeof(services[count].compatible), service.compatible);
+            copy_string(services[count].capability, sizeof(services[count].capability), service.capability);
+            copy_string(services[count].tree_path, sizeof(services[count].tree_path), service.tree_path);
+            copy_string(services[count].backend, sizeof(services[count].backend), service.backend);
+            copy_string(services[count].display, sizeof(services[count].display), service.display);
+            copy_string(services[count].keyboard, sizeof(services[count].keyboard), service.keyboard);
+            copy_string(services[count].pointer, sizeof(services[count].pointer), service.pointer);
+            copy_string(services[count].terminal, sizeof(services[count].terminal), service.terminal);
+            services[count].state = service.state;
+            services[count].autostart = service.autostart;
+            services[count].order = service.order;
+            services[count].last_status = service.last_status;
+        }
+        ++count;
+    }
+    return count;
 }
 
 rad_status_t rad_framebuffer_register(const char *name, const rad_framebuffer_info_t *info, const rad_framebuffer_ops_t *ops) {
@@ -1572,6 +1840,14 @@ rad_status_t rad_framebuffer_flush(rad_framebuffer_t framebuffer, const rad_fram
     FramebufferRecord *fb = framebuffer_from_handle(framebuffer);
     if (!fb) return RAD_STATUS_INVALID_ARGUMENT;
     if (fb->ops.flush) return fb->ops.flush(fb->ops.context, rect);
+    return RAD_STATUS_OK;
+}
+
+rad_status_t rad_framebuffer_present(rad_framebuffer_t framebuffer, const rad_framebuffer_present_t *present) {
+    FramebufferRecord *fb = framebuffer_from_handle(framebuffer);
+    if (!fb || !present || !present->pixels) return RAD_STATUS_INVALID_ARGUMENT;
+    if (fb->ops.present) return fb->ops.present(fb->ops.context, present);
+    if (fb->ops.flush) return fb->ops.flush(fb->ops.context, &present->rect);
     return RAD_STATUS_OK;
 }
 
