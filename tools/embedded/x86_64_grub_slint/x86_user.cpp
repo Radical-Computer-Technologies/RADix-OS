@@ -34,6 +34,16 @@ constexpr size_t MaxUserEnvs = 4u;
 constexpr size_t MaxUserArgBytes = 128u;
 constexpr uint32_t ElfPtLoad = 1u;
 constexpr uint16_t ElfMachineX86_64 = 62u;
+constexpr unsigned long LinuxSysSocket = 41;
+constexpr unsigned long LinuxSysConnect = 42;
+constexpr unsigned long LinuxSysAccept = 43;
+constexpr unsigned long LinuxSysSendto = 44;
+constexpr unsigned long LinuxSysRecvfrom = 45;
+constexpr unsigned long LinuxSysShutdown = 48;
+constexpr unsigned long LinuxSysBind = 49;
+constexpr unsigned long LinuxSysListen = 50;
+constexpr unsigned long LinuxSysSetsockopt = 54;
+constexpr unsigned long LinuxSysGetsockopt = 55;
 constexpr unsigned long LinuxSysGetpid = 39;
 constexpr unsigned long LinuxSysFork = 57;
 constexpr unsigned long LinuxSysExecve = 59;
@@ -843,32 +853,77 @@ extern "C" long x86_syscall_dispatch(unsigned long number, unsigned long arg0, u
         return status == RAD_STATUS_OK && ((stat.mode & 0170000u) == 0020000u) ? 1 : 0;
     }
     case RAD_SYSCALL_SOCKET:
+    case LinuxSysSocket:
         return rad_socket_create(static_cast<int>(arg0), static_cast<int>(arg1), static_cast<int>(arg2));
-    case RAD_SYSCALL_BIND: {
+    case RAD_SYSCALL_BIND:
+    case LinuxSysBind: {
         if (!user_range_ok(arg1, arg2) || arg2 < sizeof(rad_sockaddr_in_t)) return RAD_STATUS_INVALID_ARGUMENT;
         rad_sockaddr_in_t address{};
         if (x86_copy_from_user(&address, arg1, sizeof(address)) != RAD_STATUS_OK) return RAD_STATUS_INVALID_ARGUMENT;
         return rad_socket_bind(static_cast<int32_t>(arg0), &address, sizeof(address));
     }
     case RAD_SYSCALL_CONNECT:
-    case RAD_SYSCALL_LISTEN:
-    case RAD_SYSCALL_ACCEPT:
-    case RAD_SYSCALL_SHUTDOWN:
-        return RAD_STATUS_NOT_SUPPORTED;
-    case RAD_SYSCALL_SENDTO: {
-        if (!user_range_ok(arg1, arg2) || !user_range_ok(arg4, arg5) || arg5 < sizeof(rad_sockaddr_in_t) || arg2 > 1400u) return RAD_STATUS_INVALID_ARGUMENT;
-        uint8_t payload[1400];
+    case LinuxSysConnect: {
+        if (!user_range_ok(arg1, arg2) || arg2 < sizeof(rad_sockaddr_in_t)) return RAD_STATUS_INVALID_ARGUMENT;
         rad_sockaddr_in_t address{};
+        if (x86_copy_from_user(&address, arg1, sizeof(address)) != RAD_STATUS_OK) return RAD_STATUS_INVALID_ARGUMENT;
+        return rad_socket_connect(static_cast<int32_t>(arg0), &address, sizeof(address));
+    }
+    case RAD_SYSCALL_LISTEN:
+    case LinuxSysListen:
+        return rad_socket_listen(static_cast<int32_t>(arg0), static_cast<int>(arg1));
+    case RAD_SYSCALL_ACCEPT:
+    case LinuxSysAccept: {
+        if (arg1 && !user_range_ok(arg1, sizeof(rad_sockaddr_in_t))) return RAD_STATUS_INVALID_ARGUMENT;
+        if (number == LinuxSysAccept && arg2 && !user_range_ok(arg2, sizeof(uint32_t))) return RAD_STATUS_INVALID_ARGUMENT;
+        if (number != LinuxSysAccept && arg2 && !user_range_ok(arg2, sizeof(size_t))) return RAD_STATUS_INVALID_ARGUMENT;
+        rad_sockaddr_in_t address{};
+        size_t address_length = sizeof(address);
+        if (number != LinuxSysAccept && arg2 && x86_copy_from_user(&address_length, arg2, sizeof(address_length)) != RAD_STATUS_OK) return RAD_STATUS_INVALID_ARGUMENT;
+        const int32_t accepted = rad_socket_accept(static_cast<int32_t>(arg0), arg1 ? &address : nullptr, arg2 ? &address_length : nullptr);
+        if (accepted < 0) return accepted;
+        if (arg1 && x86_copy_to_user(arg1, &address, sizeof(address)) != RAD_STATUS_OK) return RAD_STATUS_INVALID_ARGUMENT;
+        if (number == LinuxSysAccept && arg2) {
+            const uint32_t linux_address_length = static_cast<uint32_t>(address_length);
+            if (x86_copy_to_user(arg2, &linux_address_length, sizeof(linux_address_length)) != RAD_STATUS_OK) return RAD_STATUS_INVALID_ARGUMENT;
+        } else if (arg2 && x86_copy_to_user(arg2, &address_length, sizeof(address_length)) != RAD_STATUS_OK) {
+            return RAD_STATUS_INVALID_ARGUMENT;
+        }
+        return accepted;
+    }
+    case RAD_SYSCALL_SHUTDOWN:
+    case LinuxSysShutdown:
+        return rad_socket_shutdown(static_cast<int32_t>(arg0), static_cast<int>(arg1));
+    case RAD_SYSCALL_SENDTO:
+    case LinuxSysSendto: {
+        if (!user_range_ok(arg1, arg2) || arg2 > 1400u) return RAD_STATUS_INVALID_ARGUMENT;
+        uint8_t payload[1400];
         if (x86_copy_from_user(payload, arg1, static_cast<size_t>(arg2)) != RAD_STATUS_OK) return RAD_STATUS_INVALID_ARGUMENT;
+        if (!arg4 && arg5 == 0) {
+            return rad_socket_send(static_cast<int32_t>(arg0), payload, static_cast<size_t>(arg2), static_cast<uint32_t>(arg3));
+        }
+        if (!user_range_ok(arg4, arg5) || arg5 < sizeof(rad_sockaddr_in_t)) return RAD_STATUS_INVALID_ARGUMENT;
+        rad_sockaddr_in_t address{};
         if (x86_copy_from_user(&address, arg4, sizeof(address)) != RAD_STATUS_OK) return RAD_STATUS_INVALID_ARGUMENT;
         return rad_socket_sendto(static_cast<int32_t>(arg0), payload, static_cast<size_t>(arg2), static_cast<uint32_t>(arg3), &address, sizeof(address));
     }
-    case RAD_SYSCALL_RECVFROM: {
+    case RAD_SYSCALL_RECVFROM:
+    case LinuxSysRecvfrom: {
         if (!user_range_ok(arg1, arg2) || arg2 > 1400u) return RAD_STATUS_INVALID_ARGUMENT;
         uint8_t payload[1400];
+        if (!arg4 && !arg5) {
+            const intptr_t received = rad_socket_recv(static_cast<int32_t>(arg0), payload, static_cast<size_t>(arg2), static_cast<uint32_t>(arg3));
+            if (received <= 0) return static_cast<long>(received);
+            return x86_copy_to_user(arg1, payload, static_cast<size_t>(received)) == RAD_STATUS_OK ? static_cast<long>(received) : static_cast<long>(RAD_STATUS_INVALID_ARGUMENT);
+        }
         rad_sockaddr_in_t address{};
         size_t address_length = sizeof(address);
-        if (arg5) {
+        if (number == LinuxSysRecvfrom && arg5) {
+            if (!user_range_ok(arg5, sizeof(uint32_t))) return RAD_STATUS_INVALID_ARGUMENT;
+            uint32_t linux_address_length = 0;
+            if (x86_copy_from_user(&linux_address_length, arg5, sizeof(linux_address_length)) != RAD_STATUS_OK) return RAD_STATUS_INVALID_ARGUMENT;
+            address_length = linux_address_length;
+        } else if (arg5) {
             if (!user_range_ok(arg5, sizeof(size_t))) return RAD_STATUS_INVALID_ARGUMENT;
             if (x86_copy_from_user(&address_length, arg5, sizeof(address_length)) != RAD_STATUS_OK) return RAD_STATUS_INVALID_ARGUMENT;
         }
@@ -879,10 +934,16 @@ extern "C" long x86_syscall_dispatch(unsigned long number, unsigned long arg0, u
             if (!user_range_ok(arg4, sizeof(address))) return RAD_STATUS_INVALID_ARGUMENT;
             if (x86_copy_to_user(arg4, &address, sizeof(address)) != RAD_STATUS_OK) return RAD_STATUS_INVALID_ARGUMENT;
         }
-        if (arg5 && x86_copy_to_user(arg5, &address_length, sizeof(address_length)) != RAD_STATUS_OK) return RAD_STATUS_INVALID_ARGUMENT;
+        if (number == LinuxSysRecvfrom && arg5) {
+            const uint32_t linux_address_length = static_cast<uint32_t>(address_length);
+            if (x86_copy_to_user(arg5, &linux_address_length, sizeof(linux_address_length)) != RAD_STATUS_OK) return RAD_STATUS_INVALID_ARGUMENT;
+        } else if (arg5 && x86_copy_to_user(arg5, &address_length, sizeof(address_length)) != RAD_STATUS_OK) {
+            return RAD_STATUS_INVALID_ARGUMENT;
+        }
         return static_cast<long>(received);
     }
-    case RAD_SYSCALL_SETSOCKOPT: {
+    case RAD_SYSCALL_SETSOCKOPT:
+    case LinuxSysSetsockopt: {
         uint8_t value[64];
         const void *value_ptr = nullptr;
         if (arg4) {
@@ -892,7 +953,8 @@ extern "C" long x86_syscall_dispatch(unsigned long number, unsigned long arg0, u
         }
         return rad_socket_setsockopt(static_cast<int32_t>(arg0), static_cast<int>(arg1), static_cast<int>(arg2), value_ptr, static_cast<size_t>(arg4));
     }
-    case RAD_SYSCALL_GETSOCKOPT: {
+    case RAD_SYSCALL_GETSOCKOPT:
+    case LinuxSysGetsockopt: {
         if (!arg3 || !arg4 || !user_range_ok(arg4, sizeof(size_t))) return RAD_STATUS_INVALID_ARGUMENT;
         size_t value_length = 0;
         if (x86_copy_from_user(&value_length, arg4, sizeof(value_length)) != RAD_STATUS_OK || value_length > 64u) return RAD_STATUS_INVALID_ARGUMENT;

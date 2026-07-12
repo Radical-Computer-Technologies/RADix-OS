@@ -34,9 +34,8 @@ layout.
 
 The experimental network path registers `/dev/net0` on the x86 VM when
 virtio-net is present, supports Ethernet frame send/receive operations, and
-provides a small IPv4/UDP datagram socket subset through the POSIX-inspired
-syscall table. TCP-style calls are intentionally unsupported until UDP RX is
-stable.
+provides small IPv4/UDP datagram and local TCP stream socket subsets through
+the POSIX-inspired syscall table. Full wire-level TCP/IP remains future work.
 
 ## Driver Binding
 

@@ -25,13 +25,13 @@ if(RADIX_KERNEL_BACKEND STREQUAL "linux_sim")
 elseif(RADIX_KERNEL_BACKEND STREQUAL "rp235x_pico")
     set(RADIX_KERNEL_LIBRARY_TYPE STATIC)
     list(APPEND RADIX_KERNEL_SOURCES
-        core/RADixKernel_embedded.cpp
+        core/RADixKernel_runtime.cpp
         hal/rp235x_pico/radixkernel_hal_rp235x.cpp
     )
 elseif(RADIX_KERNEL_BACKEND STREQUAL "circle_pi")
     set(RADIX_KERNEL_LIBRARY_TYPE STATIC)
     list(APPEND RADIX_KERNEL_SOURCES
-        core/RADixKernel_embedded.cpp
+        core/RADixKernel_runtime.cpp
         hal/circle/radixkernel_hal_circle.cpp
         hal/circle/radixkernel_runtime_newlib.cpp
     )

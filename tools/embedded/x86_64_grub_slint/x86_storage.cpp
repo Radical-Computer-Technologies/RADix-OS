@@ -27,6 +27,9 @@ constexpr uint16_t VirtqDescFWrite = 2u;
 constexpr uint16_t MaxVirtqEntries = 256u;
 constexpr uint32_t MaxVirtioBlockDevices = 4u;
 constexpr uint32_t MaxVirtioNetDevices = 2u;
+constexpr uint32_t VirtioNetRxQueue = 0u;
+constexpr uint32_t VirtioNetTxQueue = 1u;
+constexpr uint32_t VirtioNetBufferBytes = 1536u;
 
 struct [[gnu::packed]] VirtqDesc {
     uint64_t addr;
@@ -58,6 +61,15 @@ struct [[gnu::packed]] VirtioBlkRequestHeader {
     uint64_t sector;
 };
 
+struct [[gnu::packed]] VirtioNetHeader {
+    uint8_t flags;
+    uint8_t gso_type;
+    uint16_t header_length;
+    uint16_t gso_size;
+    uint16_t checksum_start;
+    uint16_t checksum_offset;
+};
+
 struct VirtioBlockDevice {
     uint16_t io_base;
     uint16_t queue_size;
@@ -71,9 +83,16 @@ struct VirtioBlockDevice {
 
 struct VirtioNetDevice {
     uint16_t io_base;
+    uint16_t rx_queue_size;
+    uint16_t tx_queue_size;
+    uint16_t rx_avail_idx;
+    uint16_t tx_avail_idx;
+    uint16_t rx_used_idx;
+    uint16_t tx_used_idx;
     int ready;
     char name[16];
     rad_mac_address_t mac;
+    uint32_t index;
     uint64_t tx_packets;
     uint64_t rx_packets;
     uint8_t rx_frame[1536];
@@ -81,6 +100,9 @@ struct VirtioNetDevice {
 };
 
 alignas(4096) uint8_t g_queue_memory[MaxVirtioBlockDevices][12288];
+alignas(4096) uint8_t g_net_queue_memory[MaxVirtioNetDevices][2][12288];
+alignas(16) VirtioNetHeader g_net_tx_headers[MaxVirtioNetDevices];
+alignas(16) uint8_t g_net_rx_buffers[MaxVirtioNetDevices][MaxVirtqEntries][sizeof(VirtioNetHeader) + VirtioNetBufferBytes];
 alignas(16) VirtioBlkRequestHeader g_request_header;
 alignas(16) uint8_t g_request_status;
 VirtioBlockDevice g_block_devices[MaxVirtioBlockDevices];
@@ -115,6 +137,8 @@ uint8_t inb(uint16_t port) {
     asm volatile("inb %1, %0" : "=a"(value) : "Nd"(port));
     return value;
 }
+
+void io_wait(void);
 
 uint32_t pci_read(uint8_t bus, uint8_t slot, uint8_t function, uint8_t offset) {
     const uint32_t address = 0x80000000u
@@ -164,6 +188,106 @@ VirtqUsed *queue_used(VirtioBlockDevice *device) {
     uintptr_t addr = reinterpret_cast<uintptr_t>(queue_avail(device)) + sizeof(VirtqAvail);
     addr = (addr + 4095u) & ~static_cast<uintptr_t>(4095u);
     return reinterpret_cast<VirtqUsed*>(addr);
+}
+
+VirtqDesc *net_queue_desc(VirtioNetDevice *device, uint32_t queue) {
+    return reinterpret_cast<VirtqDesc*>(g_net_queue_memory[device->index][queue]);
+}
+
+VirtqAvail *net_queue_avail(VirtioNetDevice *device, uint32_t queue) {
+    return reinterpret_cast<VirtqAvail*>(g_net_queue_memory[device->index][queue] + sizeof(VirtqDesc) * MaxVirtqEntries);
+}
+
+VirtqUsed *net_queue_used(VirtioNetDevice *device, uint32_t queue) {
+    uintptr_t addr = reinterpret_cast<uintptr_t>(net_queue_avail(device, queue)) + sizeof(VirtqAvail);
+    addr = (addr + 4095u) & ~static_cast<uintptr_t>(4095u);
+    return reinterpret_cast<VirtqUsed*>(addr);
+}
+
+void net_select_queue(VirtioNetDevice *device, uint32_t queue) {
+    outw(device->io_base + 0x0e, static_cast<uint16_t>(queue));
+}
+
+int net_setup_queue(VirtioNetDevice *device, uint32_t queue, uint16_t *queue_size_out) {
+    net_select_queue(device, queue);
+    const uint16_t queue_size = inw(device->io_base + 0x0c);
+    if (queue_size == 0 || queue_size > MaxVirtqEntries) return 0;
+    memset(g_net_queue_memory[device->index][queue], 0, sizeof(g_net_queue_memory[device->index][queue]));
+    outl(device->io_base + 0x08, static_cast<uint32_t>(reinterpret_cast<uintptr_t>(g_net_queue_memory[device->index][queue]) >> 12));
+    if (queue_size_out) *queue_size_out = queue_size;
+    return 1;
+}
+
+void net_refill_rx(VirtioNetDevice *device, uint16_t descriptor) {
+    auto *desc = net_queue_desc(device, VirtioNetRxQueue);
+    auto *avail = net_queue_avail(device, VirtioNetRxQueue);
+    desc[descriptor].addr = reinterpret_cast<uintptr_t>(g_net_rx_buffers[device->index][descriptor]);
+    desc[descriptor].len = sizeof(g_net_rx_buffers[device->index][descriptor]);
+    desc[descriptor].flags = VirtqDescFWrite;
+    desc[descriptor].next = 0;
+    avail->ring[device->rx_avail_idx % device->rx_queue_size] = descriptor;
+    asm volatile("" ::: "memory");
+    ++device->rx_avail_idx;
+    avail->idx = device->rx_avail_idx;
+}
+
+void net_refill_all_rx(VirtioNetDevice *device) {
+    if (!device || !device->rx_queue_size) return;
+    for (uint16_t i = 0; i < device->rx_queue_size; ++i) net_refill_rx(device, i);
+    asm volatile("" ::: "memory");
+    outw(device->io_base + 0x10, VirtioNetRxQueue);
+}
+
+rad_status_t virtio_net_send_frame(VirtioNetDevice *device, const void *data, size_t length) {
+    if (!device || !device->ready || !data || length == 0 || length > VirtioNetBufferBytes || !device->tx_queue_size) return RAD_STATUS_INVALID_ARGUMENT;
+    auto *desc = net_queue_desc(device, VirtioNetTxQueue);
+    auto *avail = net_queue_avail(device, VirtioNetTxQueue);
+    auto *used = net_queue_used(device, VirtioNetTxQueue);
+    VirtioNetHeader& header = g_net_tx_headers[device->index];
+    memset(&header, 0, sizeof(header));
+    desc[0].addr = reinterpret_cast<uintptr_t>(&header);
+    desc[0].len = sizeof(header);
+    desc[0].flags = VirtqDescFNext;
+    desc[0].next = 1;
+    desc[1].addr = reinterpret_cast<uintptr_t>(data);
+    desc[1].len = static_cast<uint32_t>(length);
+    desc[1].flags = 0;
+    desc[1].next = 0;
+    avail->ring[device->tx_avail_idx % device->tx_queue_size] = 0;
+    asm volatile("" ::: "memory");
+    ++device->tx_avail_idx;
+    avail->idx = device->tx_avail_idx;
+    asm volatile("" ::: "memory");
+    outw(device->io_base + 0x10, VirtioNetTxQueue);
+    for (uint32_t spin = 0; spin < 1000000u; ++spin) {
+        asm volatile("" ::: "memory");
+        if (used->idx != device->tx_used_idx) {
+            device->tx_used_idx = used->idx;
+            ++device->tx_packets;
+            return RAD_STATUS_OK;
+        }
+        io_wait();
+    }
+    return RAD_STATUS_TIMEOUT;
+}
+
+intptr_t virtio_net_receive_frame(VirtioNetDevice *device, void *data, size_t length) {
+    if (!device || !device->ready || !data || length == 0 || !device->rx_queue_size) return RAD_STATUS_INVALID_ARGUMENT;
+    auto *used = net_queue_used(device, VirtioNetRxQueue);
+    if (used->idx == device->rx_used_idx) return RAD_STATUS_NOT_FOUND;
+    const VirtqUsedElem elem = used->ring[device->rx_used_idx % device->rx_queue_size];
+    ++device->rx_used_idx;
+    if (elem.id >= device->rx_queue_size || elem.len <= sizeof(VirtioNetHeader)) {
+        if (elem.id < device->rx_queue_size) net_refill_rx(device, static_cast<uint16_t>(elem.id));
+        return RAD_STATUS_ERROR;
+    }
+    const size_t frame_size = elem.len - sizeof(VirtioNetHeader);
+    const size_t count = frame_size < length ? frame_size : length;
+    memcpy(data, g_net_rx_buffers[device->index][elem.id] + sizeof(VirtioNetHeader), count);
+    net_refill_rx(device, static_cast<uint16_t>(elem.id));
+    outw(device->io_base + 0x10, VirtioNetRxQueue);
+    ++device->rx_packets;
+    return static_cast<intptr_t>(count);
 }
 
 void io_wait(void) {
@@ -329,8 +453,7 @@ rad_status_t net_ioctl(void *context, uint32_t request, void *argument) {
     if (request == RAD_DEVICE_IOCTL_NET_SEND) {
         auto *packet = static_cast<rad_net_packet_t*>(argument);
         if (!packet || packet->size < sizeof(*packet) || !packet->data || packet->length == 0) return RAD_STATUS_INVALID_ARGUMENT;
-        ++device->tx_packets;
-        return RAD_STATUS_OK;
+        return virtio_net_send_frame(device, packet->data, packet->length);
     }
     if (request == RAD_DEVICE_IOCTL_NET_POLL) {
         return RAD_STATUS_OK;
@@ -338,12 +461,9 @@ rad_status_t net_ioctl(void *context, uint32_t request, void *argument) {
     if (request == RAD_DEVICE_IOCTL_NET_RECV) {
         auto *packet = static_cast<rad_net_packet_t*>(argument);
         if (!packet || packet->size < sizeof(*packet) || !packet->data || !packet->length) return RAD_STATUS_INVALID_ARGUMENT;
-        if (device->rx_frame_size == 0) return RAD_STATUS_NOT_FOUND;
-        const size_t count = device->rx_frame_size < packet->length ? device->rx_frame_size : packet->length;
-        memcpy(packet->data, device->rx_frame, count);
-        packet->length = count;
-        device->rx_frame_size = 0;
-        ++device->rx_packets;
+        const intptr_t received = virtio_net_receive_frame(device, packet->data, packet->length);
+        if (received < 0) return static_cast<rad_status_t>(received);
+        packet->length = static_cast<size_t>(received);
         return RAD_STATUS_OK;
     }
     return RAD_STATUS_NOT_SUPPORTED;
@@ -363,6 +483,7 @@ int init_virtio_net(uint8_t bus, uint8_t slot, uint8_t function) {
     memset(device, 0, sizeof(*device));
     device->io_base = io_base;
     const uint32_t index = static_cast<uint32_t>(device - g_net_devices);
+    device->index = index;
     snprintf(device->name, sizeof(device->name), "/dev/net%u", index);
     for (uint32_t i = 0; i < 6u; ++i) {
         device->mac.bytes[i] = inb(static_cast<uint16_t>(io_base + 0x14u + i));
@@ -376,6 +497,16 @@ int init_virtio_net(uint8_t bus, uint8_t slot, uint8_t function) {
         device->mac.bytes[5] = static_cast<uint8_t>(index);
     }
     outb(io_base + 0x12, 0);
+    outb(io_base + 0x12, VirtioStatusAcknowledge);
+    outb(io_base + 0x12, VirtioStatusAcknowledge | VirtioStatusDriver);
+    if (!net_setup_queue(device, VirtioNetRxQueue, &device->rx_queue_size)
+        || !net_setup_queue(device, VirtioNetTxQueue, &device->tx_queue_size)) {
+        outb(io_base + 0x12, VirtioStatusFailed);
+        return 0;
+    }
+    net_refill_all_rx(device);
+    rad_debug_marker("RADIX_VIRTIO_NET_RX_RING_OK");
+    rad_debug_marker("RADIX_VIRTIO_NET_TX_RING_OK");
     outb(io_base + 0x12, VirtioStatusAcknowledge | VirtioStatusDriver | VirtioStatusDriverOk);
     device->ready = 1;
     rad_device_ops_t ops{};
@@ -508,6 +639,36 @@ extern "C" int x86_network_self_test(void) {
         }
         if (client >= 0) rad_fd_close(client);
         if (server >= 0) rad_fd_close(server);
+        const int32_t tcp_server = rad_socket_create(RAD_AF_INET, RAD_SOCK_STREAM, RAD_IPPROTO_TCP);
+        const int32_t tcp_client = rad_socket_create(RAD_AF_INET, RAD_SOCK_STREAM, RAD_IPPROTO_TCP);
+        rad_sockaddr_in_t tcp_address{};
+        tcp_address.family = RAD_AF_INET;
+        tcp_address.port = 9100;
+        tcp_address.address = rad_ipv4_address_t{{10, 0, 2, 15}};
+        const char tcp_payload[] = "radix tcp vm";
+        char tcp_received[32]{};
+        if (tcp_server >= 0 && tcp_client >= 0
+            && rad_socket_bind(tcp_server, &tcp_address, sizeof(tcp_address)) == RAD_STATUS_OK
+            && rad_socket_listen(tcp_server, 4) == RAD_STATUS_OK
+            && rad_socket_connect(tcp_client, &tcp_address, sizeof(tcp_address)) == RAD_STATUS_OK) {
+            rad_debug_marker("RADIX_TCP_SOCKET_OK");
+            rad_debug_marker("RADIX_TCP_CONNECT_OK");
+            rad_sockaddr_in_t tcp_peer{};
+            size_t tcp_peer_len = sizeof(tcp_peer);
+            const int32_t accepted = rad_socket_accept(tcp_server, &tcp_peer, &tcp_peer_len);
+            if (accepted >= 0) {
+                rad_debug_marker("RADIX_TCP_LISTEN_ACCEPT_OK");
+                if (rad_socket_send(tcp_client, tcp_payload, sizeof(tcp_payload), 0) == static_cast<intptr_t>(sizeof(tcp_payload))
+                    && rad_socket_recv(accepted, tcp_received, sizeof(tcp_received), 0) == static_cast<intptr_t>(sizeof(tcp_payload))
+                    && memcmp(tcp_received, tcp_payload, sizeof(tcp_payload)) == 0) {
+                    rad_debug_marker("RADIX_TCP_STREAM_IO_OK");
+                }
+                if (rad_socket_shutdown(tcp_client, 2) == RAD_STATUS_OK) rad_debug_marker("RADIX_TCP_SHUTDOWN_OK");
+                rad_fd_close(accepted);
+            }
+        }
+        if (tcp_client >= 0) rad_fd_close(tcp_client);
+        if (tcp_server >= 0) rad_fd_close(tcp_server);
         return 1;
     }
     return 0;

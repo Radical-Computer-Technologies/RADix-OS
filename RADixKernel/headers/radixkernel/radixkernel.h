@@ -3,7 +3,7 @@
 
 /**
  * @file radixkernel.h
- * @brief Portable embedded kernel service ABI for RADLib.
+ * @brief Portable RADix kernel service ABI for RADLib and RADix-OS targets.
  *
  * RADixKernel exposes a small POSIX-like service contract for bare-metal
  * and simulator backends. The C ABI is the stable boundary; the C++ wrappers are
@@ -102,7 +102,9 @@ extern "C" {
 #define RAD_COMPOSITOR_DAMAGE_EXPOSED 1u ///< Public constant or ioctl helper.
 #define RAD_AF_INET 2u ///< Public constant or ioctl helper.
 #define RAD_SOCK_DGRAM 2u ///< Public constant or ioctl helper.
+#define RAD_SOCK_STREAM 1u ///< Public constant or ioctl helper.
 #define RAD_IPPROTO_UDP 17u ///< Public constant or ioctl helper.
+#define RAD_IPPROTO_TCP 6u ///< Public constant or ioctl helper.
 #define RAD_PERF_NAME_MAX 32u ///< Public constant or ioctl helper.
 #define RAD_TIMER_NAME_MAX 32u ///< Public constant or ioctl helper.
 #define RAD_INPUT_QUEUE_NAME_MAX 64u ///< Public constant or ioctl helper.
@@ -566,6 +568,32 @@ typedef struct rad_sockaddr_in {
     rad_ipv4_address_t address; ///< Public structure field.
     uint8_t zero[8]; ///< Public structure field.
 } rad_sockaddr_in_t; ///< Public typedef alias.
+
+/** @brief Public enumeration for rad_tcp_state. */
+typedef enum rad_tcp_state {
+    RAD_TCP_CLOSED = 0, ///< RAD_TCP_CLOSED.
+    RAD_TCP_LISTEN = 1, ///< RAD_TCP_LISTEN.
+    RAD_TCP_SYN_SENT = 2, ///< RAD_TCP_SYN_SENT.
+    RAD_TCP_SYN_RECEIVED = 3, ///< RAD_TCP_SYN_RECEIVED.
+    RAD_TCP_ESTABLISHED = 4, ///< RAD_TCP_ESTABLISHED.
+    RAD_TCP_FIN_WAIT = 5, ///< RAD_TCP_FIN_WAIT.
+    RAD_TCP_CLOSE_WAIT = 6, ///< RAD_TCP_CLOSE_WAIT.
+    RAD_TCP_LAST_ACK = 7, ///< RAD_TCP_LAST_ACK.
+    RAD_TCP_TIME_WAIT = 8 ///< RAD_TCP_TIME_WAIT.
+} rad_tcp_state_t; ///< Public typedef alias.
+
+/** @brief Public data structure for rad_socket_info. */
+typedef struct rad_socket_info {
+    uint32_t size; ///< Public structure field.
+    int domain; ///< Public structure field.
+    int type; ///< Public structure field.
+    int protocol; ///< Public structure field.
+    rad_tcp_state_t tcp_state; ///< Public structure field.
+    uint16_t local_port; ///< Public structure field.
+    uint16_t remote_port; ///< Public structure field.
+    rad_ipv4_address_t local_address; ///< Public structure field.
+    rad_ipv4_address_t remote_address; ///< Public structure field.
+} rad_socket_info_t; ///< Public typedef alias.
 
 /** @brief Public data structure for rad_posix_timeval. */
 typedef struct rad_posix_timeval {
@@ -1343,8 +1371,15 @@ intptr_t rad_net_receive(rad_device_t device, void *data, size_t length); ///< P
 rad_status_t rad_net_poll(rad_device_t device); ///< Public RADix kernel API entry point.
 int32_t rad_socket_create(int domain, int type, int protocol); ///< Public RADix kernel API entry point.
 int32_t rad_socket_bind(int32_t fd, const rad_sockaddr_in_t *address, size_t address_length); ///< Public RADix kernel API entry point.
+int32_t rad_socket_listen(int32_t fd, int backlog); ///< Public RADix kernel API entry point.
+int32_t rad_socket_accept(int32_t fd, rad_sockaddr_in_t *address, size_t *address_length); ///< Public RADix kernel API entry point.
+int32_t rad_socket_connect(int32_t fd, const rad_sockaddr_in_t *address, size_t address_length); ///< Public RADix kernel API entry point.
 intptr_t rad_socket_sendto(int32_t fd, const void *buffer, size_t size, uint32_t flags, const rad_sockaddr_in_t *address, size_t address_length); ///< Public RADix kernel API entry point.
 intptr_t rad_socket_recvfrom(int32_t fd, void *buffer, size_t size, uint32_t flags, rad_sockaddr_in_t *address, size_t *address_length); ///< Public RADix kernel API entry point.
+intptr_t rad_socket_send(int32_t fd, const void *buffer, size_t size, uint32_t flags); ///< Public RADix kernel API entry point.
+intptr_t rad_socket_recv(int32_t fd, void *buffer, size_t size, uint32_t flags); ///< Public RADix kernel API entry point.
+int32_t rad_socket_shutdown(int32_t fd, int how); ///< Public RADix kernel API entry point.
+int32_t rad_socket_get_info(int32_t fd, rad_socket_info_t *info); ///< Public RADix kernel API entry point.
 int32_t rad_socket_setsockopt(int32_t fd, int level, int option, const void *value, size_t value_length); ///< Public RADix kernel API entry point.
 int32_t rad_socket_getsockopt(int32_t fd, int level, int option, void *value, size_t *value_length); ///< Public RADix kernel API entry point.
 

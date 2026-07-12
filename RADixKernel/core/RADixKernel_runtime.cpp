@@ -344,9 +344,19 @@ struct SocketRecord {
     int domain;
     int type;
     int protocol;
+    rad_tcp_state_t tcp_state;
     uint16_t local_port;
+    uint16_t remote_port;
     rad_ipv4_address_t local_address;
+    rad_ipv4_address_t remote_address;
     UdpDatagram datagrams[RADIX_KERNEL_MAX_UDP_DATAGRAMS];
+    uint8_t stream_rx[RADIX_KERNEL_PIPE_BUFFER_BYTES];
+    size_t stream_rx_size;
+    size_t pending_accepts[RADIX_KERNEL_MAX_UDP_SOCKETS];
+    size_t pending_count;
+    size_t peer_index;
+    int shutdown_read;
+    int shutdown_write;
 };
 
 struct FdRecord {
@@ -987,6 +997,20 @@ void close_fd_record(FdRecord& fd) {
             if (pipe.read_refs == 0 && pipe.write_refs == 0) memset(&pipe, 0, sizeof(pipe));
         }
         if (fd.kind == FD_SOCKET && fd.socket_index < RADIX_KERNEL_MAX_UDP_SOCKETS) {
+            SocketRecord& socket = g_state.sockets[fd.socket_index];
+            if (socket.peer_index < RADIX_KERNEL_MAX_UDP_SOCKETS && g_state.sockets[socket.peer_index].used) {
+                g_state.sockets[socket.peer_index].peer_index = RADIX_KERNEL_MAX_UDP_SOCKETS;
+            }
+            for (size_t i = 0; i < socket.pending_count; ++i) {
+                const size_t pending = socket.pending_accepts[i];
+                if (pending < RADIX_KERNEL_MAX_UDP_SOCKETS) {
+                    SocketRecord& pending_socket = g_state.sockets[pending];
+                    if (pending_socket.peer_index < RADIX_KERNEL_MAX_UDP_SOCKETS && g_state.sockets[pending_socket.peer_index].used) {
+                        g_state.sockets[pending_socket.peer_index].peer_index = RADIX_KERNEL_MAX_UDP_SOCKETS;
+                    }
+                    memset(&pending_socket, 0, sizeof(pending_socket));
+                }
+            }
             memset(&g_state.sockets[fd.socket_index], 0, sizeof(g_state.sockets[fd.socket_index]));
         }
     }
@@ -1147,6 +1171,15 @@ SocketRecord *socket_from_fd(FdRecord *record) {
     if (!record || record->kind != FD_SOCKET || record->socket_index >= RADIX_KERNEL_MAX_UDP_SOCKETS) return nullptr;
     SocketRecord& socket = g_state.sockets[record->socket_index];
     return socket.used ? &socket : nullptr;
+}
+
+SocketRecord *find_socket(int type, uint16_t port) {
+    if (!port) return nullptr;
+    for (size_t i = 0; i < RADIX_KERNEL_MAX_UDP_SOCKETS; ++i) {
+        SocketRecord& socket = g_state.sockets[i];
+        if (socket.used && socket.type == type && socket.local_port == port) return &socket;
+    }
+    return nullptr;
 }
 
 SocketRecord *find_udp_socket(uint16_t port) {
@@ -3778,8 +3811,16 @@ int32_t rad_pipe_create(int32_t pipefd[2]) {
 }
 
 int32_t rad_socket_create(int domain, int type, int protocol) {
-    if (domain != static_cast<int>(RAD_AF_INET) || type != static_cast<int>(RAD_SOCK_DGRAM)) return RAD_STATUS_NOT_SUPPORTED;
-    if (protocol != 0 && protocol != static_cast<int>(RAD_IPPROTO_UDP)) return RAD_STATUS_NOT_SUPPORTED;
+    if (domain != static_cast<int>(RAD_AF_INET)) return RAD_STATUS_NOT_SUPPORTED;
+    if (type == static_cast<int>(RAD_SOCK_DGRAM)) {
+        if (protocol != 0 && protocol != static_cast<int>(RAD_IPPROTO_UDP)) return RAD_STATUS_NOT_SUPPORTED;
+        protocol = RAD_IPPROTO_UDP;
+    } else if (type == static_cast<int>(RAD_SOCK_STREAM)) {
+        if (protocol != 0 && protocol != static_cast<int>(RAD_IPPROTO_TCP)) return RAD_STATUS_NOT_SUPPORTED;
+        protocol = RAD_IPPROTO_TCP;
+    } else {
+        return RAD_STATUS_NOT_SUPPORTED;
+    }
     for (size_t i = 0; i < RADIX_KERNEL_MAX_UDP_SOCKETS; ++i) {
         SocketRecord& socket = g_state.sockets[i];
         if (socket.used) continue;
@@ -3787,8 +3828,10 @@ int32_t rad_socket_create(int domain, int type, int protocol) {
         socket.used = 1;
         socket.domain = domain;
         socket.type = type;
-        socket.protocol = RAD_IPPROTO_UDP;
+        socket.protocol = protocol;
         socket.local_address = radix_default_ipv4_address();
+        socket.peer_index = RADIX_KERNEL_MAX_UDP_SOCKETS;
+        for (size_t p = 0; p < RADIX_KERNEL_MAX_UDP_SOCKETS; ++p) socket.pending_accepts[p] = RADIX_KERNEL_MAX_UDP_SOCKETS;
         FdRecord record{};
         record.kind = FD_SOCKET;
         record.socket_index = i;
@@ -3809,9 +3852,80 @@ int32_t rad_socket_bind(int32_t fd, const rad_sockaddr_in_t *address, size_t add
     FdRecord *record = lookup_fd_record(fd);
     SocketRecord *socket = socket_from_fd(record);
     if (!socket) return RAD_STATUS_NOT_FOUND;
-    if (find_udp_socket(address->port) && find_udp_socket(address->port) != socket) return RAD_STATUS_ALREADY_EXISTS;
+    if (find_socket(socket->type, address->port) && find_socket(socket->type, address->port) != socket) return RAD_STATUS_ALREADY_EXISTS;
     socket->local_port = address->port;
     socket->local_address = address->address.bytes[0] ? address->address : radix_default_ipv4_address();
+    return RAD_STATUS_OK;
+}
+
+int32_t rad_socket_listen(int32_t fd, int backlog) {
+    SocketRecord *socket = socket_from_fd(lookup_fd_record(fd));
+    if (!socket) return RAD_STATUS_NOT_FOUND;
+    if (socket->type != static_cast<int>(RAD_SOCK_STREAM) || !socket->local_port || backlog < 0) return RAD_STATUS_INVALID_ARGUMENT;
+    socket->tcp_state = RAD_TCP_LISTEN;
+    return RAD_STATUS_OK;
+}
+
+int32_t rad_socket_accept(int32_t fd, rad_sockaddr_in_t *address, size_t *address_length) {
+    SocketRecord *listener = socket_from_fd(lookup_fd_record(fd));
+    if (!listener) return RAD_STATUS_NOT_FOUND;
+    if (listener->type != static_cast<int>(RAD_SOCK_STREAM) || listener->tcp_state != RAD_TCP_LISTEN) return RAD_STATUS_INVALID_ARGUMENT;
+    if (listener->pending_count == 0) return RAD_STATUS_NOT_FOUND;
+    const size_t accepted_index = listener->pending_accepts[0];
+    if (accepted_index >= RADIX_KERNEL_MAX_UDP_SOCKETS || !g_state.sockets[accepted_index].used) return RAD_STATUS_NOT_FOUND;
+    for (size_t i = 1; i < listener->pending_count; ++i) listener->pending_accepts[i - 1] = listener->pending_accepts[i];
+    --listener->pending_count;
+    FdRecord record{};
+    record.kind = FD_SOCKET;
+    record.socket_index = accepted_index;
+    record.flags = RAD_VFS_READ | RAD_VFS_WRITE;
+    record.refs = 1;
+    record.owner_fd = -1;
+    record.owner_pid = current_process_pid();
+    record.local_fd = -1;
+    SocketRecord& accepted = g_state.sockets[accepted_index];
+    if (address && address_length && *address_length >= sizeof(rad_sockaddr_in_t)) {
+        address->family = RAD_AF_INET;
+        address->port = accepted.remote_port;
+        address->address = accepted.remote_address;
+        *address_length = sizeof(rad_sockaddr_in_t);
+    }
+    return install_fd_record(record, -1);
+}
+
+int32_t rad_socket_connect(int32_t fd, const rad_sockaddr_in_t *address, size_t address_length) {
+    if (!address || address_length < sizeof(rad_sockaddr_in_t) || address->family != RAD_AF_INET || address->port == 0) return RAD_STATUS_INVALID_ARGUMENT;
+    FdRecord *client_fd = lookup_fd_record(fd);
+    SocketRecord *client = socket_from_fd(client_fd);
+    if (!client || client->type != static_cast<int>(RAD_SOCK_STREAM)) return RAD_STATUS_INVALID_ARGUMENT;
+    SocketRecord *listener = find_socket(static_cast<int>(RAD_SOCK_STREAM), address->port);
+    if (!listener || listener->tcp_state != RAD_TCP_LISTEN || listener->pending_count >= RADIX_KERNEL_MAX_UDP_SOCKETS) return RAD_STATUS_NOT_FOUND;
+    size_t server_index = RADIX_KERNEL_MAX_UDP_SOCKETS;
+    for (size_t i = 0; i < RADIX_KERNEL_MAX_UDP_SOCKETS; ++i) {
+        if (!g_state.sockets[i].used) {
+            server_index = i;
+            break;
+        }
+    }
+    if (server_index >= RADIX_KERNEL_MAX_UDP_SOCKETS) return RAD_STATUS_NO_MEMORY;
+    if (!client->local_port) client->local_port = static_cast<uint16_t>(50000u + (client_fd->socket_index % 1000u));
+    client->remote_port = address->port;
+    client->remote_address = address->address;
+    client->tcp_state = RAD_TCP_ESTABLISHED;
+    SocketRecord& server = g_state.sockets[server_index];
+    memset(&server, 0, sizeof(server));
+    server.used = 1;
+    server.domain = RAD_AF_INET;
+    server.type = RAD_SOCK_STREAM;
+    server.protocol = RAD_IPPROTO_TCP;
+    server.tcp_state = RAD_TCP_ESTABLISHED;
+    server.local_port = listener->local_port;
+    server.local_address = listener->local_address;
+    server.remote_port = client->local_port;
+    server.remote_address = client->local_address;
+    server.peer_index = client_fd->socket_index;
+    client->peer_index = server_index;
+    listener->pending_accepts[listener->pending_count++] = server_index;
     return RAD_STATUS_OK;
 }
 
@@ -3856,6 +3970,62 @@ intptr_t rad_socket_recvfrom(int32_t fd, void *buffer, size_t size, uint32_t, ra
         return static_cast<intptr_t>(count);
     }
     return 0;
+}
+
+intptr_t rad_socket_send(int32_t fd, const void *buffer, size_t size, uint32_t) {
+    if (!buffer && size) return RAD_STATUS_INVALID_ARGUMENT;
+    SocketRecord *socket = socket_from_fd(lookup_fd_record(fd));
+    if (!socket) return RAD_STATUS_NOT_FOUND;
+    if (socket->type != static_cast<int>(RAD_SOCK_STREAM) || socket->tcp_state != RAD_TCP_ESTABLISHED || socket->peer_index >= RADIX_KERNEL_MAX_UDP_SOCKETS) return RAD_STATUS_INVALID_ARGUMENT;
+    SocketRecord& peer = g_state.sockets[socket->peer_index];
+    if (!peer.used || socket->shutdown_write || peer.shutdown_read) return RAD_STATUS_NOT_FOUND;
+    const size_t capacity = RADIX_KERNEL_PIPE_BUFFER_BYTES - peer.stream_rx_size;
+    const size_t count = capacity < size ? capacity : size;
+    if (count) {
+        memcpy(peer.stream_rx + peer.stream_rx_size, buffer, count);
+        peer.stream_rx_size += count;
+    }
+    return static_cast<intptr_t>(count);
+}
+
+intptr_t rad_socket_recv(int32_t fd, void *buffer, size_t size, uint32_t) {
+    if (!buffer && size) return RAD_STATUS_INVALID_ARGUMENT;
+    SocketRecord *socket = socket_from_fd(lookup_fd_record(fd));
+    if (!socket) return RAD_STATUS_NOT_FOUND;
+    if (socket->type != static_cast<int>(RAD_SOCK_STREAM)) return RAD_STATUS_INVALID_ARGUMENT;
+    const size_t count = socket->stream_rx_size < size ? socket->stream_rx_size : size;
+    if (count) {
+        memcpy(buffer, socket->stream_rx, count);
+        memmove(socket->stream_rx, socket->stream_rx + count, socket->stream_rx_size - count);
+        socket->stream_rx_size -= count;
+    }
+    return static_cast<intptr_t>(count);
+}
+
+int32_t rad_socket_shutdown(int32_t fd, int how) {
+    SocketRecord *socket = socket_from_fd(lookup_fd_record(fd));
+    if (!socket) return RAD_STATUS_NOT_FOUND;
+    if (how == 0 || how == 2) socket->shutdown_read = 1;
+    if (how == 1 || how == 2) socket->shutdown_write = 1;
+    if (socket->tcp_state == RAD_TCP_ESTABLISHED) socket->tcp_state = RAD_TCP_FIN_WAIT;
+    return RAD_STATUS_OK;
+}
+
+int32_t rad_socket_get_info(int32_t fd, rad_socket_info_t *info) {
+    if (!info) return RAD_STATUS_INVALID_ARGUMENT;
+    SocketRecord *socket = socket_from_fd(lookup_fd_record(fd));
+    if (!socket) return RAD_STATUS_NOT_FOUND;
+    memset(info, 0, sizeof(*info));
+    info->size = sizeof(*info);
+    info->domain = socket->domain;
+    info->type = socket->type;
+    info->protocol = socket->protocol;
+    info->tcp_state = socket->tcp_state;
+    info->local_port = socket->local_port;
+    info->remote_port = socket->remote_port;
+    info->local_address = socket->local_address;
+    info->remote_address = socket->remote_address;
+    return RAD_STATUS_OK;
 }
 
 int32_t rad_socket_setsockopt(int32_t fd, int, int, const void*, size_t) {
@@ -4054,11 +4224,10 @@ intptr_t rad_syscall_dispatch(uintptr_t number, uintptr_t arg0, uintptr_t arg1, 
     }
     case RAD_SYSCALL_SOCKET: return rad_socket_create(static_cast<int>(arg0), static_cast<int>(arg1), static_cast<int>(arg2));
     case RAD_SYSCALL_BIND: return rad_socket_bind(static_cast<int32_t>(arg0), reinterpret_cast<const rad_sockaddr_in_t*>(arg1), static_cast<size_t>(arg2));
-    case RAD_SYSCALL_CONNECT:
-    case RAD_SYSCALL_LISTEN:
-    case RAD_SYSCALL_ACCEPT:
-    case RAD_SYSCALL_SHUTDOWN:
-        return RAD_STATUS_NOT_SUPPORTED;
+    case RAD_SYSCALL_CONNECT: return rad_socket_connect(static_cast<int32_t>(arg0), reinterpret_cast<const rad_sockaddr_in_t*>(arg1), static_cast<size_t>(arg2));
+    case RAD_SYSCALL_LISTEN: return rad_socket_listen(static_cast<int32_t>(arg0), static_cast<int>(arg1));
+    case RAD_SYSCALL_ACCEPT: return rad_socket_accept(static_cast<int32_t>(arg0), reinterpret_cast<rad_sockaddr_in_t*>(arg1), reinterpret_cast<size_t*>(arg2));
+    case RAD_SYSCALL_SHUTDOWN: return rad_socket_shutdown(static_cast<int32_t>(arg0), static_cast<int>(arg1));
     case RAD_SYSCALL_SENDTO: return rad_socket_sendto(static_cast<int32_t>(arg0), reinterpret_cast<const void*>(arg1), static_cast<size_t>(arg2), static_cast<uint32_t>(arg3), reinterpret_cast<const rad_sockaddr_in_t*>(arg4), static_cast<size_t>(arg5));
     case RAD_SYSCALL_RECVFROM: return rad_socket_recvfrom(static_cast<int32_t>(arg0), reinterpret_cast<void*>(arg1), static_cast<size_t>(arg2), static_cast<uint32_t>(arg3), reinterpret_cast<rad_sockaddr_in_t*>(arg4), reinterpret_cast<size_t*>(arg5));
     case RAD_SYSCALL_SETSOCKOPT: return rad_socket_setsockopt(static_cast<int32_t>(arg0), static_cast<int>(arg1), static_cast<int>(arg2), reinterpret_cast<const void*>(arg3), static_cast<size_t>(arg4));

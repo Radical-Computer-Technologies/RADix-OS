@@ -65,7 +65,7 @@ add_executable(radixkernel_x86_64_grub_slint
     runtime.cpp
     "${RADIX_OS_ROOT}/RADixKernel/boot/radboot.cpp"
     "${RADIX_OS_ROOT}/RADixKernel/subsystems/RADixOverlayRuntime.cpp"
-    "${RADIX_OS_ROOT}/RADixKernel/core/RADixKernel_embedded.cpp"
+    "${RADIX_OS_ROOT}/RADixKernel/core/RADixKernel_runtime.cpp"
     "${RADIX_OS_ROOT}/services/RADCompositor/RADCompositorCore.cpp"
 )
 

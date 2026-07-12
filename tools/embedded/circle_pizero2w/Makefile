@@ -31,7 +31,7 @@ RADLIB_OBJS = \
 	radserial_RADSerial.o \
 	raddevice_RADDevice.o
 
-OBJS = main.o kernel.o radboot_wrap.o radixkernel_embedded_wrap.o radixkernel_overlay_wrap.o radixkernel_hal_circle_wrap.o radixkernel_runtime_newlib_wrap.o \
+OBJS = main.o kernel.o radboot_wrap.o radixkernel_runtime_wrap.o radixkernel_overlay_wrap.o radixkernel_hal_circle_wrap.o radixkernel_runtime_newlib_wrap.o \
 	$(RADCORE_OBJS) $(RADLIB_OBJS)
 
 EXTRAINCLUDE += -I$(RADIX_OS_ROOT)/RADixKernel/headers \

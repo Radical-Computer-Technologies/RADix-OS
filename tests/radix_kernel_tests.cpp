@@ -986,8 +986,46 @@ bool testUdpSocketCore() {
             && std::strcmp(buffer, payload) == 0
             && from.family == RAD_AF_INET,
         "UDP recvfrom should return payload and sender");
-    ok &= expect(rad_syscall_dispatch(RAD_SYSCALL_CONNECT, client, 0, 0, 0, 0, 0) == RAD_STATUS_NOT_SUPPORTED,
-        "TCP-style socket operations should remain unsupported");
+    ok &= expect(rad_syscall_dispatch(RAD_SYSCALL_CONNECT, client, 0, 0, 0, 0, 0) == RAD_STATUS_INVALID_ARGUMENT,
+        "UDP connect without an address should fail validation");
+    rad_syscall_dispatch(RAD_SYSCALL_CLOSE, client, 0, 0, 0, 0, 0);
+    rad_syscall_dispatch(RAD_SYSCALL_CLOSE, server, 0, 0, 0, 0, 0);
+    return ok;
+}
+
+bool testTcpSocketCore() {
+    const int32_t server = static_cast<int32_t>(rad_syscall_dispatch(RAD_SYSCALL_SOCKET, RAD_AF_INET, RAD_SOCK_STREAM, RAD_IPPROTO_TCP, 0, 0, 0));
+    const int32_t client = static_cast<int32_t>(rad_syscall_dispatch(RAD_SYSCALL_SOCKET, RAD_AF_INET, RAD_SOCK_STREAM, RAD_IPPROTO_TCP, 0, 0, 0));
+    bool ok = expect(server >= 3 && client >= 3, "TCP sockets should allocate fds");
+    rad_sockaddr_in_t server_addr{};
+    server_addr.family = RAD_AF_INET;
+    server_addr.port = 9100;
+    server_addr.address = rad_ipv4_address_t{{10, 0, 2, 15}};
+    ok &= expect(rad_syscall_dispatch(RAD_SYSCALL_BIND, server, reinterpret_cast<uintptr_t>(&server_addr), sizeof(server_addr), 0, 0, 0) == RAD_STATUS_OK,
+        "TCP bind should attach local port");
+    ok &= expect(rad_syscall_dispatch(RAD_SYSCALL_LISTEN, server, 4, 0, 0, 0, 0) == RAD_STATUS_OK,
+        "TCP listen should enter listen state");
+    ok &= expect(rad_syscall_dispatch(RAD_SYSCALL_CONNECT, client, reinterpret_cast<uintptr_t>(&server_addr), sizeof(server_addr), 0, 0, 0) == RAD_STATUS_OK,
+        "TCP connect should establish local connection");
+    rad_sockaddr_in_t peer{};
+    size_t peer_len = sizeof(peer);
+    const int32_t accepted = static_cast<int32_t>(rad_syscall_dispatch(RAD_SYSCALL_ACCEPT, server, reinterpret_cast<uintptr_t>(&peer), reinterpret_cast<uintptr_t>(&peer_len), 0, 0, 0));
+    ok &= expect(accepted >= 3 && peer.family == RAD_AF_INET, "TCP accept should return connected fd");
+    rad_socket_info_t client_info{};
+    ok &= expect(rad_socket_get_info(client, &client_info) == RAD_STATUS_OK
+            && client_info.type == static_cast<int>(RAD_SOCK_STREAM)
+            && client_info.tcp_state == RAD_TCP_ESTABLISHED,
+        "TCP connected socket should report established state");
+    const char payload[] = "radix-tcp";
+    ok &= expect(rad_socket_send(client, payload, sizeof(payload), 0) == static_cast<intptr_t>(sizeof(payload)),
+        "TCP send should write stream bytes");
+    char buffer[32]{};
+    ok &= expect(rad_socket_recv(accepted, buffer, sizeof(buffer), 0) == static_cast<intptr_t>(sizeof(payload))
+            && std::strcmp(buffer, payload) == 0,
+        "TCP recv should read stream bytes");
+    ok &= expect(rad_syscall_dispatch(RAD_SYSCALL_SHUTDOWN, client, 2, 0, 0, 0, 0) == RAD_STATUS_OK,
+        "TCP shutdown should succeed");
+    rad_syscall_dispatch(RAD_SYSCALL_CLOSE, accepted, 0, 0, 0, 0, 0);
     rad_syscall_dispatch(RAD_SYSCALL_CLOSE, client, 0, 0, 0, 0, 0);
     rad_syscall_dispatch(RAD_SYSCALL_CLOSE, server, 0, 0, 0, 0, 0);
     return ok;
@@ -1959,6 +1997,7 @@ int main() {
     ok &= testBlockCore();
     ok &= testNetCore();
     ok &= testUdpSocketCore();
+    ok &= testTcpSocketCore();
     ok &= testPosixSyscallCore();
     ok &= testFramebufferCore();
     ok &= testOverlayAndI2cCore();
