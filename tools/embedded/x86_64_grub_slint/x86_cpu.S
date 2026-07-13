@@ -49,6 +49,43 @@ IRQ_STUB 45
 IRQ_STUB 46
 IRQ_STUB 47
 
+.global x86_lapic_timer_entry
+.type x86_lapic_timer_entry, @function
+x86_lapic_timer_entry:
+    pushq %rax
+    pushq %rbx
+    pushq %rcx
+    pushq %rdx
+    pushq %rbp
+    pushq %rsi
+    pushq %rdi
+    pushq %r8
+    pushq %r9
+    pushq %r10
+    pushq %r11
+    pushq %r12
+    pushq %r13
+    pushq %r14
+    pushq %r15
+    mov 128(%rsp), %rdi
+    call x86_lapic_timer_dispatch
+    popq %r15
+    popq %r14
+    popq %r13
+    popq %r12
+    popq %r11
+    popq %r10
+    popq %r9
+    popq %r8
+    popq %rdi
+    popq %rsi
+    popq %rbp
+    popq %rdx
+    popq %rcx
+    popq %rbx
+    popq %rax
+    iretq
+
 x86_irq_common:
     pushq %rax
     pushq %rbx
@@ -88,6 +125,12 @@ x86_irq_common:
 .global x86_int80_entry
 .type x86_int80_entry, @function
 x86_int80_entry:
+    pushq %r15
+    pushq %r14
+    pushq %r13
+    pushq %r12
+    pushq %rbp
+    pushq %rbx
     pushq %r9
     pushq %r8
     pushq %r10
@@ -108,6 +151,12 @@ x86_int80_entry:
     popq %r10
     popq %r8
     popq %r9
+    popq %rbx
+    popq %rbp
+    popq %r12
+    popq %r13
+    popq %r14
+    popq %r15
     iretq
 
 .global x86_syscall_entry
@@ -306,6 +355,12 @@ x86_enter_user:
 .global x86_enter_user_context
 .type x86_enter_user_context, @function
 x86_enter_user_context:
+    pushq %r15
+    pushq %r14
+    pushq %r13
+    pushq %r12
+    pushq %rbp
+    pushq %rbx
     mov %rsp, 0(%rdi)
     pushq %rdi
     mov %rsp, %rdi
@@ -319,6 +374,12 @@ x86_enter_user_context:
     test %r11, %r11
     jz 1f
     mov 64(%rdi), %rax
+    mov 72(%rdi), %rbx
+    mov 80(%rdi), %rbp
+    mov 88(%rdi), %r12
+    mov 96(%rdi), %r13
+    mov 104(%rdi), %r14
+    mov 112(%rdi), %r15
     mov $0x1b, %dx
     mov %dx, %ds
     mov %dx, %es
@@ -350,10 +411,16 @@ x86_user_exit_trampoline:
     jz 1f
     movq $1, 24(%rax)
     mov 0(%rax), %rsp
-    jmp 2f
+    popq %rbx
+    popq %rbp
+    popq %r12
+    popq %r13
+    popq %r14
+    popq %r15
+    xor %rax, %rax
+    ret
 1:
     mov x86_user_kernel_rsp(%rip), %rsp
-2:
     xor %rax, %rax
     ret
 

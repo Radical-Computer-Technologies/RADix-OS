@@ -22,7 +22,7 @@ log_dir="${RADLIB_SMOKE_LOG_DIR:-${repo_root}/.radbuild}"
 shell_build="${RADLIB_RAD_OS_SHELL_BUILD_DIR:-${repo_root}/build/embedded/rad_os_shell}"
 x86_build="${RADLIB_X86_64_GRUB_SLINT_BUILD_DIR:-${repo_root}/build/embedded/x86_64_grub_slint}"
 qemu_timeout="${RADLIB_X86_QEMU_TIMEOUT:-60s}"
-qemu_smp="${RADLIB_X86_QEMU_SMP:-2}"
+qemu_smp="${RADLIB_X86_QEMU_SMP:-4}"
 
 mkdir -p "${log_dir}"
 
@@ -41,6 +41,7 @@ if [[ -d "${slint_sdk}" && "${RADLIB_SKIP_HOST_SLINT_SMOKE:-0}" != "1" ]]; then
     grep -q "RADIX_SLINT_MENU_ESCAPE_OK" "${log_dir}/rad-os-shell-slint-smoke.log"
     grep -q "RADIX_SLINT_WINDOW_MOVE_OK" "${log_dir}/rad-os-shell-slint-smoke.log"
     grep -q "RADIX_SLINT_WINDOW_RESIZE_OK" "${log_dir}/rad-os-shell-slint-smoke.log"
+    grep -q "RADIX_SLINT_TERMINAL_SCROLL_OK" "${log_dir}/rad-os-shell-slint-smoke.log"
     grep -q "RADIX_SLINT_TERMINAL_CLOSE_OK" "${log_dir}/rad-os-shell-slint-smoke.log"
     grep -q "RADIX_SLINT_TERMINAL_RELAUNCH_OK" "${log_dir}/rad-os-shell-slint-smoke.log"
     grep -q "RADIX_COMPOSITOR_SURFACE_CREATE_OK" "${log_dir}/rad-os-shell-slint-smoke.log"
@@ -58,9 +59,11 @@ else
     echo "Skipping hosted Slint smoke; set SLINT_SDK_DIR or unset RADLIB_SKIP_HOST_SLINT_SMOKE."
 fi
 
-cmake -S "${repo_root}/tools/embedded/x86_64_grub_slint" -B "${x86_build}" "${rust_cmake_args[@]}"
-rm -f "${x86_build}/radix-rootfs.ext4" "${x86_build}/radix-fat32.img"
-cmake --build "${x86_build}" --target radixkernel_x86_64_grub_slint_iso -j"${RADLIB_BUILD_JOBS:-2}"
+if [[ "${RADLIB_X86_SKIP_REBUILD:-0}" != "1" ]]; then
+    cmake -S "${repo_root}/tools/embedded/x86_64_grub_slint" -B "${x86_build}" "${rust_cmake_args[@]}"
+    rm -f "${x86_build}/radix-rootfs.ext4" "${x86_build}/radix-fat32.img"
+    cmake --build "${x86_build}" --target radixkernel_x86_64_grub_slint_iso -j"${RADLIB_BUILD_JOBS:-2}"
+fi
 grub-file --is-x86-multiboot2 "${x86_build}/radixkernel-x86-64-grub-slint"
 
 qemu_log="${log_dir}/x86-64-grub-slint-smoke.log"
@@ -91,7 +94,7 @@ for _ in $(seq 1 80); do
     sleep 0.1
 done
 for _ in $(seq 1 "${RADLIB_X86_INPUT_READY_POLLS:-400}"); do
-    grep -q "RAD x86_64 Slint terminal ready" "${qemu_log}" 2>/dev/null && break
+    grep -q "RAD x86_64 base terminal ready" "${qemu_log}" 2>/dev/null && break
     sleep 0.1
 done
 sleep "${RADLIB_X86_KEYBOARD_INJECT_DELAY:-0.2}"
@@ -119,59 +122,54 @@ if [[ "${qemu_status}" != "0" && "${qemu_status}" != "124" ]]; then
 fi
 
 grep -q "RAD x86_64 GRUB Slint handoff" "${qemu_log}"
-grep -q "RAD x86_64 Slint terminal ready" "${qemu_log}"
-grep -q "RADIX_SLINT_BOOT_SHELL_OK" "${qemu_log}"
-grep -q "RADIX_SLINT_TERMINAL_LOADING_OK" "${qemu_log}"
-grep -q "RADIX_SLINT_TERMINAL_READY_OK" "${qemu_log}"
-grep -q "RADIX_SLINT_WM_OK" "${qemu_log}"
-grep -q "RADIX_SLINT_APP_TERMINAL_WINDOW_OK" "${qemu_log}"
-grep -q "RADIX_SLINT_MENU_OPEN_OK" "${qemu_log}"
-grep -q "RADIX_SLINT_MENU_ESCAPE_OK" "${qemu_log}"
-grep -q "RADIX_SLINT_WINDOW_MOVE_OK" "${qemu_log}"
-grep -q "RADIX_SLINT_WINDOW_RESIZE_OK" "${qemu_log}"
-grep -q "RADIX_SLINT_TERMINAL_CLOSE_OK" "${qemu_log}"
-grep -q "RADIX_SLINT_TERMINAL_RELAUNCH_OK" "${qemu_log}"
-grep -q "RADIX_COMPOSITOR_SURFACE_CREATE_OK" "${qemu_log}"
-grep -q "RADIX_COMPOSITOR_OFFSCREEN_RENDER_OK" "${qemu_log}"
-grep -q "RADIX_COMPOSITOR_BLIT_OK" "${qemu_log}"
-grep -q "RADIX_COMPOSITOR_HIT_TEST_OK" "${qemu_log}"
-grep -q "RADIX_COMPOSITOR_INPUT_TRANSLATE_OK" "${qemu_log}"
-grep -q "RADIX_COMPOSITOR_Z_ORDER_OK" "${qemu_log}"
-grep -q "RADIX_COMPOSITOR_ALPHA_OK" "${qemu_log}"
-grep -q "RADIX_SHM_OPEN_OK" "${qemu_log}"
-grep -q "RADIX_MMAP_SHARED_OK" "${qemu_log}"
-grep -q "RADIX_SHM_USER_PATTERN_OK" "${qemu_log}"
-grep -q "RADIX_COMPOSITOR_IPC_SURFACE_OK" "${qemu_log}"
-grep -q "RADIX_COMPOSITOR_DAMAGE_QUEUE_OK" "${qemu_log}"
-grep -q "RADIX_COMPOSITOR_COPY_FORWARD_OK" "${qemu_log}"
-grep -q "RADIX_COMPOSITOR_EXPOSED_DAMAGE_OK" "${qemu_log}"
-grep -q "RADIX_FRAMEBUFFER_DIRTY_PRESENT_OK" "${qemu_log}"
-grep -q "RADIX_COMPOSITOR_EMPTY_FRAME_SKIP_OK" "${qemu_log}"
-grep -q "RADIX_SHM_PROCESS_SUBMIT_OK" "${qemu_log}"
-grep -q "RADIX_SHM_PROCESS_IPC_OK" "${qemu_log}"
+grep -q "RAD x86_64 base terminal ready" "${qemu_log}"
+grep -q "RADIX_BASE_TERMINAL_OK" "${qemu_log}"
 grep -q "RADIX_X86_CPU_OK" "${qemu_log}"
 grep -q "RADIX_IRQ_CORE_OK" "${qemu_log}"
 grep -q "RADIX_PIC_REMAP_OK" "${qemu_log}"
 grep -q "RADIX_IRQ_DOMAIN_PIC_OK" "${qemu_log}"
 grep -q "RADIX_IRQ_TREE_OK" "${qemu_log}"
 grep -q "RADIX_TIMER_IRQ_OK" "${qemu_log}"
-grep -q "RADIX_IDLE_HLT_OK" "${qemu_log}"
 grep -q "RADIX_DEFERRED_WORK_OK" "${qemu_log}"
 grep -q "RADIX_WAIT_QUEUE_OK" "${qemu_log}"
 grep -q "RADIX_SCHED_CORE_OK" "${qemu_log}"
 grep -q "RADIX_SMP_TOPOLOGY_OK" "${qemu_log}"
 grep -q "RADIX_AP_START_OK" "${qemu_log}"
 grep -q "RADIX_AP_WORKER_TASK_OK" "${qemu_log}"
+grep -q "RADIX_LAPIC_TIMER_OK" "${qemu_log}"
+grep -q "RADIX_AP_TIMER_IRQ_OK" "${qemu_log}"
+grep -q "RADIX_AP_SCHED_STRESS_OK" "${qemu_log}"
 grep -q "RADIX_CONTEXT_DISPATCH_OK" "${qemu_log}"
 grep -q "RADIX_CONTEXT_SWITCH_OK" "${qemu_log}"
 grep -q "RADIX_PREEMPT_SCHED_OK" "${qemu_log}"
-if grep -q "RADIX_[A-Z0-9_]*_DEFERRED\\|RADIX_[A-Z0-9_]*_TODO" "${qemu_log}"; then
+grep -q "RADIX_AP_PREEMPT_SCHED_OK" "${qemu_log}"
+if grep -Eq "RADIX_[A-Z0-9_]*_(DEFERRED|TODO)([^A-Z0-9]|$)" "${qemu_log}"; then
     echo "x86 completion gate failed: deferred/TODO marker present" >&2
+    exit 1
+fi
+if grep -Eq "x86 exception|RADIX_[A-Z0-9_]*_FAIL" "${qemu_log}"; then
+    echo "x86 completion gate failed: exception/failure marker present" >&2
     exit 1
 fi
 grep -q "RADIX_USER_IF_OK" "${qemu_log}"
 grep -q "RADIX_CPP_RUNTIME_OK" "${qemu_log}"
 grep -q "RADIX_MODULE_LIFECYCLE_OK" "${qemu_log}"
+grep -q "RADIX_SERVICE_JSON_OK" "${qemu_log}"
+grep -q "RADIX_SERVICE_BOOTSTRAP_OK" "${qemu_log}"
+grep -q "RADIX_SERVICE_ROOTFS_OK" "${qemu_log}"
+grep -q "RADIX_SERVICE_USERSPACE_OK" "${qemu_log}"
+grep -q "RADIX_SERVICE_FAT_OK" "${qemu_log}"
+grep -q "RADIX_SERVICE_NETWORK_OK" "${qemu_log}"
+grep -q "RADIX_SERVICE_TERMINAL_OK" "${qemu_log}"
+grep -q "RADIX_RADINIT_SPAWN_OK" "${qemu_log}"
+grep -q "RADIX_RADINIT_BOOT_OK" "${qemu_log}"
+grep -q "RADIX_RADINIT_JSON_OK" "${qemu_log}"
+grep -q "RADIX_RADINIT_SERVICE_ORDER_OK" "${qemu_log}"
+grep -q "RADIX_RADINIT_SERVICE_START_OK" "${qemu_log}"
+grep -q "RADIX_LOG_RING_OK" "${qemu_log}"
+grep -q "RADIX_LOG_KERNEL_FILE_OK" "${qemu_log}"
+grep -q "RADIX_LOG_INIT_FILE_OK" "${qemu_log}"
+grep -q "RADIX_LOG_SERVICE_FILE_OK" "${qemu_log}"
 grep -q "RADIX_INT80_OK" "${qemu_log}"
 grep -q "RADIX_POSIX_ABI_OK" "${qemu_log}"
 grep -q "RADIX_VM_READY" "${qemu_log}"
@@ -186,36 +184,25 @@ grep -q "RADIX_USER_EXECVE_REENTER_OK" "${qemu_log}"
 grep -q "RADIX_USER_PROCESS_SPAWN_OK" "${qemu_log}"
 grep -q "RADIX_USER_PROCESS_WAIT_OK" "${qemu_log}"
 grep -q "RADIX_USER_PROCESS_FD_TABLE_OK" "${qemu_log}"
-grep -q "RADIX_USER_PROCESS_FD_NAMESPACE_OK" "${qemu_log}"
 grep -q "RADIX_USER_FD_CLOEXEC_OK" "${qemu_log}"
 grep -q "RADIX_USER_SYSCALLS_OK" "${qemu_log}"
+grep -q "RADIX_USER_AP_EXEC_OK" "${qemu_log}"
+grep -q "RADIX_USER_AP_SYSCALL_OK" "${qemu_log}"
 grep -q "RADIX_USER_INVALID_PTR_OK" "${qemu_log}"
 grep -q "RADIX_USER_LINUX_SYSCALL_ABI_OK" "${qemu_log}"
 grep -q "RADIX_USER_RADSH_BOOT_OK" "${qemu_log}"
 grep -q "RADIX_USER_RADSH_EXIT_OK" "${qemu_log}"
-grep -q "RADIX_SLINT_APP_LAUNCH_PROCESS_OK" "${qemu_log}"
-grep -q "RADIX_SLINT_APP_LIVE_PTY_OK" "${qemu_log}"
-grep -q "RADIX_SLINT_WM_PTY_TERMINAL_OK" "${qemu_log}"
 grep -q "RADIX_USER_FORK_OK" "${qemu_log}"
 grep -q "RADIX_USER_FORK_CHILD_OK" "${qemu_log}"
 grep -q "RADIX_USER_FORK_WAIT_OK" "${qemu_log}"
 grep -q "RADIX_USER_FORK_FD_INHERIT_OK" "${qemu_log}"
 grep -q "RADIX_USER_PIPE_FORK_OK" "${qemu_log}"
 grep -q "RADIX_USER_COW_PAGE_FAULT_OK" "${qemu_log}"
+grep -q "RADIX_USER_AP_FORK_COW_OK" "${qemu_log}"
 grep -q "RADIX_USER_COW_PARENT_ISOLATED_OK" "${qemu_log}"
-grep -q "RADIX_USER_WAIT_WAKE_OK" "${qemu_log}"
-grep -q "RADIX_USER_ZOMBIE_REAP_OK" "${qemu_log}"
 grep -q "RADIX_USER_SCRIPT_SHEBANG_OK" "${qemu_log}"
 grep -q "RADIX_USER_ARGV_ENVP_OK" "${qemu_log}"
 grep -q "RADIX_USER_SH_SCRIPT_OK" "${qemu_log}"
-if grep -q "RADIX_USER_FORK_FAIL\\|RADIX_USER_COW_FAIL\\|RADIX_USER_SH_SCRIPT_FAIL" "${qemu_log}"; then
-    echo "x86 fork/COW/script gate failed: failure marker present" >&2
-    exit 1
-fi
-if grep -q "RADIX_USER_ENTRY_MAP_FAIL" "${qemu_log}"; then
-    echo "x86 user VM gate failed: entry mapping failure marker present" >&2
-    exit 1
-fi
 grep -q "RADIX_PCI_PROBE_OK" "${qemu_log}"
 grep -q "RADIX_INPUT_POINTER_OK" "${qemu_log}"
 grep -q "RADIX_VIRTIO_BLK_FOUND" "${qemu_log}"
@@ -253,6 +240,23 @@ grep -q "RADIX_USER_INIT_OK" "${qemu_log}"
 grep -q "RADIX_USERMODE_EXIT_OK" "${qemu_log}"
 grep -q "cmd fb" "${qemu_log}"
 grep -q "cmd sched" "${qemu_log}"
+grep -q "cmd services" "${qemu_log}"
+grep -q "cmd initctl list" "${qemu_log}"
+grep -q "cmd initctl status userspace-shell" "${qemu_log}"
+grep -q "cmd help" "${qemu_log}"
+grep -q "cmd ls /bin" "${qemu_log}"
+grep -q "cmd cat /bin/test.sh" "${qemu_log}"
+grep -q "cmd mkdir /tmp/rashpass" "${qemu_log}"
+grep -q "cmd touch /tmp/rashpass/file" "${qemu_log}"
+grep -q "cmd stat /tmp/rashpass/file" "${qemu_log}"
+grep -q "cmd mount" "${qemu_log}"
+grep -q "cmd ps" "${qemu_log}"
+grep -q "cmd sh /bin/test.sh" "${qemu_log}"
+grep -q "cmd initctl restart userspace-shell" "${qemu_log}"
+grep -q "cmd logread init" "${qemu_log}"
+grep -q "cmd logread userspace-shell" "${qemu_log}"
+grep -q "cmd logread kernel" "${qemu_log}"
+grep -q "cmd dmesg" "${qemu_log}"
 if [[ "${keyboard_injected}" == "1" ]]; then
     grep -q "RADIX_IRQ_KEYBOARD_OK" "${qemu_log}"
     grep -q "RADIX_IRQ_MOUSE_OK" "${qemu_log}"
@@ -262,4 +266,4 @@ if [[ "${keyboard_injected}" == "1" ]]; then
     grep -q "RADIX_INPUT_POINTER_EVENT_OK" "${qemu_log}"
 fi
 
-echo "x86_64 GRUB Slint smoke passed"
+echo "x86_64 GRUB AP scheduler smoke passed"

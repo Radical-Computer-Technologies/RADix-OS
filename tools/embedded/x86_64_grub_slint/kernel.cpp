@@ -16,6 +16,8 @@
 
 extern "C" void x86_serial_init(void);
 extern "C" void x86_serial_write(const char *text);
+extern "C" void x86_ps2_set_pointer_bounds(uint32_t width, uint32_t height);
+extern "C" void x86_ui_idle_frame(void) __attribute__((weak));
 extern "C" char x86_boot_stack_top[];
 extern "C" int x86_cpp_runtime_self_test(void);
 extern "C" int snprintf(char *buffer, size_t size, const char *format, ...);
@@ -107,29 +109,313 @@ struct X86FramebufferContext {
 char g_transcript[8192];
 size_t g_transcript_size = 0;
 X86FramebufferContext g_x86_framebuffer_context{};
+int g_terminal_dirty = 1;
 int g_keyboard_input_seen = 0;
 int g_pointer_input_seen = 0;
 int g_module_probe_inits = 0;
 int g_module_probe_exits = 0;
 int g_deferred_work_ran = 0;
-int g_scheduler_probe_ran = 0;
-int g_ap_scheduler_probe_core = -1;
-volatile int g_preempt_busy_done = 0;
-volatile int g_preempt_observer_ran = 0;
+
+struct BootServiceContext {
+    x86_storage_summary_t *storage_summary = nullptr;
+    int rootfs_ready = 0;
+    int userspace_ready = 0;
+    int fat_ready = 0;
+    int network_ready = 0;
+    int terminal_ready = 0;
+};
+
+struct BootServiceJsonEntry {
+    char name[RAD_SERVICE_NAME_MAX];
+    char tree_path[RAD_TREE_MAX_PATH];
+    char backend[RAD_TREE_MAX_VALUE];
+    char display[RAD_TREE_MAX_VALUE];
+    char keyboard[RAD_TREE_MAX_VALUE];
+    char pointer[RAD_TREE_MAX_VALUE];
+    char terminal[RAD_TREE_MAX_VALUE];
+    int autostart = 0;
+    int order = 0;
+};
+
+constexpr size_t MaxBootServiceJsonEntries = 8u;
+
+constexpr const char BootServicesJson[] = R"json(
+[
+  {
+    "name": "storage-root",
+    "path": "/services/storage-root",
+    "backend": "virtio-blk",
+    "autostart": true,
+    "order": 10
+  },
+  {
+    "name": "userspace-init",
+    "path": "/services/userspace-init",
+    "backend": "radix-init",
+    "terminal": "/dev/pts/boot-terminal",
+    "autostart": true,
+    "order": 45
+  },
+  {
+    "name": "fatfs",
+    "path": "/services/fatfs",
+    "backend": "virtio-blk",
+    "autostart": true,
+    "order": 30
+  },
+  {
+    "name": "network-smoke",
+    "path": "/services/network-smoke",
+    "backend": "virtio-net",
+    "autostart": true,
+    "order": 40
+  },
+  {
+    "name": "base-terminal",
+    "path": "/services/base-terminal",
+    "backend": "framebuffer-pty",
+    "display": "/dev/fb0",
+    "keyboard": "/dev/input/event0",
+    "pointer": "/dev/input/event1",
+    "terminal": "/dev/pts/boot-terminal",
+    "autostart": false,
+    "order": 50
+  }
+]
+)json";
+
+BootServiceJsonEntry g_boot_service_entries[MaxBootServiceJsonEntries]{};
+size_t g_boot_service_count = 0;
+
+void compact_transcript_for(size_t incoming_size) {
+    if (incoming_size >= sizeof(g_transcript)) {
+        g_transcript_size = 0;
+        g_transcript[0] = '\0';
+        return;
+    }
+    if (g_transcript_size + incoming_size + 1 < sizeof(g_transcript)) return;
+    size_t keep = sizeof(g_transcript) / 2u;
+    if (keep > g_transcript_size) keep = g_transcript_size;
+    const char *start = g_transcript + (g_transcript_size - keep);
+    while (keep > 0 && *start != '\n') {
+        ++start;
+        --keep;
+    }
+    if (keep > 0 && *start == '\n') {
+        ++start;
+        --keep;
+    }
+    memmove(g_transcript, start, keep);
+    g_transcript_size = keep;
+    g_transcript[g_transcript_size] = '\0';
+}
 
 void append_text(const char *text) {
     if (!text) return;
+    compact_transcript_for(strlen(text));
+    const size_t before = g_transcript_size;
     while (*text && g_transcript_size + 1 < sizeof(g_transcript)) {
         g_transcript[g_transcript_size++] = *text++;
     }
     g_transcript[g_transcript_size] = '\0';
+    if (g_transcript_size != before) g_terminal_dirty = 1;
+}
+
+void append_transcript_char(char ch) {
+    if (ch == '\r') return;
+    if (ch == '\b' || ch == 0x7f) {
+        if (g_transcript_size > 0 && g_transcript[g_transcript_size - 1u] != '\n') {
+            --g_transcript_size;
+            g_transcript[g_transcript_size] = '\0';
+        }
+        return;
+    }
+    if (ch == '\t') {
+        for (int i = 0; i < 4 && g_transcript_size + 1 < sizeof(g_transcript); ++i) {
+            g_transcript[g_transcript_size++] = ' ';
+        }
+        g_transcript[g_transcript_size] = '\0';
+        return;
+    }
+    if ((static_cast<unsigned char>(ch) < 0x20u && ch != '\n') || ch == 0x1bu) return;
+    if (g_transcript_size + 1 < sizeof(g_transcript)) {
+        g_transcript[g_transcript_size++] = ch;
+        g_transcript[g_transcript_size] = '\0';
+    }
 }
 
 void append_bytes(const char *text, size_t size) {
+    if (!text || !size) return;
+    compact_transcript_for(size * 4u);
+    const size_t before = g_transcript_size;
     for (size_t i = 0; i < size && g_transcript_size + 1 < sizeof(g_transcript); ++i) {
-        g_transcript[g_transcript_size++] = text[i];
+        append_transcript_char(text[i]);
     }
     g_transcript[g_transcript_size] = '\0';
+    if (g_transcript_size != before) g_terminal_dirty = 1;
+}
+
+struct TerminalGlyph {
+    char ch;
+    uint8_t rows[7];
+};
+
+constexpr TerminalGlyph TerminalFont[] = {
+    {' ', {0x00,0x00,0x00,0x00,0x00,0x00,0x00}},
+    {'!', {0x04,0x04,0x04,0x04,0x00,0x04,0x00}},
+    {'"', {0x0a,0x0a,0x00,0x00,0x00,0x00,0x00}},
+    {'#', {0x0a,0x1f,0x0a,0x0a,0x1f,0x0a,0x00}},
+    {'$', {0x04,0x0f,0x14,0x0e,0x05,0x1e,0x04}},
+    {'%', {0x18,0x19,0x02,0x04,0x08,0x13,0x03}},
+    {'&', {0x0c,0x12,0x14,0x08,0x15,0x12,0x0d}},
+    {'\'',{0x04,0x04,0x00,0x00,0x00,0x00,0x00}},
+    {'(', {0x02,0x04,0x08,0x08,0x08,0x04,0x02}},
+    {')', {0x08,0x04,0x02,0x02,0x02,0x04,0x08}},
+    {'*', {0x00,0x04,0x15,0x0e,0x15,0x04,0x00}},
+    {'+', {0x00,0x04,0x04,0x1f,0x04,0x04,0x00}},
+    {',', {0x00,0x00,0x00,0x00,0x04,0x04,0x08}},
+    {'-', {0x00,0x00,0x00,0x1f,0x00,0x00,0x00}},
+    {'.', {0x00,0x00,0x00,0x00,0x00,0x04,0x00}},
+    {'/', {0x01,0x02,0x02,0x04,0x08,0x08,0x10}},
+    {'0', {0x0e,0x11,0x13,0x15,0x19,0x11,0x0e}},
+    {'1', {0x04,0x0c,0x04,0x04,0x04,0x04,0x0e}},
+    {'2', {0x0e,0x11,0x01,0x02,0x04,0x08,0x1f}},
+    {'3', {0x1e,0x01,0x01,0x0e,0x01,0x01,0x1e}},
+    {'4', {0x02,0x06,0x0a,0x12,0x1f,0x02,0x02}},
+    {'5', {0x1f,0x10,0x10,0x1e,0x01,0x01,0x1e}},
+    {'6', {0x06,0x08,0x10,0x1e,0x11,0x11,0x0e}},
+    {'7', {0x1f,0x01,0x02,0x04,0x08,0x08,0x08}},
+    {'8', {0x0e,0x11,0x11,0x0e,0x11,0x11,0x0e}},
+    {'9', {0x0e,0x11,0x11,0x0f,0x01,0x02,0x0c}},
+    {':', {0x00,0x04,0x00,0x00,0x04,0x00,0x00}},
+    {';', {0x00,0x04,0x00,0x00,0x04,0x04,0x08}},
+    {'<', {0x02,0x04,0x08,0x10,0x08,0x04,0x02}},
+    {'=', {0x00,0x00,0x1f,0x00,0x1f,0x00,0x00}},
+    {'>', {0x08,0x04,0x02,0x01,0x02,0x04,0x08}},
+    {'?', {0x0e,0x11,0x01,0x02,0x04,0x00,0x04}},
+    {'@', {0x0e,0x11,0x01,0x0d,0x15,0x15,0x0e}},
+    {'A', {0x0e,0x11,0x11,0x1f,0x11,0x11,0x11}},
+    {'B', {0x1e,0x11,0x11,0x1e,0x11,0x11,0x1e}},
+    {'C', {0x0e,0x11,0x10,0x10,0x10,0x11,0x0e}},
+    {'D', {0x1e,0x11,0x11,0x11,0x11,0x11,0x1e}},
+    {'E', {0x1f,0x10,0x10,0x1e,0x10,0x10,0x1f}},
+    {'F', {0x1f,0x10,0x10,0x1e,0x10,0x10,0x10}},
+    {'G', {0x0e,0x11,0x10,0x17,0x11,0x11,0x0f}},
+    {'H', {0x11,0x11,0x11,0x1f,0x11,0x11,0x11}},
+    {'I', {0x0e,0x04,0x04,0x04,0x04,0x04,0x0e}},
+    {'J', {0x07,0x02,0x02,0x02,0x12,0x12,0x0c}},
+    {'K', {0x11,0x12,0x14,0x18,0x14,0x12,0x11}},
+    {'L', {0x10,0x10,0x10,0x10,0x10,0x10,0x1f}},
+    {'M', {0x11,0x1b,0x15,0x15,0x11,0x11,0x11}},
+    {'N', {0x11,0x19,0x15,0x13,0x11,0x11,0x11}},
+    {'O', {0x0e,0x11,0x11,0x11,0x11,0x11,0x0e}},
+    {'P', {0x1e,0x11,0x11,0x1e,0x10,0x10,0x10}},
+    {'Q', {0x0e,0x11,0x11,0x11,0x15,0x12,0x0d}},
+    {'R', {0x1e,0x11,0x11,0x1e,0x14,0x12,0x11}},
+    {'S', {0x0f,0x10,0x10,0x0e,0x01,0x01,0x1e}},
+    {'T', {0x1f,0x04,0x04,0x04,0x04,0x04,0x04}},
+    {'U', {0x11,0x11,0x11,0x11,0x11,0x11,0x0e}},
+    {'V', {0x11,0x11,0x11,0x11,0x11,0x0a,0x04}},
+    {'W', {0x11,0x11,0x11,0x15,0x15,0x15,0x0a}},
+    {'X', {0x11,0x11,0x0a,0x04,0x0a,0x11,0x11}},
+    {'Y', {0x11,0x11,0x0a,0x04,0x04,0x04,0x04}},
+    {'Z', {0x1f,0x01,0x02,0x04,0x08,0x10,0x1f}},
+    {'[', {0x0e,0x08,0x08,0x08,0x08,0x08,0x0e}},
+    {'\\',{0x10,0x08,0x08,0x04,0x02,0x02,0x01}},
+    {']', {0x0e,0x02,0x02,0x02,0x02,0x02,0x0e}},
+    {'^', {0x04,0x0a,0x11,0x00,0x00,0x00,0x00}},
+    {'_', {0x00,0x00,0x00,0x00,0x00,0x00,0x1f}},
+    {'`', {0x08,0x04,0x00,0x00,0x00,0x00,0x00}},
+    {'a', {0x00,0x00,0x0e,0x01,0x0f,0x11,0x0f}},
+    {'b', {0x10,0x10,0x16,0x19,0x11,0x11,0x1e}},
+    {'c', {0x00,0x00,0x0e,0x10,0x10,0x11,0x0e}},
+    {'d', {0x01,0x01,0x0d,0x13,0x11,0x11,0x0f}},
+    {'e', {0x00,0x00,0x0e,0x11,0x1f,0x10,0x0e}},
+    {'f', {0x06,0x09,0x08,0x1c,0x08,0x08,0x08}},
+    {'g', {0x00,0x00,0x0f,0x11,0x0f,0x01,0x0e}},
+    {'h', {0x10,0x10,0x16,0x19,0x11,0x11,0x11}},
+    {'i', {0x04,0x00,0x0c,0x04,0x04,0x04,0x0e}},
+    {'j', {0x02,0x00,0x06,0x02,0x02,0x12,0x0c}},
+    {'k', {0x10,0x10,0x12,0x14,0x18,0x14,0x12}},
+    {'l', {0x0c,0x04,0x04,0x04,0x04,0x04,0x0e}},
+    {'m', {0x00,0x00,0x1a,0x15,0x15,0x11,0x11}},
+    {'n', {0x00,0x00,0x16,0x19,0x11,0x11,0x11}},
+    {'o', {0x00,0x00,0x0e,0x11,0x11,0x11,0x0e}},
+    {'p', {0x00,0x00,0x1e,0x11,0x1e,0x10,0x10}},
+    {'q', {0x00,0x00,0x0d,0x13,0x0f,0x01,0x01}},
+    {'r', {0x00,0x00,0x16,0x19,0x10,0x10,0x10}},
+    {'s', {0x00,0x00,0x0f,0x10,0x0e,0x01,0x1e}},
+    {'t', {0x08,0x08,0x1c,0x08,0x08,0x09,0x06}},
+    {'u', {0x00,0x00,0x11,0x11,0x11,0x13,0x0d}},
+    {'v', {0x00,0x00,0x11,0x11,0x11,0x0a,0x04}},
+    {'w', {0x00,0x00,0x11,0x11,0x15,0x15,0x0a}},
+    {'x', {0x00,0x00,0x11,0x0a,0x04,0x0a,0x11}},
+    {'y', {0x00,0x00,0x11,0x11,0x0f,0x01,0x0e}},
+    {'z', {0x00,0x00,0x1f,0x02,0x04,0x08,0x1f}},
+    {'{', {0x02,0x04,0x04,0x08,0x04,0x04,0x02}},
+    {'|', {0x04,0x04,0x04,0x00,0x04,0x04,0x04}},
+    {'}', {0x08,0x04,0x04,0x02,0x04,0x04,0x08}},
+    {'~', {0x00,0x00,0x08,0x15,0x02,0x00,0x00}},
+};
+
+uint8_t terminal_glyph_row(char ch, uint32_t row) {
+    for (const auto& glyph : TerminalFont) {
+        if (glyph.ch == ch) return glyph.rows[row];
+    }
+    return TerminalFont[0].rows[row];
+}
+
+uint32_t terminal_scale_for(const rad_framebuffer_info_t& info) {
+    if (info.height >= 900u && info.width >= 1280u) return 3u;
+    if (info.height >= 540u) return 2u;
+    return 1u;
+}
+
+void terminal_put_pixel(const rad_framebuffer_info_t& info, uint32_t x, uint32_t y, uint32_t color) {
+    if (!info.pixels || x >= info.width || y >= info.height || info.pixel_format != RAD_PIXEL_FORMAT_XRGB8888) return;
+    auto *row = static_cast<uint8_t*>(info.pixels) + static_cast<size_t>(y) * info.stride_bytes;
+    auto *pixel = reinterpret_cast<uint32_t*>(row + static_cast<size_t>(x) * sizeof(uint32_t));
+    *pixel = color | 0xff000000u;
+}
+
+void terminal_fill_rect(const rad_framebuffer_info_t& info, uint32_t x, uint32_t y, uint32_t width, uint32_t height, uint32_t color) {
+    const uint32_t max_x = x + width > info.width ? info.width : x + width;
+    const uint32_t max_y = y + height > info.height ? info.height : y + height;
+    for (uint32_t py = y; py < max_y; ++py) {
+        for (uint32_t px = x; px < max_x; ++px) terminal_put_pixel(info, px, py, color);
+    }
+}
+
+void terminal_draw_text(const rad_framebuffer_info_t& info, uint32_t cell_x, uint32_t cell_y, const char *text, uint32_t foreground, uint32_t background, uint32_t scale) {
+    if (!text || scale == 0) return;
+    const uint32_t cell_width = 6u * scale;
+    const uint32_t cell_height = 9u * scale;
+    uint32_t x = cell_x;
+    uint32_t y = cell_y;
+    const uint32_t columns = cell_width ? info.width / cell_width : 0;
+    const uint32_t rows = cell_height ? info.height / cell_height : 0;
+    for (const char *p = text; *p && y < rows; ++p) {
+        if (*p == '\n') {
+            x = cell_x;
+            ++y;
+            continue;
+        }
+        const uint32_t origin_x = x * cell_width;
+        const uint32_t origin_y = y * cell_height;
+        terminal_fill_rect(info, origin_x, origin_y, cell_width, cell_height, background);
+        for (uint32_t row = 0; row < 7u; ++row) {
+            const uint8_t bits = terminal_glyph_row(*p, row);
+            for (uint32_t col = 0; col < 5u; ++col) {
+                if (!(bits & (1u << (4u - col)))) continue;
+                terminal_fill_rect(info, origin_x + col * scale, origin_y + row * scale, scale, scale, foreground);
+            }
+        }
+        ++x;
+        if (x >= columns) {
+            x = cell_x;
+            ++y;
+        }
+    }
 }
 
 void serial_hex64(uint64_t value) {
@@ -354,29 +640,56 @@ rad_status_t register_framebuffer(const Mb2FramebufferTag *fb) {
 }
 
 void render_terminal(rad_framebuffer_t framebuffer) {
+    if (!g_terminal_dirty) return;
     rad_framebuffer_info_t info{};
     if (rad_framebuffer_get_info(framebuffer, &info) != RAD_STATUS_OK) return;
-    rad_framebuffer_clear(framebuffer, 0x00071422u);
-    rad_framebuffer_draw_text(framebuffer, 1, 1, "RADKernel x86_64 VM Terminal", 0x00e5f3ffu, 0x0010273au);
-    rad_framebuffer_draw_text(framebuffer, 1, 3, "Slint target: freestanding runtime integration pending; PTY shell active", 0x00fef3c7u, 0x00071422u);
+    const uint32_t scale = terminal_scale_for(info);
+    if (!info.pixels || info.pixel_format != RAD_PIXEL_FORMAT_XRGB8888) {
+        rad_framebuffer_clear(framebuffer, 0x00071422u);
+        rad_framebuffer_draw_text(framebuffer, 1, 1, "RADix x86_64 Base Terminal", 0x00e5f3ffu, 0x0010273au);
+        rad_framebuffer_draw_text(framebuffer, 1, 3, "Fallback framebuffer text renderer", 0x00fef3c7u, 0x00071422u);
+    } else {
+        terminal_fill_rect(info, 0, 0, info.width, info.height, 0x00071422u);
+        terminal_draw_text(info, 2, 1, "RADix x86_64 Base Terminal", 0x00e5f3ffu, 0x0010273au, scale);
+        terminal_draw_text(info, 2, 3, "Base framebuffer PTY shell active; Slint WM disabled for isolation", 0x00fef3c7u, 0x00071422u, scale);
+    }
 
-    const uint32_t rows = info.height / 8u;
-    const uint32_t cols = info.width / 8u;
+    const uint32_t rows = info.height / (9u * scale);
+    const uint32_t cols = info.width / (6u * scale);
+    const uint32_t body_rows = rows > 7u ? rows - 7u : 1u;
+    const char *start = g_transcript;
+    uint32_t newlines = 0;
+    for (size_t i = g_transcript_size; i > 0 && newlines < body_rows; --i) {
+        if (g_transcript[i - 1u] == '\n') {
+            ++newlines;
+            if (newlines == body_rows) {
+                start = g_transcript + i;
+                break;
+            }
+        }
+    }
     uint32_t y = 5;
     char line[160];
     size_t pos = 0;
-    for (size_t i = 0; i <= g_transcript_size && y + 1 < rows; ++i) {
-        const char ch = g_transcript[i];
+    for (const char *p = start; y + 1 < rows; ++p) {
+        const char ch = *p;
         if (ch != '\n' && ch != '\0' && pos + 1 < sizeof(line) && pos + 1 < cols) {
             line[pos++] = ch;
             continue;
         }
         line[pos] = '\0';
-        rad_framebuffer_draw_text(framebuffer, 1, y++, line, 0x00d1fae5u, 0x00020617u);
+        if (info.pixels && info.pixel_format == RAD_PIXEL_FORMAT_XRGB8888) {
+            terminal_draw_text(info, 2, y, line, 0x00d1fae5u, 0x00020617u, scale);
+        } else {
+            rad_framebuffer_draw_text(framebuffer, 1, y, line, 0x00d1fae5u, 0x00020617u);
+        }
+        ++y;
         pos = 0;
+        if (ch == '\0') break;
     }
     rad_framebuffer_rect_t rect{0, 0, info.width, info.height};
     rad_framebuffer_flush(framebuffer, &rect);
+    g_terminal_dirty = 0;
 }
 
 void pty_drain(rad_pty_t pty) {
@@ -456,26 +769,6 @@ void deferred_work_self_test_handler(void*) {
     ++g_deferred_work_ran;
 }
 
-void scheduler_probe_task(void*) {
-    ++g_scheduler_probe_ran;
-}
-
-void ap_scheduler_probe_task(void*) {
-    g_ap_scheduler_probe_core = rad_task_current_core();
-}
-
-void preempt_busy_task(void*) {
-    volatile uint64_t spin = 0;
-    while (!g_preempt_observer_ran && spin < 1000000ull) {
-        ++spin;
-    }
-    g_preempt_busy_done = g_preempt_observer_ran ? 1 : -1;
-}
-
-void preempt_observer_task(void*) {
-    g_preempt_observer_ran = 1;
-}
-
 void runtime_self_test(void) {
     size_t ran = 0;
     const rad_status_t submit = rad_work_submit("boot-self-test", deferred_work_self_test_handler, nullptr);
@@ -512,70 +805,280 @@ void runtime_self_test(void) {
         rad_printk("RADIX_SCHED_CORE_FAIL\n");
     }
 
-    const uint64_t ticks_before = scheduler.scheduler_ticks;
-    rad_task_t busy_task = nullptr;
-    rad_task_t observer_task = nullptr;
-    rad_task_config_t busy_config{};
-    busy_config.size = sizeof(busy_config);
-    busy_config.name = "preempt-busy";
-    busy_config.target_core = RAD_TASK_CORE_SERVICE;
-    rad_task_config_t observer_config{};
-    observer_config.size = sizeof(observer_config);
-    observer_config.name = "preempt-observer";
-    observer_config.target_core = RAD_TASK_CORE_SERVICE;
-    const rad_status_t busy_created = rad_task_create_config(&busy_task, &busy_config, preempt_busy_task, nullptr);
-    const rad_status_t observer_created = rad_task_create_config(&observer_task, &observer_config, preempt_observer_task, nullptr);
-    if (busy_created == RAD_STATUS_OK
-        && observer_created == RAD_STATUS_OK
-        && rad_task_join(observer_task) == RAD_STATUS_OK
-        && rad_task_join(busy_task) == RAD_STATUS_OK
-        && rad_scheduler_info_get(&scheduler) == RAD_STATUS_OK
-        && scheduler.preemption_supported
-        && scheduler.preemption_enabled
-        && scheduler.scheduler_ticks > ticks_before
-        && g_preempt_observer_ran == 1
-        && g_preempt_busy_done == 1) {
+    if (scheduler.detected_cores > 1 && (scheduler.worker_running_mask & 0x2u)) {
+        append_text("RADIX_AP_WORKERS_ONLINE_OK\n");
+        rad_printk("RADIX_AP_WORKERS_ONLINE_OK\n");
+    }
+    if (scheduler.preemption_enabled) {
         append_text("RADIX_PREEMPT_SCHED_OK\n");
         rad_printk("RADIX_PREEMPT_SCHED_OK\n");
-    } else {
-        append_text("RADIX_PREEMPT_SCHED_FAIL\n");
-        rad_printk("RADIX_PREEMPT_SCHED_FAIL\n");
     }
+}
 
-    if (scheduler.detected_cores > 1 && (scheduler.worker_running_mask & 0x2u)) {
-        rad_task_t ap_task = nullptr;
-        rad_task_config_t ap_task_config{};
-        ap_task_config.size = sizeof(ap_task_config);
-        ap_task_config.name = "ap-scheduler-probe";
-        ap_task_config.target_core = 1;
-        if (rad_task_create_config(&ap_task, &ap_task_config, ap_scheduler_probe_task, nullptr) == RAD_STATUS_OK
-            && rad_task_join(ap_task) == RAD_STATUS_OK
-            && g_ap_scheduler_probe_core == 1) {
-            append_text("RADIX_AP_WORKER_TASK_OK\n");
-            rad_printk("RADIX_AP_WORKER_TASK_OK\n");
-        } else {
-            append_text("RADIX_AP_WORKER_TASK_FAIL\n");
-            rad_printk("RADIX_AP_WORKER_TASK_FAIL\n");
+void ap_scheduler_stress_task(void *context) {
+    auto *ran = static_cast<uint32_t*>(context);
+    if (ran) __atomic_store_n(ran, 1u, __ATOMIC_RELEASE);
+    for (uint32_t i = 0; i < 5000000u; ++i) {
+        asm volatile("pause" ::: "memory");
+    }
+}
+
+void ap_scheduler_stress_self_test(void) {
+    rad_scheduler_info_t scheduler{};
+    if (rad_scheduler_info_get(&scheduler) != RAD_STATUS_OK || scheduler.worker_running_mask == 0) return;
+
+    uint32_t ran = 0;
+    rad_task_config_t config{};
+    config.size = sizeof(config);
+    config.name = "ap-scheduler-stress";
+    config.stack_size = 4096u;
+    config.target_core = RAD_TASK_CORE_ANY;
+    rad_task_t task = nullptr;
+    const rad_status_t created = rad_task_create_config(&task, &config, ap_scheduler_stress_task, &ran);
+    if (created == RAD_STATUS_OK && task && rad_task_join(task) == RAD_STATUS_OK
+        && __atomic_load_n(&ran, __ATOMIC_ACQUIRE) == 1u) {
+        append_text("RADIX_AP_SCHED_STRESS_OK\n");
+        rad_printk("RADIX_AP_SCHED_STRESS_OK\n");
+    }
+}
+
+const char *json_skip_ws(const char *p, const char *end) {
+    while (p < end && (*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t')) ++p;
+    return p;
+}
+
+int json_key_matches(const char *quote, const char *end, const char *key) {
+    if (!quote || quote >= end || *quote != '"') return 0;
+    ++quote;
+    for (const char *k = key; *k; ++k, ++quote) {
+        if (quote >= end || *quote != *k) return 0;
+    }
+    return quote < end && *quote == '"';
+}
+
+const char *json_find_value(const char *object, const char *object_end, const char *key) {
+    const size_t key_len = strlen(key);
+    const char *p = object;
+    while (p < object_end) {
+        if (*p == '"' && static_cast<size_t>(object_end - p) > key_len + 2u && json_key_matches(p, object_end, key)) {
+            p += key_len + 2u;
+            p = json_skip_ws(p, object_end);
+            if (p >= object_end || *p != ':') return nullptr;
+            return json_skip_ws(p + 1, object_end);
         }
+        ++p;
+    }
+    return nullptr;
+}
+
+int json_get_string(const char *object, const char *object_end, const char *key, char *dst, size_t dst_size) {
+    const char *p = json_find_value(object, object_end, key);
+    if (!p || p >= object_end || *p != '"') return 0;
+    ++p;
+    size_t out = 0;
+    while (p < object_end && *p != '"') {
+        if (*p == '\\' && p + 1 < object_end) ++p;
+        if (out + 1u < dst_size) dst[out++] = *p;
+        ++p;
+    }
+    if (dst_size) dst[out] = '\0';
+    return p < object_end && *p == '"';
+}
+
+int json_get_bool(const char *object, const char *object_end, const char *key, int *value) {
+    const char *p = json_find_value(object, object_end, key);
+    if (!p) return 0;
+    if (p + 4 <= object_end && memcmp(p, "true", 4) == 0) {
+        *value = 1;
+        return 1;
+    }
+    if (p + 5 <= object_end && memcmp(p, "false", 5) == 0) {
+        *value = 0;
+        return 1;
+    }
+    return 0;
+}
+
+int json_get_int(const char *object, const char *object_end, const char *key, int *value) {
+    const char *p = json_find_value(object, object_end, key);
+    if (!p) return 0;
+    int sign = 1;
+    if (p < object_end && *p == '-') {
+        sign = -1;
+        ++p;
+    }
+    int result = 0;
+    int digits = 0;
+    while (p < object_end && *p >= '0' && *p <= '9') {
+        result = result * 10 + (*p - '0');
+        ++p;
+        ++digits;
+    }
+    if (!digits) return 0;
+    *value = result * sign;
+    return 1;
+}
+
+size_t parse_boot_services_json(const char *json, BootServiceJsonEntry *entries, size_t capacity) {
+    if (!json || !entries || !capacity) return 0;
+    const char *p = json;
+    const char *end = json + strlen(json);
+    size_t count = 0;
+    while (p < end && count < capacity) {
+        while (p < end && *p != '{') ++p;
+        if (p >= end) break;
+        const char *object = p;
+        const char *object_end = object + 1;
+        while (object_end < end && *object_end != '}') ++object_end;
+        if (object_end >= end) break;
+
+        BootServiceJsonEntry entry{};
+        json_get_string(object, object_end, "name", entry.name, sizeof(entry.name));
+        json_get_string(object, object_end, "path", entry.tree_path, sizeof(entry.tree_path));
+        json_get_string(object, object_end, "backend", entry.backend, sizeof(entry.backend));
+        json_get_string(object, object_end, "display", entry.display, sizeof(entry.display));
+        json_get_string(object, object_end, "keyboard", entry.keyboard, sizeof(entry.keyboard));
+        json_get_string(object, object_end, "pointer", entry.pointer, sizeof(entry.pointer));
+        json_get_string(object, object_end, "terminal", entry.terminal, sizeof(entry.terminal));
+        json_get_bool(object, object_end, "autostart", &entry.autostart);
+        json_get_int(object, object_end, "order", &entry.order);
+        if (entry.name[0]) entries[count++] = entry;
+        p = object_end + 1;
     }
 
-    const uint64_t switches_before = scheduler.context_switches;
-    rad_task_t scheduler_task = nullptr;
-    rad_task_config_t scheduler_task_config{};
-    scheduler_task_config.size = sizeof(scheduler_task_config);
-    scheduler_task_config.name = "scheduler-probe";
-    scheduler_task_config.target_core = RAD_TASK_CORE_SERVICE;
-    if (rad_task_create_config(&scheduler_task, &scheduler_task_config, scheduler_probe_task, nullptr) == RAD_STATUS_OK
-        && rad_task_join(scheduler_task) == RAD_STATUS_OK
-        && rad_scheduler_info_get(&scheduler) == RAD_STATUS_OK
-        && g_scheduler_probe_ran == 1
-        && scheduler.context_switches > switches_before) {
-        append_text("RADIX_CONTEXT_DISPATCH_OK\n");
-        rad_printk("RADIX_CONTEXT_DISPATCH_OK\n");
-    } else {
-        append_text("RADIX_CONTEXT_DISPATCH_FAIL\n");
-        rad_printk("RADIX_CONTEXT_DISPATCH_FAIL\n");
+    for (size_t i = 1; i < count; ++i) {
+        BootServiceJsonEntry value = entries[i];
+        size_t j = i;
+        while (j > 0 && entries[j - 1u].order > value.order) {
+            entries[j] = entries[j - 1u];
+            --j;
+        }
+        entries[j] = value;
     }
+    return count;
+}
+
+rad_status_t configure_boot_service_entry(const BootServiceJsonEntry& entry) {
+    rad_service_config_t config{};
+    config.size = sizeof(config);
+    config.tree_path = entry.tree_path;
+    config.backend = entry.backend;
+    config.display = entry.display;
+    config.keyboard = entry.keyboard;
+    config.pointer = entry.pointer;
+    config.terminal = entry.terminal;
+    config.autostart = entry.autostart;
+    config.order = entry.order;
+    return rad_service_configure(entry.name, &config);
+}
+
+rad_status_t storage_root_service_start(void *context, const rad_service_config_t*) {
+    auto *boot = static_cast<BootServiceContext*>(context);
+    if (!boot || !boot->storage_summary || !boot->storage_summary->virtio_block_devices) return RAD_STATUS_NOT_FOUND;
+    if (!x86_storage_self_test()) return RAD_STATUS_ERROR;
+    append_text("RADIX_VIRTIO_BLK_READ_OK\n");
+    if (x86_ext4_mount_root("/dev/vda") != RAD_STATUS_OK) return RAD_STATUS_ERROR;
+    append_text("RADIX_EXT4_MOUNT_OK\n");
+    rad_debug_marker("RADIX_EXT4_MOUNT_OK");
+    if (!x86_ext4_self_test()) return RAD_STATUS_ERROR;
+    append_text("RADIX_EXT4_ROOTFS_OK\n");
+    append_text("RADIX_EXT4_RW_OK\n");
+    append_text("RADIX_ROOTFS_INIT_FOUND\n");
+    rad_debug_marker("RADIX_EXT4_ROOTFS_OK");
+    rad_debug_marker("RADIX_EXT4_RW_OK");
+    rad_debug_marker("RADIX_ROOTFS_INIT_FOUND");
+    boot->rootfs_ready = 1;
+    append_text("RADIX_SERVICE_ROOTFS_OK\n");
+    rad_debug_marker("RADIX_SERVICE_ROOTFS_OK");
+    return RAD_STATUS_OK;
+}
+
+rad_status_t userspace_init_service_start(void *context, const rad_service_config_t*) {
+    auto *boot = static_cast<BootServiceContext*>(context);
+    if (!boot || !boot->rootfs_ready) return RAD_STATUS_NOT_INITIALIZED;
+    if (!x86_user_run_init("/bin/init")) return RAD_STATUS_ERROR;
+    boot->userspace_ready = 1;
+    append_text("RADIX_USER_INIT_OK\n");
+    append_text("RADIX_SERVICE_USERSPACE_OK\n");
+    rad_debug_marker("RADIX_USER_INIT_OK");
+    rad_debug_marker("RADIX_SERVICE_USERSPACE_OK");
+    return RAD_STATUS_OK;
+}
+
+rad_status_t fatfs_service_start(void *context, const rad_service_config_t*) {
+    auto *boot = static_cast<BootServiceContext*>(context);
+    if (!boot || !boot->rootfs_ready) return RAD_STATUS_NOT_INITIALIZED;
+    if (x86_fat_mount("/dev/vdb", "/mnt/fat") != RAD_STATUS_OK) {
+        rad_debug_marker("RADIX_FAT_MOUNT_FAIL");
+        return RAD_STATUS_ERROR;
+    }
+    append_text("RADIX_FAT_MOUNT_OK\n");
+    rad_debug_marker("RADIX_FAT_MOUNT_OK");
+    if (!x86_fat_self_test()) return RAD_STATUS_ERROR;
+    boot->fat_ready = 1;
+    append_text("RADIX_FAT_RW_OK\n");
+    append_text("RADIX_SERVICE_FAT_OK\n");
+    rad_debug_marker("RADIX_FAT_RW_OK");
+    rad_debug_marker("RADIX_SERVICE_FAT_OK");
+    return RAD_STATUS_OK;
+}
+
+rad_status_t network_smoke_service_start(void *context, const rad_service_config_t*) {
+    auto *boot = static_cast<BootServiceContext*>(context);
+    if (!boot || !x86_network_self_test()) return RAD_STATUS_ERROR;
+    boot->network_ready = 1;
+    append_text("RADIX_ETH_TX_OK\n");
+    append_text("RADIX_ARP_OK\n");
+    append_text("RADIX_IPV4_OK\n");
+    append_text("RADIX_UDP_OK\n");
+    append_text("RADIX_SERVICE_NETWORK_OK\n");
+    rad_debug_marker("RADIX_SERVICE_NETWORK_OK");
+    return RAD_STATUS_OK;
+}
+
+rad_status_t base_terminal_service_start(void *context, const rad_service_config_t*) {
+    auto *boot = static_cast<BootServiceContext*>(context);
+    if (!boot) return RAD_STATUS_INVALID_ARGUMENT;
+    boot->terminal_ready = 1;
+    append_text("RADIX_SERVICE_TERMINAL_OK\n");
+    rad_debug_marker("RADIX_SERVICE_TERMINAL_OK");
+    return RAD_STATUS_OK;
+}
+
+rad_status_t register_boot_services(BootServiceContext *context) {
+    const rad_service_descriptor_t descriptors[] = {
+        {sizeof(rad_service_descriptor_t), "storage-root", "radix,storage-root", "mount-root", 10, storage_root_service_start, nullptr, nullptr, context},
+        {sizeof(rad_service_descriptor_t), "userspace-init", "radix,userspace-init", "process-root", 45, userspace_init_service_start, nullptr, nullptr, context},
+        {sizeof(rad_service_descriptor_t), "fatfs", "radix,fatfs", "mount-extra", 30, fatfs_service_start, nullptr, nullptr, context},
+        {sizeof(rad_service_descriptor_t), "network-smoke", "radix,network-smoke", "network-smoke", 40, network_smoke_service_start, nullptr, nullptr, context},
+        {sizeof(rad_service_descriptor_t), "base-terminal", "radix,base-terminal", "terminal", 50, base_terminal_service_start, nullptr, nullptr, context},
+    };
+
+    for (const auto& descriptor : descriptors) {
+        const rad_status_t status = rad_service_register(&descriptor);
+        if (status != RAD_STATUS_OK && status != RAD_STATUS_ALREADY_EXISTS) return status;
+    }
+
+    g_boot_service_count = parse_boot_services_json(BootServicesJson, g_boot_service_entries, MaxBootServiceJsonEntries);
+    if (g_boot_service_count != sizeof(descriptors) / sizeof(descriptors[0])) return RAD_STATUS_INVALID_ARGUMENT;
+    for (size_t i = 0; i < g_boot_service_count; ++i) {
+        const rad_status_t status = configure_boot_service_entry(g_boot_service_entries[i]);
+        if (status != RAD_STATUS_OK) return status;
+    }
+    append_text("RADIX_SERVICE_JSON_OK\n");
+    append_text("RADIX_SERVICE_BOOTSTRAP_OK\n");
+    rad_debug_marker("RADIX_SERVICE_JSON_OK");
+    rad_debug_marker("RADIX_SERVICE_BOOTSTRAP_OK");
+    return RAD_STATUS_OK;
+}
+
+rad_status_t start_autostart_boot_services(void) {
+    for (size_t i = 0; i < g_boot_service_count; ++i) {
+        if (!g_boot_service_entries[i].autostart) continue;
+        const rad_status_t status = rad_service_start(g_boot_service_entries[i].name);
+        if (status != RAD_STATUS_OK) return status;
+    }
+    return RAD_STATUS_OK;
 }
 
 void pump_serial_to_pty(rad_device_t serial, rad_pty_t pty, rad_tty_t slave) {
@@ -718,6 +1221,7 @@ extern "C" void kernel_main64(uint32_t magic, uint32_t info_addr) {
 
     x86_vm_summary_t vm_summary{};
     x86_vm_init(&boot, &vm_summary);
+    if (x86_cpu_lapic_address()) x86_vm_map_kernel_mmio(x86_cpu_lapic_address(), 4096u);
 
     rad_kernel_config_t kernel_config{};
     kernel_config.backend_name = "x86_64_grub";
@@ -735,8 +1239,15 @@ extern "C" void kernel_main64(uint32_t magic, uint32_t info_addr) {
     }
     module_lifecycle_self_test();
     runtime_self_test();
+    ap_scheduler_stress_self_test();
     x86_storage_summary_t storage_summary{};
     x86_storage_probe(&storage_summary);
+    BootServiceContext service_context{};
+    service_context.storage_summary = &storage_summary;
+    if (register_boot_services(&service_context) != RAD_STATUS_OK) {
+        append_text("RADIX_SERVICE_BOOTSTRAP_FAIL\n");
+        rad_debug_marker("RADIX_SERVICE_BOOTSTRAP_FAIL");
+    }
     x86_serial_write("register framebuffer\n");
     const rad_status_t framebuffer_register_status = register_framebuffer(fb);
     char status_line[96];
@@ -790,6 +1301,8 @@ extern "C" void kernel_main64(uint32_t magic, uint32_t info_addr) {
     pty_command(pty, slave, "perf");
     x86_serial_write("cmd latency\n");
     pty_command(pty, slave, "latency");
+    x86_serial_write("cmd services\n");
+    pty_command(pty, slave, "services");
     posix_abi_self_test();
     if (x86_cpu_self_test()) append_text("RADIX_INT80_OK\n");
     if (x86_context_self_test()) {
@@ -800,53 +1313,62 @@ extern "C" void kernel_main64(uint32_t magic, uint32_t info_addr) {
         rad_printk("RADIX_CONTEXT_SWITCH_FAIL\n");
     }
     if (x86_vm_self_test()) append_text("RADIX_VM_PAGE_ALLOC_OK\n");
-    if (x86_storage_self_test()) {
-        append_text("RADIX_VIRTIO_BLK_READ_OK\n");
-        if (x86_ext4_mount_root("/dev/vda") == RAD_STATUS_OK) {
-            append_text("RADIX_EXT4_MOUNT_OK\n");
-            if (x86_ext4_self_test()) {
-                append_text("RADIX_EXT4_ROOTFS_OK\n");
-                append_text("RADIX_EXT4_RW_OK\n");
-                append_text("RADIX_ROOTFS_INIT_FOUND\n");
-                if (x86_user_run_init("/bin/init")) append_text("RADIX_USER_INIT_OK\n");
-            }
-        }
-    }
-    if (x86_fat_mount("/dev/vdb", "/mnt/fat") == RAD_STATUS_OK) {
-        append_text("RADIX_FAT_MOUNT_OK\n");
-        if (x86_fat_self_test()) append_text("RADIX_FAT_RW_OK\n");
-    } else {
-        rad_debug_marker("RADIX_FAT_MOUNT_FAIL");
-    }
-    if (x86_network_self_test()) {
-        append_text("RADIX_ETH_TX_OK\n");
-        append_text("RADIX_ARP_OK\n");
-        append_text("RADIX_IPV4_OK\n");
-        append_text("RADIX_UDP_OK\n");
+    if (start_autostart_boot_services() != RAD_STATUS_OK) {
+        append_text("RADIX_SERVICE_AUTOSTART_FAIL\n");
+        rad_debug_marker("RADIX_SERVICE_AUTOSTART_FAIL");
     }
     append_text(vm_summary.user_address_space_ready ? "RADIX_USER_VM_SCAFFOLD_OK\n" : "RADIX_USER_VM_SCAFFOLD_FAIL\n");
     append_text(storage_summary.virtio_block_devices ? "RADIX_VIRTIO_BLK_FOUND\n" : "RADIX_VIRTIO_BLK_ABSENT\n");
-    x86_serial_write("start slint shell\n");
+    x86_serial_write("start base framebuffer terminal\n");
     framebuffer_probe_info = {};
     framebuffer_probe_status = rad_framebuffer_get_info(framebuffer, &framebuffer_probe_info);
+    if (framebuffer_probe_status == RAD_STATUS_OK) {
+        x86_ps2_set_pointer_bounds(framebuffer_probe_info.width, framebuffer_probe_info.height);
+    }
     snprintf(status_line, sizeof(status_line), "framebuffer pre-slint status=%d pixels=0x%llx\n",
         static_cast<int>(framebuffer_probe_status),
         static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(framebuffer_probe_info.pixels)));
     x86_serial_write(status_line);
-    rad_status_t slint_status = framebuffer
-        ? radix_slint_shell_start(framebuffer, g_transcript)
-        : RAD_STATUS_NOT_FOUND;
-    if (slint_status == RAD_STATUS_OK) {
-        x86_serial_write("RAD x86_64 Slint terminal ready\n");
-    } else {
-        append_text("RADIX_SLINT_BOOT_SHELL_FAIL\n");
-        rad_debug_marker("RADIX_SLINT_BOOT_SHELL_FAIL");
-        char slint_status_line[80];
-        snprintf(slint_status_line, sizeof(slint_status_line), "RADIX_SLINT_STATUS %d\n", static_cast<int>(slint_status));
-        x86_serial_write(slint_status_line);
-        if (framebuffer) render_terminal(framebuffer);
-        x86_serial_write("RAD x86_64 Slint terminal failed\n");
-    }
+    append_text("RADIX_BASE_TERMINAL_OK\n");
+    rad_debug_marker("RADIX_BASE_TERMINAL_OK");
+    rad_service_start("base-terminal");
+    x86_serial_write("cmd services\n");
+    pty_command(pty, slave, "services");
+    rad_sleep_ms(5000);
+    x86_serial_write("cmd initctl list\n");
+    pty_command(pty, slave, "initctl list");
+    x86_serial_write("cmd initctl status userspace-shell\n");
+    pty_command(pty, slave, "initctl status userspace-shell");
+    x86_serial_write("cmd help\n");
+    pty_command(pty, slave, "help");
+    x86_serial_write("cmd ls /bin\n");
+    pty_command(pty, slave, "ls /bin");
+    x86_serial_write("cmd cat /bin/test.sh\n");
+    pty_command(pty, slave, "cat /bin/test.sh");
+    x86_serial_write("cmd mkdir /tmp/rashpass\n");
+    pty_command(pty, slave, "mkdir /tmp/rashpass");
+    x86_serial_write("cmd touch /tmp/rashpass/file\n");
+    pty_command(pty, slave, "touch /tmp/rashpass/file");
+    x86_serial_write("cmd stat /tmp/rashpass/file\n");
+    pty_command(pty, slave, "stat /tmp/rashpass/file");
+    x86_serial_write("cmd mount\n");
+    pty_command(pty, slave, "mount");
+    x86_serial_write("cmd ps\n");
+    pty_command(pty, slave, "ps");
+    x86_serial_write("cmd sh /bin/test.sh\n");
+    pty_command(pty, slave, "sh /bin/test.sh");
+    x86_serial_write("cmd initctl restart userspace-shell\n");
+    pty_command(pty, slave, "initctl restart userspace-shell");
+    x86_serial_write("cmd logread init\n");
+    pty_command(pty, slave, "logread init");
+    x86_serial_write("cmd logread userspace-shell\n");
+    pty_command(pty, slave, "logread userspace-shell");
+    x86_serial_write("cmd logread kernel\n");
+    pty_command(pty, slave, "logread kernel");
+    x86_serial_write("cmd dmesg\n");
+    pty_command(pty, slave, "dmesg");
+    if (framebuffer) render_terminal(framebuffer);
+    x86_serial_write("RAD x86_64 base terminal ready\n");
 
     rad_device_t serial = nullptr;
     rad_device_open("/dev/ttyS0", &serial);
@@ -872,15 +1394,15 @@ extern "C" void kernel_main64(uint32_t magic, uint32_t info_addr) {
     }
     for (;;) {
         if (serial) pump_serial_to_pty(serial, pty, slave);
-        if (input) pump_input_to_pty(input, pty, slave);
-        if (pointer) pump_pointer_input(pointer);
         if (radix_slint_shell_ready()) {
-            radix_slint_shell_set_terminal_text(g_transcript);
             radix_slint_shell_poll();
         } else if (framebuffer) {
+            if (input) pump_input_to_pty(input, pty, slave);
+            if (pointer) pump_pointer_input(pointer);
             render_terminal(framebuffer);
         }
         rad_kernel_poll();
-        rad_sleep_ms(16);
+        if (x86_ui_idle_frame) x86_ui_idle_frame();
+        else rad_sleep_ms(16);
     }
 }

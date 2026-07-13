@@ -55,8 +55,8 @@ test downloads and extracts Ubuntu's `qemu-system-arm` package under
 `.radbuild/qemu-arm` and reuses it on later runs. A passing run verifies the
 early BCM283x HAL, PL011 UART, mailbox framebuffer, handoff validation, payload
 entry, block and FAT mount scaffolds, USB/input scaffolds, framebuffer dirty
-present, portable A53 boot/process/COW checks, and Slint/RADCompositor parity
-markers.
+present, A53 MMU/table setup, process/COW checks, and Slint/RADCompositor
+parity markers.
 
 The current RAD-owned backend includes:
 
@@ -70,10 +70,10 @@ The current RAD-owned backend includes:
   backing for QEMU smoke reads.
 - `/dev/usb0` host-info scaffold and `/dev/input/event0` synthetic HID input
   event path.
-- A portable A53 process model that registers process arch hooks, performs
-  kernel process-table fork/fd-clone/wait checks, and exercises deterministic
-  parent/child COW isolation before the future privileged MMU implementation
-  takes over the same interface.
+- A portable A53 MMU/process layer with 4 KiB translation-table construction,
+  TTBR0 process roots, a TTBR1 kernel root, user-copy validation, COW
+  page-fault handling, syscall dispatch framing, and kernel process-table
+  fork/fd-clone/wait checks.
 - Slint/RADCompositor boot-shell, window-manager, terminal-window, and
   compositor-damage smoke markers.
 
@@ -94,14 +94,14 @@ for validating the actual Circle FAT load and jump sequence.
 
 ## Current Limits
 
-This page is experimental. The portable A53 layer now owns the boot/process/COW
-contract, but privileged AArch64 exception-vector entry, real EL0 execution,
-hardware page tables, and user ELF replacement are not complete yet. The eMMC,
-USB, HID, and Slint shell paths are still QEMU-visible scaffolds rather than
-complete physical drivers. The next Pi passes need the real BCM283x eMMC command
-engine, real DWC OTG host enumeration, hardware keyboard/mouse input,
-second-stage FAT load/jump validation on silicon, and full AArch64
-page-table/trap/fork/exec/COW behavior.
+This page is experimental. The portable A53 layer now builds real page tables
+and enables the MMU in the standalone payload, but full EL0 ELF execution,
+preemptive user scheduling, and complete exec image replacement are still not at
+x86 parity. The eMMC, USB, HID, and Slint shell paths are still QEMU-visible
+scaffolds rather than complete physical drivers. The next Pi passes need the
+real BCM283x eMMC command engine, real DWC OTG host enumeration, hardware
+keyboard/mouse input, second-stage FAT load/jump validation on silicon, and full
+AArch64 userspace execution parity.
 
 Physical Pi Zero 2 W hardware remains the authority for mailbox framebuffer and
 SD behavior.

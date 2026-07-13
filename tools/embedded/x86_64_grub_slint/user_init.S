@@ -4,6 +4,10 @@
 .type _start, @function
 _start:
     sub $160, %rsp
+    mov $5000000, %rcx
+1:
+    pause
+    loop 1b
 
     mov $14, %rax
     int $0x80
@@ -49,9 +53,14 @@ _start:
     mov $init_message_end - init_message, %rdx
     int $0x80
 
+    leaq radsh_path(%rip), %rcx
+    mov %rcx, (%rsp)
+    leaq selftest_arg(%rip), %rcx
+    mov %rcx, 8(%rsp)
+    movq $0, 16(%rsp)
     mov $12, %rax
     leaq radsh_path(%rip), %rdi
-    xor %rsi, %rsi
+    mov %rsp, %rsi
     int $0x80
 
 fail:
@@ -81,3 +90,5 @@ fail_message:
 fail_message_end:
 radsh_path:
     .asciz "/bin/radsh"
+selftest_arg:
+    .asciz "--selftest"

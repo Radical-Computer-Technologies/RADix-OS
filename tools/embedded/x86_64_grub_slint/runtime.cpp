@@ -6,8 +6,18 @@
 extern "C" void x86_serial_write(const char *text);
 
 namespace {
-alignas(16) uint8_t g_heap[2u * 1024u * 1024u];
-size_t g_heap_used = 0;
+struct alignas(64) HeapBlock {
+    size_t size;
+    HeapBlock *next;
+    uint32_t free;
+    uint8_t reserved[64u - sizeof(size_t) - sizeof(HeapBlock*) - sizeof(uint32_t)];
+};
+
+static_assert(sizeof(HeapBlock) == 64u);
+
+alignas(64) uint8_t g_heap[64u * 1024u * 1024u];
+HeapBlock *g_heap_head = nullptr;
+volatile int g_heap_lock = 0;
 int g_cpp_ctor_ran = 0;
 
 struct CppRuntimeProbe {
@@ -16,18 +26,63 @@ struct CppRuntimeProbe {
 
 CppRuntimeProbe g_cpp_runtime_probe;
 
+void heap_lock(void) {
+    while (__atomic_test_and_set(&g_heap_lock, __ATOMIC_ACQUIRE)) asm volatile("pause");
+}
+
+void heap_unlock(void) {
+    __atomic_clear(&g_heap_lock, __ATOMIC_RELEASE);
+}
+
+size_t align_up_size(size_t value, size_t alignment) {
+    return (value + alignment - 1u) & ~(alignment - 1u);
+}
+
+void heap_init(void) {
+    if (g_heap_head) return;
+    g_heap_head = reinterpret_cast<HeapBlock*>(g_heap);
+    g_heap_head->size = sizeof(g_heap) - sizeof(HeapBlock);
+    g_heap_head->next = nullptr;
+    g_heap_head->free = 1;
+}
+
+void split_block(HeapBlock *block, size_t size) {
+    if (!block || block->size < size + sizeof(HeapBlock) + 64u) return;
+    auto *next = reinterpret_cast<HeapBlock*>(reinterpret_cast<uint8_t*>(block + 1) + size);
+    next->size = block->size - size - sizeof(HeapBlock);
+    next->next = block->next;
+    next->free = 1;
+    block->size = size;
+    block->next = next;
+}
+
+void coalesce_heap(void) {
+    for (HeapBlock *block = g_heap_head; block && block->next;) {
+        if (block->free && block->next->free) {
+            block->size += sizeof(HeapBlock) + block->next->size;
+            block->next = block->next->next;
+        } else {
+            block = block->next;
+        }
+    }
+}
+
 void *allocate_aligned(size_t size, size_t alignment) {
     if (size == 0) size = 1;
     if (alignment < 16u) alignment = 16u;
-    if ((alignment & (alignment - 1u)) != 0) return nullptr;
-    const size_t base = reinterpret_cast<size_t>(g_heap);
-    const size_t current = base + g_heap_used;
-    const size_t aligned = (current + alignment - 1u) & ~(alignment - 1u);
-    const size_t offset = aligned - base;
-    size = (size + 15u) & ~size_t(15u);
-    if (offset > sizeof(g_heap) || size > sizeof(g_heap) - offset) return nullptr;
-    g_heap_used = offset + size;
-    return reinterpret_cast<void*>(aligned);
+    if ((alignment & (alignment - 1u)) != 0 || alignment > 64u) return nullptr;
+    size = align_up_size(size, 64u);
+    heap_lock();
+    heap_init();
+    for (HeapBlock *block = g_heap_head; block; block = block->next) {
+        if (!block->free || block->size < size) continue;
+        split_block(block, size);
+        block->free = 0;
+        heap_unlock();
+        return block + 1;
+    }
+    heap_unlock();
+    return nullptr;
 }
 
 void put_char(char *buffer, size_t size, size_t& pos, char ch) {
@@ -250,7 +305,18 @@ void *malloc(size_t size) {
     return allocate_aligned(size, 16u);
 }
 
-void free(void*) {}
+void free(void *pointer) {
+    if (!pointer) return;
+    auto *block = reinterpret_cast<HeapBlock*>(pointer) - 1;
+    const uintptr_t block_addr = reinterpret_cast<uintptr_t>(block);
+    const uintptr_t heap_begin = reinterpret_cast<uintptr_t>(g_heap);
+    const uintptr_t heap_end = heap_begin + sizeof(g_heap);
+    if (block_addr < heap_begin || block_addr >= heap_end) return;
+    heap_lock();
+    block->free = 1;
+    coalesce_heap();
+    heap_unlock();
+}
 
 void abort(void) {
     x86_serial_write("abort\n");

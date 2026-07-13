@@ -1,4 +1,5 @@
 #include "x86_storage.h"
+#include "x86_vm.h"
 
 #include <radixkernel/radixkernel.h>
 
@@ -15,9 +16,11 @@ constexpr uint16_t PciConfigData = 0x0cfc;
 constexpr uint16_t VirtioVendor = 0x1af4;
 constexpr uint16_t VirtioNetLegacyDevice = 0x1000;
 constexpr uint16_t VirtioBlockLegacyDevice = 0x1001;
+constexpr uint16_t VirtioInputModernDevice = 0x1052;
 constexpr uint16_t VirtioStatusAcknowledge = 1u;
 constexpr uint16_t VirtioStatusDriver = 2u;
 constexpr uint16_t VirtioStatusDriverOk = 4u;
+constexpr uint16_t VirtioStatusFeaturesOk = 8u;
 constexpr uint16_t VirtioStatusFailed = 0x80u;
 constexpr uint16_t VirtioBlkSectorSize = 512u;
 constexpr uint16_t VirtioBlkTIn = 0u;
@@ -27,9 +30,28 @@ constexpr uint16_t VirtqDescFWrite = 2u;
 constexpr uint16_t MaxVirtqEntries = 256u;
 constexpr uint32_t MaxVirtioBlockDevices = 4u;
 constexpr uint32_t MaxVirtioNetDevices = 2u;
+constexpr uint32_t MaxVirtioInputDevices = 1u;
 constexpr uint32_t VirtioNetRxQueue = 0u;
 constexpr uint32_t VirtioNetTxQueue = 1u;
 constexpr uint32_t VirtioNetBufferBytes = 1536u;
+constexpr uint8_t VirtioPciCapVendor = 0x09u;
+constexpr uint8_t VirtioPciCapCommonCfg = 1u;
+constexpr uint8_t VirtioPciCapNotifyCfg = 2u;
+constexpr uint8_t VirtioPciCapDeviceCfg = 4u;
+constexpr uint32_t VirtioFeatureVersion1 = 1u << 0; // Feature bit 32, selector 1.
+constexpr uint16_t VirtioInputQueueEvents = 0u;
+constexpr uint16_t VirtioInputQueueStatus = 1u;
+constexpr uint16_t VirtioInputQueueCount = 2u;
+constexpr uint16_t VirtioInputMaxEvents = 64u;
+constexpr uint16_t EvSyn = 0x00u;
+constexpr uint16_t EvKey = 0x01u;
+constexpr uint16_t EvAbs = 0x03u;
+constexpr uint16_t AbsX = 0x00u;
+constexpr uint16_t AbsY = 0x01u;
+constexpr uint16_t BtnLeft = 0x110u;
+constexpr uint16_t BtnRight = 0x111u;
+constexpr uint16_t BtnMiddle = 0x112u;
+constexpr uint8_t VirtioInputCfgAbsInfo = 3u;
 
 struct [[gnu::packed]] VirtqDesc {
     uint64_t addr;
@@ -99,14 +121,51 @@ struct VirtioNetDevice {
     size_t rx_frame_size;
 };
 
+struct VirtioPciModernCaps {
+    volatile uint8_t *common = nullptr;
+    volatile uint8_t *notify = nullptr;
+    volatile uint8_t *device = nullptr;
+    uint32_t notify_multiplier = 0;
+};
+
+struct [[gnu::packed]] VirtioInputEvent {
+    uint16_t type;
+    uint16_t code;
+    int32_t value;
+};
+
+struct VirtioInputDevice {
+    VirtioPciModernCaps caps{};
+    uint16_t queue_size = 0;
+    uint16_t avail_idx = 0;
+    uint16_t used_idx = 0;
+    uint16_t status_queue_size = 0;
+    volatile uint8_t *event_notify = nullptr;
+    volatile uint8_t *status_notify = nullptr;
+    uint32_t buttons = 0;
+    int32_t abs_x = 0;
+    int32_t abs_y = 0;
+    int32_t abs_min_x = 0;
+    int32_t abs_max_x = 32767;
+    int32_t abs_min_y = 0;
+    int32_t abs_max_y = 32767;
+    int ready = 0;
+};
+
 alignas(4096) uint8_t g_queue_memory[MaxVirtioBlockDevices][12288];
 alignas(4096) uint8_t g_net_queue_memory[MaxVirtioNetDevices][2][12288];
+alignas(4096) uint8_t g_input_queue_memory[MaxVirtioInputDevices][VirtioInputQueueCount][12288];
+alignas(16) VirtioInputEvent g_input_events[MaxVirtioInputDevices][VirtioInputMaxEvents];
 alignas(16) VirtioNetHeader g_net_tx_headers[MaxVirtioNetDevices];
 alignas(16) uint8_t g_net_rx_buffers[MaxVirtioNetDevices][MaxVirtqEntries][sizeof(VirtioNetHeader) + VirtioNetBufferBytes];
 alignas(16) VirtioBlkRequestHeader g_request_header;
 alignas(16) uint8_t g_request_status;
 VirtioBlockDevice g_block_devices[MaxVirtioBlockDevices];
 VirtioNetDevice g_net_devices[MaxVirtioNetDevices];
+VirtioInputDevice g_input_devices[MaxVirtioInputDevices];
+
+extern "C" void x86_input_pointer_absolute(int32_t raw_x, int32_t raw_y, int32_t min_x, int32_t max_x, int32_t min_y, int32_t max_y, uint32_t buttons);
+extern "C" void x86_input_pointer_buttons(uint32_t buttons);
 
 void outl(uint16_t port, uint32_t value) {
     asm volatile("outl %0, %1" : : "a"(value), "Nd"(port));
@@ -150,6 +209,11 @@ uint32_t pci_read(uint8_t bus, uint8_t slot, uint8_t function, uint8_t offset) {
     return inl(PciConfigData);
 }
 
+uint8_t pci_read8(uint8_t bus, uint8_t slot, uint8_t function, uint8_t offset) {
+    const uint32_t value = pci_read(bus, slot, function, offset);
+    return static_cast<uint8_t>((value >> ((offset & 3u) * 8u)) & 0xffu);
+}
+
 void pci_write(uint8_t bus, uint8_t slot, uint8_t function, uint8_t offset, uint32_t value) {
     const uint32_t address = 0x80000000u
         | (static_cast<uint32_t>(bus) << 16)
@@ -158,6 +222,17 @@ void pci_write(uint8_t bus, uint8_t slot, uint8_t function, uint8_t offset, uint
         | (offset & 0xfcu);
     outl(PciConfigAddress, address);
     outl(PciConfigData, value);
+}
+
+uint64_t pci_bar_address(uint8_t bus, uint8_t slot, uint8_t function, uint8_t bar) {
+    const uint8_t offset = static_cast<uint8_t>(0x10u + bar * 4u);
+    const uint32_t low = pci_read(bus, slot, function, offset);
+    if (low & 1u) return low & ~0x3ull;
+    uint64_t address = low & ~0xfull;
+    if ((low & 0x6u) == 0x4u && bar < 5u) {
+        address |= static_cast<uint64_t>(pci_read(bus, slot, function, static_cast<uint8_t>(offset + 4u))) << 32u;
+    }
+    return address;
 }
 
 int is_virtio_block(uint16_t vendor, uint16_t device, uint32_t class_reg) {
@@ -176,8 +251,56 @@ int is_virtio_net(uint16_t vendor, uint16_t device, uint32_t class_reg) {
     return base_class == 0x02u && sub_class == 0x00u;
 }
 
+int is_virtio_input(uint16_t vendor, uint16_t device) {
+    return vendor == VirtioVendor && device == VirtioInputModernDevice;
+}
+
+uint16_t mmio_read16(volatile uint8_t *base, uint32_t offset) {
+    return *reinterpret_cast<volatile uint16_t*>(base + offset);
+}
+
+uint8_t mmio_read8(volatile uint8_t *base, uint32_t offset) {
+    return *reinterpret_cast<volatile uint8_t*>(base + offset);
+}
+
+uint32_t mmio_read32(volatile uint8_t *base, uint32_t offset) {
+    return *reinterpret_cast<volatile uint32_t*>(base + offset);
+}
+
+void mmio_write8(volatile uint8_t *base, uint32_t offset, uint8_t value) {
+    *reinterpret_cast<volatile uint8_t*>(base + offset) = value;
+}
+
+void mmio_write16(volatile uint8_t *base, uint32_t offset, uint16_t value) {
+    *reinterpret_cast<volatile uint16_t*>(base + offset) = value;
+}
+
+void mmio_write32(volatile uint8_t *base, uint32_t offset, uint32_t value) {
+    *reinterpret_cast<volatile uint32_t*>(base + offset) = value;
+}
+
+void mmio_write64(volatile uint8_t *base, uint32_t offset, uint64_t value) {
+    *reinterpret_cast<volatile uint64_t*>(base + offset) = value;
+}
+
 VirtqDesc *queue_desc(VirtioBlockDevice *device) {
     return reinterpret_cast<VirtqDesc*>(g_queue_memory[device->index]);
+}
+
+VirtqDesc *input_queue_desc(VirtioInputDevice *device, uint16_t queue = VirtioInputQueueEvents) {
+    const uint32_t index = static_cast<uint32_t>(device - g_input_devices);
+    return reinterpret_cast<VirtqDesc*>(g_input_queue_memory[index][queue]);
+}
+
+VirtqAvail *input_queue_avail(VirtioInputDevice *device, uint16_t queue = VirtioInputQueueEvents) {
+    const uint32_t index = static_cast<uint32_t>(device - g_input_devices);
+    return reinterpret_cast<VirtqAvail*>(g_input_queue_memory[index][queue] + sizeof(VirtqDesc) * MaxVirtqEntries);
+}
+
+VirtqUsed *input_queue_used(VirtioInputDevice *device, uint16_t queue = VirtioInputQueueEvents) {
+    uintptr_t addr = reinterpret_cast<uintptr_t>(input_queue_avail(device, queue)) + sizeof(VirtqAvail);
+    addr = (addr + 4095u) & ~static_cast<uintptr_t>(4095u);
+    return reinterpret_cast<VirtqUsed*>(addr);
 }
 
 VirtqAvail *queue_avail(VirtioBlockDevice *device) {
@@ -236,6 +359,178 @@ void net_refill_all_rx(VirtioNetDevice *device) {
     for (uint16_t i = 0; i < device->rx_queue_size; ++i) net_refill_rx(device, i);
     asm volatile("" ::: "memory");
     outw(device->io_base + 0x10, VirtioNetRxQueue);
+}
+
+int find_virtio_modern_caps(uint8_t bus, uint8_t slot, uint8_t function, VirtioPciModernCaps *caps) {
+    if (!caps) return 0;
+    memset(caps, 0, sizeof(*caps));
+    uint8_t cap = pci_read8(bus, slot, function, 0x34);
+    for (uint32_t guard = 0; cap && guard < 48u; ++guard) {
+        const uint8_t cap_vndr = pci_read8(bus, slot, function, cap);
+        const uint8_t cap_next = pci_read8(bus, slot, function, static_cast<uint8_t>(cap + 1u));
+        if (cap_vndr == VirtioPciCapVendor) {
+            const uint8_t cfg_type = pci_read8(bus, slot, function, static_cast<uint8_t>(cap + 3u));
+            const uint8_t bar = pci_read8(bus, slot, function, static_cast<uint8_t>(cap + 4u));
+            const uint32_t offset = pci_read(bus, slot, function, static_cast<uint8_t>(cap + 8u));
+            uint32_t length = pci_read(bus, slot, function, static_cast<uint8_t>(cap + 12u));
+            if (length == 0) length = 4096u;
+            const uint64_t bar_addr = pci_bar_address(bus, slot, function, bar);
+            if (bar_addr) {
+                if (!x86_vm_map_kernel_mmio(bar_addr + offset, length)) {
+                    rad_debug_marker("RADIX_VIRTIO_INPUT_MMIO_MAP_FAIL");
+                    cap = cap_next;
+                    continue;
+                }
+                volatile uint8_t *mapped = reinterpret_cast<volatile uint8_t*>(static_cast<uintptr_t>(bar_addr + offset));
+                if (cfg_type == VirtioPciCapCommonCfg) caps->common = mapped;
+                else if (cfg_type == VirtioPciCapNotifyCfg) {
+                    caps->notify = mapped;
+                    caps->notify_multiplier = pci_read(bus, slot, function, static_cast<uint8_t>(cap + 16u));
+                } else if (cfg_type == VirtioPciCapDeviceCfg) {
+                    caps->device = mapped;
+                }
+            }
+        }
+        cap = cap_next;
+    }
+    return caps->common && caps->notify && caps->device;
+}
+
+void virtio_input_query_abs(VirtioInputDevice *device, uint8_t axis, int32_t *min_out, int32_t *max_out) {
+    if (!device || !device->caps.device || !min_out || !max_out) return;
+    mmio_write8(device->caps.device, 0, VirtioInputCfgAbsInfo);
+    mmio_write8(device->caps.device, 1, axis);
+    const uint8_t size = *reinterpret_cast<volatile uint8_t*>(device->caps.device + 2);
+    if (size < 8u) return;
+    *min_out = *reinterpret_cast<volatile int32_t*>(device->caps.device + 8);
+    *max_out = *reinterpret_cast<volatile int32_t*>(device->caps.device + 12);
+    if (*max_out <= *min_out) {
+        *min_out = 0;
+        *max_out = 32767;
+    }
+}
+
+void virtio_input_notify(VirtioInputDevice *device, uint16_t queue) {
+    if (!device) return;
+    volatile uint8_t *notify = queue == VirtioInputQueueStatus ? device->status_notify : device->event_notify;
+    if (!notify) return;
+    mmio_write16(notify, 0, queue);
+}
+
+void virtio_input_refill(VirtioInputDevice *device, uint16_t descriptor) {
+    if (!device || descriptor >= device->queue_size) return;
+    const uint32_t index = static_cast<uint32_t>(device - g_input_devices);
+    auto *desc = input_queue_desc(device);
+    auto *avail = input_queue_avail(device);
+    desc[descriptor].addr = reinterpret_cast<uintptr_t>(&g_input_events[index][descriptor]);
+    desc[descriptor].len = sizeof(VirtioInputEvent);
+    desc[descriptor].flags = VirtqDescFWrite;
+    desc[descriptor].next = 0;
+    avail->ring[device->avail_idx % device->queue_size] = descriptor;
+    asm volatile("" ::: "memory");
+    ++device->avail_idx;
+    avail->idx = device->avail_idx;
+}
+
+int virtio_input_setup_queue(VirtioInputDevice *device, uint16_t queue, uint16_t max_entries, uint16_t *queue_size_out, volatile uint8_t **notify_out) {
+    if (!device || !queue_size_out || !notify_out || queue >= VirtioInputQueueCount) return 0;
+    mmio_write16(device->caps.common, 22, queue);
+    uint16_t queue_size = mmio_read16(device->caps.common, 24);
+    if (queue_size == 0) return 0;
+    if (queue_size > max_entries) queue_size = max_entries;
+    const uint32_t index = static_cast<uint32_t>(device - g_input_devices);
+    memset(g_input_queue_memory[index][queue], 0, sizeof(g_input_queue_memory[index][queue]));
+    mmio_write16(device->caps.common, 24, queue_size);
+    mmio_write64(device->caps.common, 32, reinterpret_cast<uintptr_t>(input_queue_desc(device, queue)));
+    mmio_write64(device->caps.common, 40, reinterpret_cast<uintptr_t>(input_queue_avail(device, queue)));
+    mmio_write64(device->caps.common, 48, reinterpret_cast<uintptr_t>(input_queue_used(device, queue)));
+    const uint16_t notify_off = mmio_read16(device->caps.common, 30);
+    *notify_out = device->caps.notify + static_cast<uint32_t>(notify_off) * device->caps.notify_multiplier;
+    mmio_write16(device->caps.common, 28, 1);
+    if (mmio_read16(device->caps.common, 28) != 1) return 0;
+    *queue_size_out = queue_size;
+    return 1;
+}
+
+void virtio_input_process_event(VirtioInputDevice *device, const VirtioInputEvent& event) {
+    if (!device) return;
+    if (event.type == EvAbs) {
+        if (event.code == AbsX) device->abs_x = event.value;
+        else if (event.code == AbsY) device->abs_y = event.value;
+        return;
+    }
+    if (event.type == EvKey) {
+        uint32_t bit = 0;
+        if (event.code == BtnLeft) bit = RAD_INPUT_POINTER_BUTTON_LEFT;
+        else if (event.code == BtnRight) bit = RAD_INPUT_POINTER_BUTTON_RIGHT;
+        else if (event.code == BtnMiddle) bit = RAD_INPUT_POINTER_BUTTON_MIDDLE;
+        if (bit) {
+            if (event.value) device->buttons |= bit;
+            else device->buttons &= ~bit;
+            x86_input_pointer_buttons(device->buttons);
+        }
+        return;
+    }
+    if (event.type == EvSyn) {
+        x86_input_pointer_absolute(device->abs_x, device->abs_y,
+            device->abs_min_x, device->abs_max_x,
+            device->abs_min_y, device->abs_max_y,
+            device->buttons);
+    }
+}
+
+int init_virtio_input(uint8_t bus, uint8_t slot, uint8_t function) {
+    VirtioInputDevice *device = nullptr;
+    for (uint32_t i = 0; i < MaxVirtioInputDevices; ++i) {
+        if (!g_input_devices[i].ready && !g_input_devices[i].caps.common) {
+            device = &g_input_devices[i];
+            break;
+        }
+    }
+    if (!device) return 0;
+    const uint32_t command = pci_read(bus, slot, function, 0x04);
+    pci_write(bus, slot, function, 0x04, command | 0x00000006u);
+    VirtioPciModernCaps caps{};
+    if (!find_virtio_modern_caps(bus, slot, function, &caps)) return 0;
+    memset(device, 0, sizeof(*device));
+    device->caps = caps;
+    device->abs_max_x = 32767;
+    device->abs_max_y = 32767;
+
+    mmio_write8(caps.common, 20, 0);
+    mmio_write8(caps.common, 20, VirtioStatusAcknowledge);
+    mmio_write8(caps.common, 20, VirtioStatusAcknowledge | VirtioStatusDriver);
+    mmio_write32(caps.common, 0, 1);
+    const uint32_t device_features_1 = mmio_read32(caps.common, 4);
+    if ((device_features_1 & VirtioFeatureVersion1) == 0) {
+        mmio_write8(caps.common, 20, VirtioStatusFailed);
+        return 0;
+    }
+    mmio_write32(caps.common, 8, 1);
+    mmio_write32(caps.common, 12, VirtioFeatureVersion1);
+    mmio_write32(caps.common, 8, 0);
+    mmio_write32(caps.common, 12, 0);
+    mmio_write8(caps.common, 20, VirtioStatusAcknowledge | VirtioStatusDriver | VirtioStatusFeaturesOk);
+    if ((mmio_read8(caps.common, 20) & VirtioStatusFeaturesOk) == 0) {
+        mmio_write8(caps.common, 20, VirtioStatusFailed);
+        return 0;
+    }
+
+    if (!virtio_input_setup_queue(device, VirtioInputQueueEvents, VirtioInputMaxEvents, &device->queue_size, &device->event_notify)) {
+        mmio_write8(caps.common, 20, VirtioStatusFailed);
+        return 0;
+    }
+    const uint32_t index = static_cast<uint32_t>(device - g_input_devices);
+    memset(g_input_events[index], 0, sizeof(g_input_events[index]));
+    virtio_input_setup_queue(device, VirtioInputQueueStatus, 1, &device->status_queue_size, &device->status_notify);
+    for (uint16_t i = 0; i < device->queue_size; ++i) virtio_input_refill(device, i);
+    virtio_input_query_abs(device, AbsX, &device->abs_min_x, &device->abs_max_x);
+    virtio_input_query_abs(device, AbsY, &device->abs_min_y, &device->abs_max_y);
+    mmio_write8(caps.common, 20, VirtioStatusAcknowledge | VirtioStatusDriver | VirtioStatusFeaturesOk | VirtioStatusDriverOk);
+    device->ready = 1;
+    virtio_input_notify(device, VirtioInputQueueEvents);
+    rad_debug_marker("RADIX_VIRTIO_INPUT_REGISTERED");
+    return 1;
 }
 
 rad_status_t virtio_net_send_frame(VirtioNetDevice *device, const void *data, size_t length) {
@@ -548,6 +843,9 @@ extern "C" void x86_storage_probe(x86_storage_summary_t *summary) {
                         local.registered_net_devices += init_virtio_net(static_cast<uint8_t>(bus), slot, function) ? 1u : 0u;
                     }
                 }
+                if (is_virtio_input(vendor, device)) {
+                    init_virtio_input(static_cast<uint8_t>(bus), slot, function);
+                }
 
                 if (function == 0) {
                     const uint32_t header = pci_read(static_cast<uint8_t>(bus), slot, function, 0x0c);
@@ -598,6 +896,23 @@ extern "C" int x86_storage_self_test(void) {
     }
     rad_debug_marker("RADIX_VIRTIO_BLK_READ_FAIL");
     return 0;
+}
+
+extern "C" void x86_virtio_input_poll(void) {
+    for (uint32_t i = 0; i < MaxVirtioInputDevices; ++i) {
+        VirtioInputDevice& device = g_input_devices[i];
+        if (!device.ready) continue;
+        auto *used = input_queue_used(&device);
+        while (used->idx != device.used_idx) {
+            const VirtqUsedElem elem = used->ring[device.used_idx % device.queue_size];
+            ++device.used_idx;
+            if (elem.id < device.queue_size && elem.len >= sizeof(VirtioInputEvent)) {
+                virtio_input_process_event(&device, g_input_events[i][elem.id]);
+                virtio_input_refill(&device, static_cast<uint16_t>(elem.id));
+            }
+        }
+        virtio_input_notify(&device, VirtioInputQueueEvents);
+    }
 }
 
 extern "C" int x86_network_self_test(void) {

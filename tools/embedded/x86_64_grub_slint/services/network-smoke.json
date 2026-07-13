@@ -1,0 +1,13 @@
+{
+  "name": "network-smoke",
+  "description": "VirtIO network smoke service managed by early kernel bootstrap",
+  "exec": "builtin:ready",
+  "args": [],
+  "autostart": true,
+  "order": 40,
+  "requires": ["storage-root"],
+  "after": ["storage-root"],
+  "restart": "no",
+  "stdout": "/var/log/radix/network-smoke.log",
+  "stderr": "/var/log/radix/network-smoke.log"
+}

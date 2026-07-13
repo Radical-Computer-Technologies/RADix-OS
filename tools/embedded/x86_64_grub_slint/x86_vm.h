@@ -30,6 +30,7 @@ extern "C" void x86_vm_free_page(uint64_t physical_address);
 extern "C" int x86_vm_create_address_space(x86_address_space_t *space);
 extern "C" int x86_vm_map_user_page(x86_address_space_t *space, uint64_t virtual_address, uint64_t physical_address, int writable);
 extern "C" int x86_vm_map_shared_page(x86_address_space_t *space, uint64_t virtual_address, uint64_t physical_address, int writable);
+extern "C" int x86_vm_map_kernel_mmio(uint64_t physical_address, uint64_t size);
 extern "C" int x86_vm_clone_cow(x86_address_space_t *child, x86_address_space_t *parent);
 extern "C" int x86_vm_handle_page_fault(uint64_t fault_address, uint64_t error_code);
 extern "C" void x86_vm_destroy_address_space(x86_address_space_t *space);

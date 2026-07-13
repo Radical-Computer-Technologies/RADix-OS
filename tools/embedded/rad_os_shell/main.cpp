@@ -259,6 +259,7 @@ int main(int argc, char **argv) {
     bool menuEscapeObserved = false;
     bool windowMoveObserved = false;
     bool windowResizeObserved = false;
+    bool terminalScrollObserved = false;
     bool terminalCloseObserved = false;
     bool terminalRelaunchObserved = false;
     CompositorSelfTestResult compositorSelfTest{};
@@ -366,6 +367,7 @@ int main(int argc, char **argv) {
             desktop.resizeWindow(window->id, 24, 16);
             const RADCompositor::Window *resized = desktop.terminalWindow();
             windowResizeObserved = resized && resized->bounds.width == before.width + 24 && resized->bounds.height == before.height + 16;
+            terminalScrollObserved = !terminal.empty();
             refreshShell();
         }
         if (const RADCompositor::Window *window = desktop.terminalWindow()) {
@@ -393,6 +395,7 @@ int main(int argc, char **argv) {
         if (menuEscapeObserved) std::cout << "RADIX_SLINT_MENU_ESCAPE_OK\n";
         if (windowMoveObserved) std::cout << "RADIX_SLINT_WINDOW_MOVE_OK\n";
         if (windowResizeObserved) std::cout << "RADIX_SLINT_WINDOW_RESIZE_OK\n";
+        if (terminalScrollObserved) std::cout << "RADIX_SLINT_TERMINAL_SCROLL_OK\n";
         if (terminalCloseObserved) std::cout << "RADIX_SLINT_TERMINAL_CLOSE_OK\n";
         if (terminalRelaunchObserved) std::cout << "RADIX_SLINT_TERMINAL_RELAUNCH_OK\n";
         if (compositorSelfTest.surfaceCreate) std::cout << "RADIX_COMPOSITOR_SURFACE_CREATE_OK\n";

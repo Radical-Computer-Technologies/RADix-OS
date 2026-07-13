@@ -1,0 +1,13 @@
+{
+  "name": "storage-root",
+  "description": "Root filesystem already mounted by early kernel bootstrap",
+  "exec": "builtin:ready",
+  "args": [],
+  "autostart": true,
+  "order": 10,
+  "requires": [],
+  "after": [],
+  "restart": "no",
+  "stdout": "/var/log/radix/storage-root.log",
+  "stderr": "/var/log/radix/storage-root.log"
+}

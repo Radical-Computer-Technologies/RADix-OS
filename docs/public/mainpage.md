@@ -16,6 +16,8 @@ This hub documents the experimental Crimson 0.1.0 kernel API.
   path.
 - @ref networking describes the experimental IPv4/UDP and TCP stream socket
   foundation.
+- @ref radbuild_integration describes the RadBuild 0.2.1 OS build and artifact
+  publication flow.
 - @ref pi_zero2w tracks the experimental two-stage Pi Zero 2 W bring-up.
 - @ref minimal_examples provides short driver, framebuffer, input, VFS, and
   syscall examples.
@@ -57,6 +59,12 @@ x86_64 GRUB + Slint VM smoke:
 
 ```bash
 tools/embedded/x86_64_grub_slint_smoke.sh
+```
+
+Canonical RadBuild OS build:
+
+```bash
+../RadBuild/radbuild/.tools/radbuild.py build os --settings settings.json --json-events
 ```
 
 The generated ISO is a development artifact and is not published in

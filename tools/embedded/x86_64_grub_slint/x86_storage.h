@@ -19,5 +19,6 @@ typedef struct x86_storage_summary {
 extern "C" void x86_storage_probe(x86_storage_summary_t *summary);
 extern "C" int x86_storage_self_test(void);
 extern "C" int x86_network_self_test(void);
+extern "C" void x86_virtio_input_poll(void);
 
 #endif

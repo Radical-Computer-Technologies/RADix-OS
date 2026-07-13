@@ -109,6 +109,8 @@ struct X86UserProcess {
 X86UserProcess g_user_processes[MaxUserProcesses];
 x86_user_context_t *g_active_user_contexts[MaxUserCores];
 int g_process_arch_registered = 0;
+volatile int g_user_ap_exec_seen = 0;
+volatile int g_user_ap_syscall_seen = 0;
 
 void user_process_task(void *context);
 
@@ -318,7 +320,7 @@ rad_status_t start_user_process_task(X86UserProcess *process) {
     rad_task_config_t config{};
     config.size = sizeof(config);
     config.name = process->path;
-    config.target_core = RAD_TASK_CORE_SERVICE;
+    config.target_core = RAD_TASK_CORE_ANY;
     config.user_context = &process->context;
     rad_status_t status = rad_task_create_config(&process->task, &config, user_process_task, process);
     if (status != RAD_STATUS_OK) return status;
@@ -328,15 +330,27 @@ rad_status_t start_user_process_task(X86UserProcess *process) {
 rad_status_t load_user_program(X86UserProcess *process, const char *path) {
     if (!process || !path || !*path) return RAD_STATUS_INVALID_ARGUMENT;
     rad_vfs_stat_t stat{};
-    if (rad_vfs_stat(path, &stat) != RAD_STATUS_OK || stat.is_directory || stat.size == 0 || stat.size > MaxInitImage) {
+    const rad_status_t stat_status = rad_vfs_stat(path, &stat);
+    if (stat_status != RAD_STATUS_OK || stat.is_directory || stat.size == 0 || stat.size > MaxInitImage) {
+        rad_debug_marker("RADIX_USER_EXECVE_LOAD_STAT_FAIL");
         return RAD_STATUS_NOT_FOUND;
     }
     rad_file_t file = nullptr;
-    if (rad_vfs_open(path, RAD_VFS_READ, &file) != RAD_STATUS_OK) return RAD_STATUS_NOT_FOUND;
+    const rad_status_t open_status = rad_vfs_open(path, RAD_VFS_READ, &file);
+    if (open_status != RAD_STATUS_OK) {
+        char message[128];
+        snprintf(message, sizeof(message), "RADIX_USER_EXECVE_LOAD_OPEN_STATUS=%d path=%s\n", static_cast<int>(open_status), path);
+        x86_serial_write(message);
+        rad_debug_marker("RADIX_USER_EXECVE_LOAD_OPEN_FAIL");
+        return RAD_STATUS_NOT_FOUND;
+    }
     size_t bytes_read = 0;
     const rad_status_t read_status = rad_vfs_read(file, g_init_image, static_cast<size_t>(stat.size), &bytes_read);
     rad_vfs_close(file);
-    if (read_status != RAD_STATUS_OK || bytes_read != static_cast<size_t>(stat.size)) return RAD_STATUS_ERROR;
+    if (read_status != RAD_STATUS_OK || bytes_read != static_cast<size_t>(stat.size)) {
+        rad_debug_marker("RADIX_USER_EXECVE_LOAD_READ_FAIL");
+        return RAD_STATUS_ERROR;
+    }
     if (!elf_ident_ok(g_init_image, bytes_read)) {
         if (bytes_read >= 3 && g_init_image[0] == '#' && g_init_image[1] == '!') {
             const char *interpreter = reinterpret_cast<const char*>(g_init_image + 2);
@@ -368,21 +382,32 @@ rad_status_t load_user_program(X86UserProcess *process, const char *path) {
             rad_debug_marker("RADIX_USER_SCRIPT_SHEBANG_OK");
             return load_user_program(process, interpreter_path);
         }
+        rad_debug_marker("RADIX_USER_EXECVE_LOAD_ELF_FAIL");
         return RAD_STATUS_INVALID_ARGUMENT;
     }
 
     x86_address_space_t new_space{};
     uint64_t entry = 0;
-    if (!x86_vm_create_address_space(&new_space)
-        || !load_user_elf(&new_space, g_init_image, bytes_read, &entry)
-        || !map_user_stack(&new_space)) {
+    if (!x86_vm_create_address_space(&new_space)) {
         x86_vm_destroy_address_space(&new_space);
+        rad_debug_marker("RADIX_USER_EXECVE_LOAD_SPACE_FAIL");
+        return RAD_STATUS_ERROR;
+    }
+    if (!load_user_elf(&new_space, g_init_image, bytes_read, &entry)) {
+        x86_vm_destroy_address_space(&new_space);
+        rad_debug_marker("RADIX_USER_EXECVE_LOAD_MAP_FAIL");
+        return RAD_STATUS_ERROR;
+    }
+    if (!map_user_stack(&new_space)) {
+        x86_vm_destroy_address_space(&new_space);
+        rad_debug_marker("RADIX_USER_EXECVE_LOAD_STACK_MAP_FAIL");
         return RAD_STATUS_ERROR;
     }
     x86_vm_activate_address_space(&new_space);
     if (!setup_initial_user_stack(process)) {
         x86_vm_activate_kernel_address_space();
         x86_vm_destroy_address_space(&new_space);
+        rad_debug_marker("RADIX_USER_EXECVE_LOAD_STACK_FAIL");
         return RAD_STATUS_ERROR;
     }
     x86_vm_activate_kernel_address_space();
@@ -398,6 +423,9 @@ rad_status_t load_user_program(X86UserProcess *process, const char *path) {
 void user_process_task(void *context) {
     auto *process = static_cast<X86UserProcess*>(context);
     if (!process || !process->used) return;
+    if (x86_cpu_current_core() > 0 && !__atomic_exchange_n(&g_user_ap_exec_seen, 1, __ATOMIC_ACQ_REL)) {
+        rad_debug_marker("RADIX_USER_AP_EXEC_OK");
+    }
     rad_process_set_current_pid(process->pid);
     do {
         process->exec_pending = 0;
@@ -432,9 +460,13 @@ void user_process_task(void *context) {
         x86_vm_activate_kernel_address_space();
         x86_user_set_active_context(nullptr);
         if (process->exec_pending && !process->exiting) {
+            rad_debug_marker("RADIX_USER_EXECVE_PENDING_SEEN_OK");
+        }
+        if (process->exec_pending && !process->exiting) {
             x86_vm_destroy_address_space(&process->address_space);
             const rad_status_t status = load_user_program(process, process->exec_path);
             if (status == RAD_STATUS_OK) {
+                memset(&process->context, 0, sizeof(process->context));
                 rad_debug_marker("RADIX_USER_EXECVE_OK");
                 rad_debug_marker("RADIX_USER_EXECVE_REENTER_OK");
             } else {
@@ -488,6 +520,7 @@ rad_status_t x86_user_fork_from_frame(const x86_user_trap_frame_t *frame, int32_
     child->parent_pid = parent->pid;
     child->entry = parent->entry;
     child->next_mmap = parent->next_mmap;
+    child->initial_rsp = parent->initial_rsp;
     child->exit_code = 0;
     strncpy(child->path, parent->path, sizeof(child->path) - 1u);
     child->path[sizeof(child->path) - 1u] = '\0';
@@ -512,6 +545,12 @@ rad_status_t x86_user_fork_from_frame(const x86_user_trap_frame_t *frame, int32_
     child->context.resume_rsp = frame->user_rsp;
     child->context.resume_rflags = frame->rflags;
     child->context.fork_rax = 0;
+    child->context.resume_rbx = frame->rbx;
+    child->context.resume_rbp = frame->rbp;
+    child->context.resume_r12 = frame->r12;
+    child->context.resume_r13 = frame->r13;
+    child->context.resume_r14 = frame->r14;
+    child->context.resume_r15 = frame->r15;
     process_fd_table_self_test(child_pid);
     status = start_user_process_task(child);
     if (status != RAD_STATUS_OK) {
@@ -609,6 +648,9 @@ extern "C" long x86_syscall_dispatch_frame(x86_user_trap_frame_t *frame) {
 extern "C" long x86_syscall_dispatch(unsigned long number, unsigned long arg0, unsigned long arg1,
                                       unsigned long arg2, unsigned long arg3, unsigned long arg4,
                                       unsigned long arg5) {
+    if (x86_cpu_current_core() > 0 && !__atomic_exchange_n(&g_user_ap_syscall_seen, 1, __ATOMIC_ACQ_REL)) {
+        rad_debug_marker("RADIX_USER_AP_SYSCALL_OK");
+    }
     if (number == RAD_SYSCALL_EXIT) {
         if (X86UserProcess *process = find_user_process(rad_process_current_pid())) {
             process->exit_code = static_cast<int32_t>(arg0);
@@ -729,14 +771,24 @@ extern "C" long x86_syscall_dispatch(unsigned long number, unsigned long arg0, u
     case RAD_SYSCALL_EXECVE: {
         char path[128];
         const rad_status_t copied = x86_copy_string_from_user(path, sizeof(path), arg0);
-        if (copied != RAD_STATUS_OK) return copied;
+        if (copied != RAD_STATUS_OK) {
+            rad_debug_marker("RADIX_USER_EXECVE_COPY_FAIL");
+            return copied;
+        }
         X86UserProcess *process = find_user_process(rad_process_current_pid());
-        if (!process) return RAD_STATUS_NOT_FOUND;
+        if (!process) {
+            rad_debug_marker("RADIX_USER_EXECVE_PROCESS_FAIL");
+            return RAD_STATUS_NOT_FOUND;
+        }
         const rad_status_t copied_args = set_process_args_from_user(process, path, arg1);
-        if (copied_args != RAD_STATUS_OK) return copied_args;
+        if (copied_args != RAD_STATUS_OK) {
+            rad_debug_marker("RADIX_USER_EXECVE_ARGS_FAIL");
+            return copied_args;
+        }
         strncpy(process->exec_path, path, sizeof(process->exec_path) - 1u);
         process->exec_path[sizeof(process->exec_path) - 1u] = '\0';
         process->exec_pending = 1;
+        rad_debug_marker("RADIX_USER_EXECVE_REQUEST_OK");
         return static_cast<long>(UserExitMagic);
     }
     case LinuxSysExecve: {
@@ -840,6 +892,55 @@ extern "C" long x86_syscall_dispatch(unsigned long number, unsigned long arg0, u
     case RAD_SYSCALL_FCNTL:
     case LinuxSysFcntl:
         return rad_fd_fcntl(static_cast<int32_t>(arg0), static_cast<uint32_t>(arg1), arg2);
+    case RAD_SYSCALL_GETDENTS: {
+        if (arg2 > 16u || !user_range_ok(arg1, arg2 * sizeof(rad_dirent_user_t))) return RAD_STATUS_INVALID_ARGUMENT;
+        rad_dirent_user_t entries[16]{};
+        const intptr_t count = rad_fd_getdents(static_cast<int32_t>(arg0), entries, static_cast<size_t>(arg2));
+        if (count <= 0) return static_cast<long>(count);
+        const size_t bytes = static_cast<size_t>(count) * sizeof(rad_dirent_user_t);
+        return x86_copy_to_user(arg1, entries, bytes) == RAD_STATUS_OK ? static_cast<long>(count) : static_cast<long>(RAD_STATUS_INVALID_ARGUMENT);
+    }
+    case RAD_SYSCALL_REMOVE: {
+        char path[256];
+        const rad_status_t copied = x86_copy_string_from_user(path, sizeof(path), arg0);
+        return copied == RAD_STATUS_OK ? rad_vfs_remove(path) : copied;
+    }
+    case RAD_SYSCALL_MKDIR: {
+        char path[256];
+        const rad_status_t copied = x86_copy_string_from_user(path, sizeof(path), arg0);
+        return copied == RAD_STATUS_OK ? rad_vfs_mkdir(path) : copied;
+    }
+    case RAD_SYSCALL_RMDIR: {
+        char path[256];
+        const rad_status_t copied = x86_copy_string_from_user(path, sizeof(path), arg0);
+        return copied == RAD_STATUS_OK ? rad_vfs_rmdir(path) : copied;
+    }
+    case RAD_SYSCALL_RENAME: {
+        char old_path[256];
+        char new_path[256];
+        const rad_status_t copied_old = x86_copy_string_from_user(old_path, sizeof(old_path), arg0);
+        if (copied_old != RAD_STATUS_OK) return copied_old;
+        const rad_status_t copied_new = x86_copy_string_from_user(new_path, sizeof(new_path), arg1);
+        return copied_new == RAD_STATUS_OK ? rad_vfs_rename(old_path, new_path) : copied_new;
+    }
+    case RAD_SYSCALL_TRUNCATE: {
+        char path[256];
+        const rad_status_t copied = x86_copy_string_from_user(path, sizeof(path), arg0);
+        return copied == RAD_STATUS_OK ? rad_vfs_truncate(path, arg1) : copied;
+    }
+    case RAD_SYSCALL_LOG_READ: {
+        if (arg1 > 16u || (arg1 && !user_range_ok(arg0, arg1 * sizeof(rad_log_entry_t)))) return RAD_STATUS_INVALID_ARGUMENT;
+        rad_log_entry_t entries[16]{};
+        const size_t count = rad_log_read(entries, static_cast<size_t>(arg1), arg2);
+        const size_t copy_count = count < arg1 ? count : static_cast<size_t>(arg1);
+        if (copy_count && x86_copy_to_user(arg0, entries, copy_count * sizeof(rad_log_entry_t)) != RAD_STATUS_OK) return RAD_STATUS_INVALID_ARGUMENT;
+        return static_cast<long>(count);
+    }
+    case RAD_SYSCALL_LOG_FLUSH: {
+        char path[256];
+        const rad_status_t copied = x86_copy_string_from_user(path, sizeof(path), arg0);
+        return copied == RAD_STATUS_OK ? rad_log_flush_to_path(path) : copied;
+    }
     case RAD_SYSCALL_ACCESS: {
         char path[256];
         const rad_status_t copied = x86_copy_string_from_user(path, sizeof(path), arg0);
@@ -1029,12 +1130,10 @@ extern "C" int x86_user_run_init(const char *path) {
         rad_debug_marker("RADIX_USER_INIT_LOAD_FAIL");
         return 0;
     }
-    if (strcmp(path, "/bin/init") == 0) {
-        if (rad_task_join(task) == RAD_STATUS_OK) {
-            rad_debug_marker("RADIX_USER_PROCESS_WAIT_OK");
-            return 1;
-        }
-        return 0;
+    if (strcmp(path, "/bin/init") == 0 || strcmp(path, "/sbin/radinit") == 0) {
+        rad_debug_marker("RADIX_RADINIT_SPAWN_OK");
+        (void)task;
+        return 1;
     }
     return x86_user_wait_process(pid);
 }

@@ -21,7 +21,7 @@ extern "C" void free(void*);
 #endif
 
 #ifndef RADIX_KERNEL_MAX_COMMANDS
-#define RADIX_KERNEL_MAX_COMMANDS 24u
+#define RADIX_KERNEL_MAX_COMMANDS 48u
 #endif
 
 #ifndef RADIX_KERNEL_MAX_MOUNTS
@@ -88,6 +88,10 @@ extern "C" void free(void*);
 #define RADIX_KERNEL_MAX_MODULES 16u
 #endif
 
+#ifndef RADIX_KERNEL_MAX_SERVICES
+#define RADIX_KERNEL_MAX_SERVICES 16u
+#endif
+
 #ifndef RADIX_KERNEL_MAX_IRQS
 #define RADIX_KERNEL_MAX_IRQS 64u
 #endif
@@ -110,6 +114,10 @@ extern "C" void free(void*);
 
 #ifndef RADIX_KERNEL_MAX_INPUT_QUEUES
 #define RADIX_KERNEL_MAX_INPUT_QUEUES 8u
+#endif
+
+#ifndef RADIX_KERNEL_MAX_LOG_ENTRIES
+#define RADIX_KERNEL_MAX_LOG_ENTRIES 256u
 #endif
 
 #ifndef RADIX_KERNEL_INPUT_QUEUE_EVENTS
@@ -179,6 +187,8 @@ struct rad_task_handle {
     rad_task_state_t state;
     int target_core;
     int current_core;
+    int preempt_pinned;
+    int preempt_saved_target_core;
     int priority;
     size_t stack_size;
     void *user_context;
@@ -262,6 +272,7 @@ struct MountRecord {
 struct VfsProviderRecord {
     char mount_point[32];
     rad_vfs_backend_ops_t ops;
+    volatile int io_lock;
     int used;
 };
 
@@ -334,7 +345,8 @@ enum FdKind {
     FD_DEVICE = 2,
     FD_PIPE = 3,
     FD_SHM = 4,
-    FD_SOCKET = 5
+    FD_SOCKET = 5,
+    FD_DIR = 6
 };
 
 struct UdpDatagram {
@@ -367,6 +379,7 @@ struct SocketRecord {
 struct FdRecord {
     FdKind kind;
     rad_file_t file;
+    rad_dir_t dir;
     rad_device_t device;
     size_t pipe_index;
     size_t shm_index;
@@ -407,6 +420,11 @@ struct ModuleRecord {
     char compatible[RAD_COMPATIBLE_MAX];
     rad_module_state_t state;
     rad_status_t last_status;
+    int used;
+};
+
+struct LogRecord {
+    rad_log_entry_t entry;
     int used;
 };
 
@@ -480,6 +498,8 @@ struct KernelState {
     FdRecord fds[RADIX_KERNEL_MAX_POSIX_FDS];
     ProcessRecord processes[RADIX_KERNEL_MAX_PROCESSES];
     ModuleRecord modules[RADIX_KERNEL_MAX_MODULES];
+    LogRecord logs[RADIX_KERNEL_MAX_LOG_ENTRIES];
+    uint64_t next_log_sequence;
     IrqRecord irqs[RADIX_KERNEL_MAX_IRQS];
     PerfCounterRecord perf_counters[RADIX_KERNEL_MAX_PERF_COUNTERS];
     WorkItem work_items[RADIX_KERNEL_MAX_WORK_ITEMS];
@@ -519,6 +539,10 @@ int32_t g_current_pid[RADIX_KERNEL_MAX_CORES]{};
 uintptr_t g_scheduler_context[RADIX_KERNEL_MAX_CORES][RADIX_KERNEL_ARCH_CONTEXT_WORDS]{};
 volatile int g_scheduler_in_irq[RADIX_KERNEL_MAX_CORES]{};
 uint32_t g_last_task_index[RADIX_KERNEL_MAX_CORES]{};
+volatile int g_ap_worker_task_seen = 0;
+volatile int g_context_dispatch_seen = 0;
+volatile int g_preempt_sched_seen = 0;
+volatile int g_ap_preempt_sched_seen = 0;
 
 uint64_t hal_now() {
     return rad_hal_time_micros ? rad_hal_time_micros() : 0;
@@ -620,6 +644,18 @@ void unlock_runtime() {
     __atomic_clear(&g_state.runtime_lock, __ATOMIC_RELEASE);
 }
 
+void lock_provider(VfsProviderRecord *provider) {
+    if (!provider) return;
+    while (__atomic_test_and_set(&provider->io_lock, __ATOMIC_ACQUIRE)) {
+        hal_sleep(0);
+    }
+}
+
+void unlock_provider(VfsProviderRecord *provider) {
+    if (!provider) return;
+    __atomic_clear(&provider->io_lock, __ATOMIC_RELEASE);
+}
+
 void copy_string(char *dst, size_t dst_size, const char *src) {
     if (!dst || dst_size == 0) return;
     if (!src) src = "";
@@ -638,6 +674,29 @@ ModuleRecord *find_module(const char *name) {
         if (g_state.modules[i].used && strcmp(g_state.modules[i].name, name) == 0) return &g_state.modules[i];
     }
     return nullptr;
+}
+
+const char *service_state_name(rad_service_state_t state) {
+    switch (state) {
+    case RAD_SERVICE_REGISTERED: return "registered";
+    case RAD_SERVICE_CONFIGURED: return "configured";
+    case RAD_SERVICE_RUNNING: return "running";
+    case RAD_SERVICE_FAILED: return "failed";
+    case RAD_SERVICE_STOPPED: return "stopped";
+    default: return "unknown";
+    }
+}
+
+const char *rad_log_level_name(rad_log_level_t level) {
+    switch (level) {
+    case RAD_LOG_TRACE: return "TRACE";
+    case RAD_LOG_DEBUG: return "DEBUG";
+    case RAD_LOG_INFO: return "INFO";
+    case RAD_LOG_WARNING: return "WARNING";
+    case RAD_LOG_ERROR: return "ERROR";
+    case RAD_LOG_CRITICAL: return "CRITICAL";
+    default: return "INFO";
+    }
 }
 
 void exit_modules_reverse(void) {
@@ -991,6 +1050,7 @@ void close_fd_record(FdRecord& fd) {
     --fd.refs;
     if (fd.refs <= 0) {
         if (fd.file) rad_vfs_close(fd.file);
+        if (fd.dir) rad_vfs_closedir(fd.dir);
         if (fd.device) rad_device_close(fd.device);
         if (fd.kind == FD_PIPE && fd.pipe_index < RADIX_KERNEL_MAX_PIPES) {
             PipeRecord& pipe = g_state.pipes[fd.pipe_index];
@@ -1367,6 +1427,16 @@ void append_hex64(char *dst, size_t dst_size, size_t& pos, uint64_t value) {
     }
 }
 
+uint64_t parse_u64(const char *text, uint64_t fallback) {
+    if (!text || !*text) return fallback;
+    uint64_t value = 0;
+    for (const char *p = text; *p; ++p) {
+        if (*p < '0' || *p > '9') return fallback;
+        value = value * 10u + static_cast<uint64_t>(*p - '0');
+    }
+    return value;
+}
+
 const char *task_state_name(rad_task_state_t state) {
     switch (state) {
     case RAD_TASK_NEW: return "new";
@@ -1691,6 +1761,393 @@ rad_status_t cmd_mounts(int, const char**, rad_terminal_write_t write, void *wri
     return RAD_STATUS_OK;
 }
 
+rad_status_t cmd_services(int, const char**, rad_terminal_write_t write, void *write_context, void*) {
+    rad_service_info_t services[RADIX_KERNEL_MAX_SERVICES]{};
+    const size_t count = rad_service_list(services, RADIX_KERNEL_MAX_SERVICES);
+    for (size_t i = 0; i < count && i < RADIX_KERNEL_MAX_SERVICES; ++i) {
+        char line[256];
+        size_t pos = 0;
+        line[0] = '\0';
+        append_text(line, sizeof(line), pos, services[i].name);
+        append_text(line, sizeof(line), pos, " state=");
+        append_text(line, sizeof(line), pos, service_state_name(services[i].state));
+        append_text(line, sizeof(line), pos, " order=");
+        append_i64(line, sizeof(line), pos, services[i].order);
+        append_text(line, sizeof(line), pos, " autostart=");
+        append_i64(line, sizeof(line), pos, services[i].autostart);
+        append_text(line, sizeof(line), pos, " status=");
+        append_i64(line, sizeof(line), pos, services[i].last_status);
+        if (services[i].capability[0]) {
+            append_text(line, sizeof(line), pos, " cap=");
+            append_text(line, sizeof(line), pos, services[i].capability);
+        }
+        if (services[i].backend[0]) {
+            append_text(line, sizeof(line), pos, " backend=");
+            append_text(line, sizeof(line), pos, services[i].backend);
+        }
+        write_line(write, write_context, line);
+    }
+    return RAD_STATUS_OK;
+}
+
+rad_status_t cmd_dmesg(int, const char**, rad_terminal_write_t write, void *write_context, void*) {
+    rad_log_entry_t entries[16]{};
+    uint64_t after = 0;
+    for (;;) {
+        const size_t count = rad_log_read(entries, 16, after);
+        if (!count) break;
+        for (size_t i = 0; i < count && i < 16; ++i) {
+            after = entries[i].sequence;
+            char line[320];
+            size_t pos = 0;
+            line[0] = '\0';
+            append_u64(line, sizeof(line), pos, entries[i].time_millis);
+            append_text(line, sizeof(line), pos, "ms [");
+            append_text(line, sizeof(line), pos, rad_log_level_name(entries[i].level));
+            append_text(line, sizeof(line), pos, "] [");
+            append_text(line, sizeof(line), pos, entries[i].category);
+            append_text(line, sizeof(line), pos, "] ");
+            append_text(line, sizeof(line), pos, entries[i].message);
+            write_line(write, write_context, line);
+        }
+    }
+    return RAD_STATUS_OK;
+}
+
+rad_status_t write_file_to_terminal(const char *path, rad_terminal_write_t write, void *write_context) {
+    rad_file_t file = nullptr;
+    rad_status_t status = rad_vfs_open(path, RAD_VFS_READ, &file);
+    if (status != RAD_STATUS_OK) return status;
+    char buffer[256];
+    size_t done = 0;
+    while ((status = rad_vfs_read(file, buffer, sizeof(buffer) - 1u, &done)) == RAD_STATUS_OK && done > 0) {
+        buffer[done] = '\0';
+        write(buffer, write_context);
+    }
+    rad_vfs_close(file);
+    return status == RAD_STATUS_OK ? RAD_STATUS_OK : status;
+}
+
+rad_status_t cmd_logread(int argc, const char **argv, rad_terminal_write_t write, void *write_context, void*) {
+    char path[128];
+    if (argc < 2) {
+        copy_string(path, sizeof(path), "/var/log/radix/init.log");
+    } else if (strcmp(argv[1], "kernel") == 0) {
+        copy_string(path, sizeof(path), "/var/log/radix/kernel.log");
+    } else if (strcmp(argv[1], "init") == 0) {
+        copy_string(path, sizeof(path), "/var/log/radix/init.log");
+    } else {
+        size_t pos = 0;
+        path[0] = '\0';
+        append_text(path, sizeof(path), pos, "/var/log/radix/");
+        append_text(path, sizeof(path), pos, argv[1]);
+        append_text(path, sizeof(path), pos, ".log");
+    }
+    return write_file_to_terminal(path, write, write_context);
+}
+
+rad_status_t cmd_initctl(int argc, const char **argv, rad_terminal_write_t write, void *write_context, void*) {
+    if (argc < 2 || strcmp(argv[1], "list") == 0) {
+        return write_file_to_terminal("/run/radinit/status.txt", write, write_context);
+    }
+    if (strcmp(argv[1], "status") == 0) {
+        if (argc < 3) return RAD_STATUS_INVALID_ARGUMENT;
+        rad_file_t file = nullptr;
+        rad_status_t status = rad_vfs_open("/run/radinit/status.txt", RAD_VFS_READ, &file);
+        if (status != RAD_STATUS_OK) return status;
+        char text[1024];
+        size_t done = 0;
+        status = rad_vfs_read(file, text, sizeof(text) - 1u, &done);
+        rad_vfs_close(file);
+        if (status != RAD_STATUS_OK) return status;
+        text[done] = '\0';
+        char *line = text;
+        while (*line) {
+            char *next = strchr(line, '\n');
+            if (next) *next = '\0';
+            const size_t name_len = strlen(argv[2]);
+            if (strncmp(line, argv[2], name_len) == 0 && (line[name_len] == '\0' || line[name_len] == ' ')) {
+                write_line(write, write_context, line);
+                return RAD_STATUS_OK;
+            }
+            if (!next) break;
+            line = next + 1;
+        }
+        return RAD_STATUS_NOT_FOUND;
+    }
+    if (strcmp(argv[1], "start") == 0 || strcmp(argv[1], "stop") == 0) {
+        write_line(write, write_context, "initctl control operations are not supported yet");
+        return RAD_STATUS_NOT_SUPPORTED;
+    }
+    return RAD_STATUS_INVALID_ARGUMENT;
+}
+
+struct CmdLsContext {
+    rad_terminal_write_t write;
+    void *write_context;
+};
+
+int cmd_ls_writer(const char *name, const rad_vfs_stat_t *stat, void *context) {
+    auto *ls = static_cast<CmdLsContext*>(context);
+    if (!ls || !ls->write || !name) return 0;
+    ls->write(name, ls->write_context);
+    if (stat && stat->is_directory) ls->write("/", ls->write_context);
+    ls->write("\n", ls->write_context);
+    return 1;
+}
+
+rad_status_t cmd_ls(int argc, const char **argv, rad_terminal_write_t write, void *write_context, void*) {
+    const char *path = argc > 1 ? argv[1] : ".";
+    CmdLsContext context{write, write_context};
+    return rad_vfs_list(path, cmd_ls_writer, &context);
+}
+
+rad_status_t cmd_pwd(int, const char**, rad_terminal_write_t write, void *write_context, void*) {
+    char cwd[96];
+    const rad_status_t status = rad_vfs_getcwd(cwd, sizeof(cwd));
+    if (status == RAD_STATUS_OK) write_line(write, write_context, cwd);
+    return status;
+}
+
+rad_status_t cmd_cd(int argc, const char **argv, rad_terminal_write_t, void*, void*) {
+    return rad_vfs_chdir(argc > 1 ? argv[1] : "/");
+}
+
+rad_status_t cmd_mkdir(int argc, const char **argv, rad_terminal_write_t, void*, void*) {
+    if (argc < 2) return RAD_STATUS_INVALID_ARGUMENT;
+    for (int i = 1; i < argc; ++i) {
+        const rad_status_t status = rad_vfs_mkdir(argv[i]);
+        if (status != RAD_STATUS_OK) return status;
+    }
+    return RAD_STATUS_OK;
+}
+
+rad_status_t cmd_rmdir(int argc, const char **argv, rad_terminal_write_t, void*, void*) {
+    if (argc < 2) return RAD_STATUS_INVALID_ARGUMENT;
+    for (int i = 1; i < argc; ++i) {
+        const rad_status_t status = rad_vfs_rmdir(argv[i]);
+        if (status != RAD_STATUS_OK) return status;
+    }
+    return RAD_STATUS_OK;
+}
+
+rad_status_t cmd_rm(int argc, const char **argv, rad_terminal_write_t, void*, void*) {
+    if (argc < 2) return RAD_STATUS_INVALID_ARGUMENT;
+    for (int i = 1; i < argc; ++i) {
+        const rad_status_t status = rad_vfs_remove(argv[i]);
+        if (status != RAD_STATUS_OK) return status;
+    }
+    return RAD_STATUS_OK;
+}
+
+rad_status_t cmd_touch(int argc, const char **argv, rad_terminal_write_t, void*, void*) {
+    if (argc < 2) return RAD_STATUS_INVALID_ARGUMENT;
+    for (int i = 1; i < argc; ++i) {
+        rad_file_t file = nullptr;
+        const rad_status_t status = rad_vfs_open(argv[i], RAD_VFS_CREATE | RAD_VFS_WRITE, &file);
+        if (status != RAD_STATUS_OK) return status;
+        rad_vfs_close(file);
+    }
+    return RAD_STATUS_OK;
+}
+
+rad_status_t cmd_cat(int argc, const char **argv, rad_terminal_write_t write, void *write_context, void*) {
+    if (argc < 2) return RAD_STATUS_INVALID_ARGUMENT;
+    char buffer[256];
+    for (int i = 1; i < argc; ++i) {
+        rad_file_t file = nullptr;
+        rad_status_t status = rad_vfs_open(argv[i], RAD_VFS_READ, &file);
+        if (status != RAD_STATUS_OK) return status;
+        size_t done = 0;
+        while ((status = rad_vfs_read(file, buffer, sizeof(buffer), &done)) == RAD_STATUS_OK && done > 0) {
+            char saved = 0;
+            if (done < sizeof(buffer)) {
+                saved = buffer[done];
+                buffer[done] = '\0';
+                write(buffer, write_context);
+                buffer[done] = saved;
+            } else {
+                char chunk[257];
+                memcpy(chunk, buffer, done);
+                chunk[done] = '\0';
+                write(chunk, write_context);
+            }
+        }
+        rad_vfs_close(file);
+        if (status != RAD_STATUS_OK) return status;
+    }
+    return RAD_STATUS_OK;
+}
+
+rad_status_t copy_vfs_file(const char *src, const char *dst) {
+    rad_file_t in = nullptr;
+    rad_status_t status = rad_vfs_open(src, RAD_VFS_READ, &in);
+    if (status != RAD_STATUS_OK) return status;
+    rad_file_t out = nullptr;
+    status = rad_vfs_open(dst, RAD_VFS_CREATE | RAD_VFS_WRITE | RAD_VFS_TRUNCATE, &out);
+    if (status != RAD_STATUS_OK) {
+        rad_vfs_close(in);
+        return status;
+    }
+    char buffer[256];
+    size_t done = 0;
+    while ((status = rad_vfs_read(in, buffer, sizeof(buffer), &done)) == RAD_STATUS_OK && done > 0) {
+        size_t written = 0;
+        status = rad_vfs_write(out, buffer, done, &written);
+        if (status != RAD_STATUS_OK || written != done) {
+            status = status == RAD_STATUS_OK ? RAD_STATUS_ERROR : status;
+            break;
+        }
+    }
+    rad_vfs_close(in);
+    rad_vfs_close(out);
+    return status;
+}
+
+rad_status_t cmd_cp(int argc, const char **argv, rad_terminal_write_t, void*, void*) {
+    return argc == 3 ? copy_vfs_file(argv[1], argv[2]) : RAD_STATUS_INVALID_ARGUMENT;
+}
+
+rad_status_t cmd_mv(int argc, const char **argv, rad_terminal_write_t, void*, void*) {
+    return argc == 3 ? rad_vfs_rename(argv[1], argv[2]) : RAD_STATUS_INVALID_ARGUMENT;
+}
+
+rad_status_t cmd_echo(int argc, const char **argv, rad_terminal_write_t write, void *write_context, void*) {
+    for (int i = 1; i < argc; ++i) {
+        if (i > 1) write(" ", write_context);
+        write(argv[i], write_context);
+    }
+    write("\n", write_context);
+    return RAD_STATUS_OK;
+}
+
+rad_status_t cmd_head_tail(int argc, const char **argv, rad_terminal_write_t write, void *write_context, int tail) {
+    int lines = 10;
+    int path_index = 1;
+    if (argc >= 4 && strcmp(argv[1], "-n") == 0) {
+        lines = static_cast<int>(parse_u64(argv[2], 10));
+        path_index = 3;
+    }
+    if (argc <= path_index || lines < 0) return RAD_STATUS_INVALID_ARGUMENT;
+    rad_file_t file = nullptr;
+    rad_status_t status = rad_vfs_open(argv[path_index], RAD_VFS_READ, &file);
+    if (status != RAD_STATUS_OK) return status;
+    char text[2048];
+    size_t total = 0;
+    size_t done = 0;
+    while (total < sizeof(text) - 1u && (status = rad_vfs_read(file, text + total, sizeof(text) - 1u - total, &done)) == RAD_STATUS_OK && done > 0) total += done;
+    rad_vfs_close(file);
+    text[total] = '\0';
+    if (status != RAD_STATUS_OK) return status;
+    const char *start = text;
+    if (tail) {
+        int seen = 0;
+        for (size_t i = total; i > 0; --i) {
+            if (text[i - 1u] == '\n' && ++seen > lines) {
+                start = text + i;
+                break;
+            }
+        }
+        write(start, write_context);
+        return RAD_STATUS_OK;
+    }
+    int emitted = 0;
+    for (const char *p = text; *p && emitted < lines; ++p) {
+        char one[2] = {*p, '\0'};
+        write(one, write_context);
+        if (*p == '\n') ++emitted;
+    }
+    return RAD_STATUS_OK;
+}
+
+rad_status_t cmd_head(int argc, const char **argv, rad_terminal_write_t write, void *write_context, void*) {
+    return cmd_head_tail(argc, argv, write, write_context, 0);
+}
+
+rad_status_t cmd_tail(int argc, const char **argv, rad_terminal_write_t write, void *write_context, void*) {
+    return cmd_head_tail(argc, argv, write, write_context, 1);
+}
+
+rad_status_t cmd_wc(int argc, const char **argv, rad_terminal_write_t write, void *write_context, void*) {
+    if (argc < 2) return RAD_STATUS_INVALID_ARGUMENT;
+    rad_file_t file = nullptr;
+    rad_status_t status = rad_vfs_open(argv[1], RAD_VFS_READ, &file);
+    if (status != RAD_STATUS_OK) return status;
+    uint64_t bytes = 0;
+    uint64_t lines = 0;
+    uint64_t words = 0;
+    int in_word = 0;
+    char buffer[256];
+    size_t done = 0;
+    while ((status = rad_vfs_read(file, buffer, sizeof(buffer), &done)) == RAD_STATUS_OK && done > 0) {
+        bytes += done;
+        for (size_t i = 0; i < done; ++i) {
+            const char ch = buffer[i];
+            if (ch == '\n') ++lines;
+            const int space = ch == ' ' || ch == '\n' || ch == '\t' || ch == '\r';
+            if (space) in_word = 0;
+            else if (!in_word) {
+                in_word = 1;
+                ++words;
+            }
+        }
+    }
+    rad_vfs_close(file);
+    if (status != RAD_STATUS_OK) return status;
+    char line[96];
+    size_t pos = 0;
+    line[0] = '\0';
+    append_u64(line, sizeof(line), pos, lines);
+    append_text(line, sizeof(line), pos, " ");
+    append_u64(line, sizeof(line), pos, words);
+    append_text(line, sizeof(line), pos, " ");
+    append_u64(line, sizeof(line), pos, bytes);
+    append_text(line, sizeof(line), pos, " ");
+    append_text(line, sizeof(line), pos, argv[1]);
+    write_line(write, write_context, line);
+    return RAD_STATUS_OK;
+}
+
+rad_status_t cmd_basename(int argc, const char **argv, rad_terminal_write_t write, void *write_context, void*) {
+    if (argc < 2) return RAD_STATUS_INVALID_ARGUMENT;
+    const char *name = strrchr(argv[1], '/');
+    write_line(write, write_context, name && name[1] ? name + 1 : argv[1]);
+    return RAD_STATUS_OK;
+}
+
+rad_status_t cmd_dirname(int argc, const char **argv, rad_terminal_write_t write, void *write_context, void*) {
+    if (argc < 2) return RAD_STATUS_INVALID_ARGUMENT;
+    char path[96];
+    copy_string(path, sizeof(path), argv[1]);
+    char *slash = strrchr(path, '/');
+    if (!slash) write_line(write, write_context, ".");
+    else if (slash == path) {
+        slash[1] = '\0';
+        write_line(write, write_context, path);
+    } else {
+        *slash = '\0';
+        write_line(write, write_context, path);
+    }
+    return RAD_STATUS_OK;
+}
+
+rad_status_t cmd_env(int, const char**, rad_terminal_write_t write, void *write_context, void*) {
+    write_line(write, write_context, "PATH=/bin:/usr/bin");
+    return RAD_STATUS_OK;
+}
+
+rad_status_t cmd_true(int, const char**, rad_terminal_write_t, void*, void*) {
+    return RAD_STATUS_OK;
+}
+
+rad_status_t cmd_false(int, const char**, rad_terminal_write_t, void*, void*) {
+    return RAD_STATUS_ERROR;
+}
+
+rad_status_t cmd_exit(int, const char**, rad_terminal_write_t, void*, void*) {
+    return RAD_STATUS_OK;
+}
+
 rad_status_t cmd_bootinfo(int, const char**, rad_terminal_write_t write, void *write_context, void*) {
     if (!g_state.has_boot) return RAD_STATUS_NOT_FOUND;
     write(write_context ? "backend=" : "backend=", write_context);
@@ -1827,7 +2284,9 @@ rad_status_t cmd_run(int argc, const char **argv, rad_terminal_write_t write, vo
 bool task_matches_core(const rad_task_handle& task, uint32_t core) {
     if (!task.entry || task.finished || task.running) return false;
     if (task.state == RAD_TASK_SLEEPING && task.wake_micros > hal_now()) return false;
-    if (task.target_core == RAD_TASK_CORE_ANY) return true;
+    if (task.target_core == RAD_TASK_CORE_ANY) {
+        return g_state.worker_running_mask ? core != RAD_TASK_CORE_SERVICE : true;
+    }
     return task.target_core == static_cast<int>(core);
 }
 
@@ -1874,6 +2333,11 @@ bool run_one_task_on_core(uint32_t core) {
         selected->running = 1;
         selected->state = RAD_TASK_RUNNING;
         selected->current_core = static_cast<int>(core);
+        if (selected->preempt_pinned && selected->target_core == static_cast<int>(core)) {
+            selected->target_core = selected->preempt_saved_target_core;
+            selected->preempt_pinned = 0;
+            selected->preempt_saved_target_core = RAD_TASK_CORE_ANY;
+        }
         g_current_task_id[core] = selected->id;
         g_current_pid[core] = selected->process_pid > 0 ? selected->process_pid : 1;
         g_last_task_index[core] = static_cast<uint32_t>(selected_index);
@@ -1883,6 +2347,9 @@ bool run_one_task_on_core(uint32_t core) {
 
     if (!selected) return false;
     __atomic_fetch_add(&g_state.context_switches, 1u, __ATOMIC_RELAXED);
+    if (core > 0 && !__atomic_exchange_n(&g_ap_worker_task_seen, 1, __ATOMIC_ACQ_REL)) {
+        rad_debug_marker("RADIX_AP_WORKER_TASK_OK");
+    }
     if (arch_context_enabled()) {
         if (!selected->arch_context_ready) {
             memset(selected->arch_context, 0, sizeof(selected->arch_context));
@@ -1892,6 +2359,9 @@ bool run_one_task_on_core(uint32_t core) {
             selected->arch_context_ready = 1;
         }
         if (rad_arch_task_context_resumed) rad_arch_task_context_resumed(selected->user_context);
+        if (!__atomic_exchange_n(&g_context_dispatch_seen, 1, __ATOMIC_ACQ_REL)) {
+            rad_debug_marker("RADIX_CONTEXT_DISPATCH_OK");
+        }
         rad_arch_task_context_switch(g_scheduler_context[core], selected->arch_context);
         return true;
     }
@@ -1944,6 +2414,30 @@ void register_builtins() {
     rad_terminal_register_command("perf", "List runtime performance counters", cmd_perf, nullptr);
     rad_terminal_register_command("latency", "Show latency-sensitive runtime counters", cmd_latency, nullptr);
     rad_terminal_register_command("mounts", "Show VFS mounts", cmd_mounts, nullptr);
+    rad_terminal_register_command("services", "List runtime services", cmd_services, nullptr);
+    rad_terminal_register_command("dmesg", "Print kernel log ring", cmd_dmesg, nullptr);
+    rad_terminal_register_command("initctl", "Inspect radinit services", cmd_initctl, nullptr);
+    rad_terminal_register_command("logread", "Read RADix text logs", cmd_logread, nullptr);
+    rad_terminal_register_command("pwd", "Print current directory", cmd_pwd, nullptr);
+    rad_terminal_register_command("ls", "List a VFS directory", cmd_ls, nullptr);
+    rad_terminal_register_command("cd", "Change current directory", cmd_cd, nullptr);
+    rad_terminal_register_command("mkdir", "Create directories", cmd_mkdir, nullptr);
+    rad_terminal_register_command("rmdir", "Remove empty directories", cmd_rmdir, nullptr);
+    rad_terminal_register_command("touch", "Create files", cmd_touch, nullptr);
+    rad_terminal_register_command("cat", "Print files", cmd_cat, nullptr);
+    rad_terminal_register_command("echo", "Print arguments", cmd_echo, nullptr);
+    rad_terminal_register_command("rm", "Remove files", cmd_rm, nullptr);
+    rad_terminal_register_command("mv", "Rename a file", cmd_mv, nullptr);
+    rad_terminal_register_command("cp", "Copy a file", cmd_cp, nullptr);
+    rad_terminal_register_command("head", "Print first file lines", cmd_head, nullptr);
+    rad_terminal_register_command("tail", "Print last file lines", cmd_tail, nullptr);
+    rad_terminal_register_command("wc", "Count file lines words bytes", cmd_wc, nullptr);
+    rad_terminal_register_command("basename", "Print final path component", cmd_basename, nullptr);
+    rad_terminal_register_command("dirname", "Print parent path", cmd_dirname, nullptr);
+    rad_terminal_register_command("env", "Print environment", cmd_env, nullptr);
+    rad_terminal_register_command("true", "Return success", cmd_true, nullptr);
+    rad_terminal_register_command("false", "Return failure", cmd_false, nullptr);
+    rad_terminal_register_command("exit", "Exit shell", cmd_exit, nullptr);
     rad_terminal_register_command("bootinfo", "Show boot handoff information", cmd_bootinfo, nullptr);
     rad_terminal_register_command("programs", "List loaded programs", cmd_programs, nullptr);
     rad_terminal_register_command("run", "Run a program from VFS", cmd_run, nullptr);
@@ -2102,8 +2596,9 @@ int rad_vprintk(const char *format, va_list args) {
             break;
         }
     }
-    if (pos > 0 && rad_hal_console_write) {
-        rad_hal_console_write(buffer);
+    if (pos > 0) {
+        rad_log_write(RAD_LOG_INFO, "kernel", buffer);
+        if (rad_hal_console_write) rad_hal_console_write(buffer);
     }
     return logical_written;
 }
@@ -2207,6 +2702,7 @@ int rad_early_vprintk(const char *format, va_list args) {
         }
     }
     if (pos > 0) {
+        rad_log_write(RAD_LOG_INFO, "kernel", buffer);
         if (rad_hal_early_console_write) rad_hal_early_console_write(buffer);
         else if (rad_hal_console_write) rad_hal_console_write(buffer);
     }
@@ -2225,6 +2721,69 @@ void rad_debug_marker(const char *marker) {
     if (!marker || !*marker) return;
     if (g_state.initialized) rad_printk("%s%s", marker, strchr(marker, '\n') ? "" : "\n");
     else rad_early_printk("%s%s", marker, strchr(marker, '\n') ? "" : "\n");
+}
+
+rad_status_t rad_log_write(rad_log_level_t level, const char *category, const char *message) {
+    if (!message) return RAD_STATUS_INVALID_ARGUMENT;
+    const uint64_t sequence = __atomic_add_fetch(&g_state.next_log_sequence, 1u, __ATOMIC_RELAXED);
+    LogRecord& record = g_state.logs[sequence % RADIX_KERNEL_MAX_LOG_ENTRIES];
+    memset(&record, 0, sizeof(record));
+    record.used = 1;
+    record.entry.sequence = sequence;
+    record.entry.time_millis = rad_time_millis();
+    record.entry.level = level;
+    copy_string(record.entry.category, sizeof(record.entry.category), category && *category ? category : "kernel");
+    copy_string(record.entry.message, sizeof(record.entry.message), message);
+    return RAD_STATUS_OK;
+}
+
+size_t rad_log_read(rad_log_entry_t *entries, size_t capacity, uint64_t after_sequence) {
+    size_t count = 0;
+    const uint64_t next = g_state.next_log_sequence;
+    const uint64_t first = next > RADIX_KERNEL_MAX_LOG_ENTRIES ? next - RADIX_KERNEL_MAX_LOG_ENTRIES + 1u : 1u;
+    for (uint64_t sequence = first; sequence <= next; ++sequence) {
+        const LogRecord& record = g_state.logs[sequence % RADIX_KERNEL_MAX_LOG_ENTRIES];
+        if (!record.used || record.entry.sequence != sequence || sequence <= after_sequence) continue;
+        if (entries && count < capacity) entries[count] = record.entry;
+        ++count;
+    }
+    return count;
+}
+
+rad_status_t rad_log_flush_to_path(const char *path) {
+    if (!path || !*path) return RAD_STATUS_INVALID_ARGUMENT;
+    rad_file_t file = nullptr;
+    rad_status_t status = rad_vfs_open(path, RAD_VFS_WRITE | RAD_VFS_CREATE | RAD_VFS_TRUNCATE, &file);
+    if (status != RAD_STATUS_OK) return status;
+    rad_log_entry_t entries[16]{};
+    uint64_t after = 0;
+    for (;;) {
+        const size_t count = rad_log_read(entries, 16, after);
+        if (!count) break;
+        for (size_t i = 0; i < count && i < 16; ++i) {
+            after = entries[i].sequence;
+            char line[320];
+            size_t pos = 0;
+            line[0] = '\0';
+            append_u64(line, sizeof(line), pos, entries[i].time_millis);
+            append_text(line, sizeof(line), pos, "ms [");
+            append_text(line, sizeof(line), pos, rad_log_level_name(entries[i].level));
+            append_text(line, sizeof(line), pos, "] [");
+            append_text(line, sizeof(line), pos, entries[i].category);
+            append_text(line, sizeof(line), pos, "] ");
+            append_text(line, sizeof(line), pos, entries[i].message);
+            if (pos == 0 || line[pos - 1u] != '\n') append_char(line, sizeof(line), pos, '\n');
+            size_t written = 0;
+            status = rad_vfs_write(file, line, pos, &written);
+            if (status != RAD_STATUS_OK || written != pos) {
+                rad_vfs_close(file);
+                return status == RAD_STATUS_OK ? RAD_STATUS_ERROR : status;
+            }
+        }
+    }
+    rad_vfs_fsync(file);
+    rad_vfs_close(file);
+    return RAD_STATUS_OK;
 }
 
 rad_status_t rad_cpu_interrupts_enable(void) {
@@ -2255,6 +2814,7 @@ void rad_cpu_halt_forever(void) {
 rad_status_t rad_kernel_poll(void) {
     if (!g_state.initialized) return RAD_STATUS_NOT_INITIALIZED;
     rad_work_poll(64, nullptr);
+    rad_service_poll_all();
     while (run_one_task_on_core(RAD_TASK_CORE_SERVICE)) {}
     rad_work_poll(64, nullptr);
     rad_terminal_poll_attached();
@@ -2651,6 +3211,11 @@ void rad_task_yield(void) {
                 task->running = 0;
                 task->state = RAD_TASK_READY;
                 task->current_core = RAD_TASK_CORE_ANY;
+                if (g_scheduler_in_irq[core] && !task->preempt_pinned) {
+                    task->preempt_saved_target_core = task->target_core;
+                    task->target_core = static_cast<int>(core);
+                    task->preempt_pinned = 1;
+                }
                 g_current_task_id[core] = 0;
                 g_current_pid[core] = 1;
             } else {
@@ -2775,6 +3340,12 @@ void rad_scheduler_yield_from_irq(void) {
     if (!g_current_task_id[core]) return;
     if (__atomic_load_n(&g_state.task_lock, __ATOMIC_RELAXED)) return;
     if (__atomic_exchange_n(&g_scheduler_in_irq[core], 1, __ATOMIC_ACQUIRE)) return;
+    if (!__atomic_exchange_n(&g_preempt_sched_seen, 1, __ATOMIC_ACQ_REL)) {
+        rad_debug_marker("RADIX_PREEMPT_SCHED_OK");
+    }
+    if (core > 0 && !__atomic_exchange_n(&g_ap_preempt_sched_seen, 1, __ATOMIC_ACQ_REL)) {
+        rad_debug_marker("RADIX_AP_PREEMPT_SCHED_OK");
+    }
     rad_task_yield();
     __atomic_store_n(&g_scheduler_in_irq[core], 0, __ATOMIC_RELEASE);
 }
@@ -2964,11 +3535,16 @@ rad_status_t rad_vfs_open(const char *path, uint32_t flags, rad_file_t *file) {
     VfsProviderRecord *provider = provider_for_path(normalized, &relative);
     if (provider) {
         void *backend_file = nullptr;
+        lock_provider(provider);
         const rad_status_t status = provider->ops.open(provider->ops.context, relative, flags, &backend_file);
+        unlock_provider(provider);
         if (status != RAD_STATUS_OK) return status;
         rad_file_t handle = static_cast<rad_file_t>(rad_memory_alloc(sizeof(rad_file_handle)));
         if (!handle) {
+            lock_provider(provider);
             if (provider->ops.close) provider->ops.close(backend_file);
+            unlock_provider(provider);
+            rad_debug_marker("RADIX_VFS_HANDLE_ALLOC_FAIL");
             return RAD_STATUS_NO_MEMORY;
         }
         memset(handle, 0, sizeof(*handle));
@@ -3009,7 +3585,11 @@ rad_status_t rad_vfs_read(rad_file_t file, void *buffer, size_t size, size_t *by
             return RAD_STATUS_NOT_FOUND;
         }
         auto& ops = g_state.providers[file->provider_index].ops;
-        return ops.read ? ops.read(file->backend_file, buffer, size, bytes_read) : RAD_STATUS_NOT_SUPPORTED;
+        VfsProviderRecord *provider = &g_state.providers[file->provider_index];
+        lock_provider(provider);
+        const rad_status_t status = ops.read ? ops.read(file->backend_file, buffer, size, bytes_read) : RAD_STATUS_NOT_SUPPORTED;
+        unlock_provider(provider);
+        return status;
     }
     if (!(file->flags & RAD_VFS_READ)) return RAD_STATUS_INVALID_ARGUMENT;
     if (file->entry_index >= RADIX_KERNEL_MAX_VFS_FILES) return RAD_STATUS_INVALID_ARGUMENT;
@@ -3030,7 +3610,11 @@ rad_status_t rad_vfs_write(rad_file_t file, const void *buffer, size_t size, siz
             return RAD_STATUS_NOT_FOUND;
         }
         auto& ops = g_state.providers[file->provider_index].ops;
-        return ops.write ? ops.write(file->backend_file, buffer, size, bytes_written) : RAD_STATUS_NOT_SUPPORTED;
+        VfsProviderRecord *provider = &g_state.providers[file->provider_index];
+        lock_provider(provider);
+        const rad_status_t status = ops.write ? ops.write(file->backend_file, buffer, size, bytes_written) : RAD_STATUS_NOT_SUPPORTED;
+        unlock_provider(provider);
+        return status;
     }
     if (!(file->flags & RAD_VFS_WRITE)) return RAD_STATUS_INVALID_ARGUMENT;
     if (file->entry_index >= RADIX_KERNEL_MAX_VFS_FILES) return RAD_STATUS_INVALID_ARGUMENT;
@@ -3057,7 +3641,11 @@ rad_status_t rad_vfs_seek(rad_file_t file, int64_t offset, rad_seek_origin_t ori
             return RAD_STATUS_NOT_FOUND;
         }
         auto& ops = g_state.providers[file->provider_index].ops;
-        return ops.seek ? ops.seek(file->backend_file, offset, origin) : RAD_STATUS_NOT_SUPPORTED;
+        VfsProviderRecord *provider = &g_state.providers[file->provider_index];
+        lock_provider(provider);
+        const rad_status_t status = ops.seek ? ops.seek(file->backend_file, offset, origin) : RAD_STATUS_NOT_SUPPORTED;
+        unlock_provider(provider);
+        return status;
     }
     if (file->entry_index >= RADIX_KERNEL_MAX_VFS_FILES) return RAD_STATUS_INVALID_ARGUMENT;
     VfsFileRecord& record = g_state.files[file->entry_index];
@@ -3076,7 +3664,11 @@ uint64_t rad_vfs_tell(rad_file_t file) {
             return 0;
         }
         auto& ops = g_state.providers[file->provider_index].ops;
-        return ops.tell ? ops.tell(file->backend_file) : 0;
+        VfsProviderRecord *provider = &g_state.providers[file->provider_index];
+        lock_provider(provider);
+        const uint64_t position = ops.tell ? ops.tell(file->backend_file) : 0;
+        unlock_provider(provider);
+        return position;
     }
     return file ? file->position : 0;
 }
@@ -3084,7 +3676,10 @@ uint64_t rad_vfs_tell(rad_file_t file) {
 void rad_vfs_close(rad_file_t file) {
     if (file && file->backend && file->provider_index < RADIX_KERNEL_MAX_VFS_PROVIDERS && g_state.providers[file->provider_index].used) {
         auto& ops = g_state.providers[file->provider_index].ops;
+        VfsProviderRecord *provider = &g_state.providers[file->provider_index];
+        lock_provider(provider);
         if (ops.close) ops.close(file->backend_file);
+        unlock_provider(provider);
     }
     rad_memory_free(file);
 }
@@ -3096,7 +3691,11 @@ rad_status_t rad_vfs_fsync(rad_file_t file) {
             return RAD_STATUS_NOT_FOUND;
         }
         auto& ops = g_state.providers[file->provider_index].ops;
-        return ops.fsync ? ops.fsync(file->backend_file) : RAD_STATUS_OK;
+        VfsProviderRecord *provider = &g_state.providers[file->provider_index];
+        lock_provider(provider);
+        const rad_status_t status = ops.fsync ? ops.fsync(file->backend_file) : RAD_STATUS_OK;
+        unlock_provider(provider);
+        return status;
     }
     return RAD_STATUS_OK;
 }
@@ -3108,7 +3707,10 @@ rad_status_t rad_vfs_stat(const char *path, rad_vfs_stat_t *stat) {
     const char *relative = nullptr;
     VfsProviderRecord *provider = provider_for_path(normalized, &relative);
     if (provider) {
-        return provider->ops.stat ? provider->ops.stat(provider->ops.context, relative, stat) : RAD_STATUS_NOT_SUPPORTED;
+        lock_provider(provider);
+        const rad_status_t status = provider->ops.stat ? provider->ops.stat(provider->ops.context, relative, stat) : RAD_STATUS_NOT_SUPPORTED;
+        unlock_provider(provider);
+        return status;
     }
     if (strcmp(normalized, "/") == 0) {
         stat->is_directory = 1;
@@ -3133,7 +3735,10 @@ rad_status_t rad_vfs_list(const char *path, rad_vfs_list_callback_t callback, vo
     const char *relative = nullptr;
     VfsProviderRecord *provider = provider_for_path(normalized, &relative);
     if (provider) {
-        return provider->ops.list ? provider->ops.list(provider->ops.context, relative, callback, context) : RAD_STATUS_NOT_SUPPORTED;
+        lock_provider(provider);
+        const rad_status_t status = provider->ops.list ? provider->ops.list(provider->ops.context, relative, callback, context) : RAD_STATUS_NOT_SUPPORTED;
+        unlock_provider(provider);
+        return status;
     }
     if (strcmp(normalized, "/") != 0 && !mounted_path(normalized)) return RAD_STATUS_NOT_FOUND;
     rad_vfs_stat_t dir_stat{};
@@ -3156,7 +3761,10 @@ rad_status_t rad_vfs_mkdir(const char *path) {
     const char *relative = nullptr;
     VfsProviderRecord *provider = provider_for_path(normalized, &relative);
     if (provider) {
-        return provider->ops.mkdir ? provider->ops.mkdir(provider->ops.context, relative) : RAD_STATUS_NOT_SUPPORTED;
+        lock_provider(provider);
+        const rad_status_t status = provider->ops.mkdir ? provider->ops.mkdir(provider->ops.context, relative) : RAD_STATUS_NOT_SUPPORTED;
+        unlock_provider(provider);
+        return status;
     }
     if (!mounted_path(normalized)) return RAD_STATUS_NOT_FOUND;
     char parent[96];
@@ -3175,7 +3783,10 @@ rad_status_t rad_vfs_remove(const char *path) {
     const char *relative = nullptr;
     VfsProviderRecord *provider = provider_for_path(normalized, &relative);
     if (provider) {
-        return provider->ops.remove ? provider->ops.remove(provider->ops.context, relative) : RAD_STATUS_NOT_SUPPORTED;
+        lock_provider(provider);
+        const rad_status_t status = provider->ops.remove ? provider->ops.remove(provider->ops.context, relative) : RAD_STATUS_NOT_SUPPORTED;
+        unlock_provider(provider);
+        return status;
     }
     VfsFileRecord *record = find_file_or_dir(normalized);
     if (!record) return RAD_STATUS_NOT_FOUND;
@@ -3196,9 +3807,12 @@ rad_status_t rad_vfs_rename(const char *old_path, const char *new_path) {
     VfsProviderRecord *new_provider = provider_for_path(new_normalized, &new_relative);
     if (old_provider || new_provider) {
         if (old_provider != new_provider || !old_provider) return RAD_STATUS_INVALID_ARGUMENT;
-        return old_provider->ops.rename
+        lock_provider(old_provider);
+        const rad_status_t status = old_provider->ops.rename
             ? old_provider->ops.rename(old_provider->ops.context, old_relative, new_relative)
             : RAD_STATUS_NOT_SUPPORTED;
+        unlock_provider(old_provider);
+        return status;
     }
     VfsFileRecord *record = find_file_or_dir(old_normalized);
     if (!record) return RAD_STATUS_NOT_FOUND;
@@ -3218,7 +3832,10 @@ rad_status_t rad_vfs_rmdir(const char *path) {
     const char *relative = nullptr;
     VfsProviderRecord *provider = provider_for_path(normalized, &relative);
     if (provider) {
-        return provider->ops.rmdir ? provider->ops.rmdir(provider->ops.context, relative) : RAD_STATUS_NOT_SUPPORTED;
+        lock_provider(provider);
+        const rad_status_t status = provider->ops.rmdir ? provider->ops.rmdir(provider->ops.context, relative) : RAD_STATUS_NOT_SUPPORTED;
+        unlock_provider(provider);
+        return status;
     }
     VfsFileRecord *record = find_file_or_dir(normalized);
     if (!record || !record->is_directory) return RAD_STATUS_NOT_FOUND;
@@ -3234,7 +3851,10 @@ rad_status_t rad_vfs_truncate(const char *path, uint64_t size) {
     const char *relative = nullptr;
     VfsProviderRecord *provider = provider_for_path(normalized, &relative);
     if (provider) {
-        return provider->ops.truncate ? provider->ops.truncate(provider->ops.context, relative, size) : RAD_STATUS_NOT_SUPPORTED;
+        lock_provider(provider);
+        const rad_status_t status = provider->ops.truncate ? provider->ops.truncate(provider->ops.context, relative, size) : RAD_STATUS_NOT_SUPPORTED;
+        unlock_provider(provider);
+        return status;
     }
     if (size > RADIX_KERNEL_VFS_FILE_BYTES) return RAD_STATUS_NO_MEMORY;
     VfsFileRecord *record = find_file_or_dir(normalized);
@@ -3251,7 +3871,10 @@ rad_status_t rad_vfs_readlink(const char *path, char *buffer, size_t size) {
     const char *relative = nullptr;
     VfsProviderRecord *provider = provider_for_path(normalized, &relative);
     if (provider) {
-        return provider->ops.readlink ? provider->ops.readlink(provider->ops.context, relative, buffer, size) : RAD_STATUS_NOT_SUPPORTED;
+        lock_provider(provider);
+        const rad_status_t status = provider->ops.readlink ? provider->ops.readlink(provider->ops.context, relative, buffer, size) : RAD_STATUS_NOT_SUPPORTED;
+        unlock_provider(provider);
+        return status;
     }
     return RAD_STATUS_NOT_SUPPORTED;
 }
@@ -3263,7 +3886,10 @@ rad_status_t rad_vfs_symlink(const char *target, const char *link_path) {
     const char *relative = nullptr;
     VfsProviderRecord *provider = provider_for_path(normalized, &relative);
     if (provider) {
-        return provider->ops.symlink ? provider->ops.symlink(provider->ops.context, target, relative) : RAD_STATUS_NOT_SUPPORTED;
+        lock_provider(provider);
+        const rad_status_t status = provider->ops.symlink ? provider->ops.symlink(provider->ops.context, target, relative) : RAD_STATUS_NOT_SUPPORTED;
+        unlock_provider(provider);
+        return status;
     }
     return RAD_STATUS_NOT_SUPPORTED;
 }
@@ -3280,7 +3906,10 @@ rad_status_t rad_vfs_link(const char *old_path, const char *new_path) {
     VfsProviderRecord *new_provider = provider_for_path(new_normalized, &new_relative);
     if (old_provider || new_provider) {
         if (old_provider != new_provider || !old_provider) return RAD_STATUS_INVALID_ARGUMENT;
-        return old_provider->ops.link ? old_provider->ops.link(old_provider->ops.context, old_relative, new_relative) : RAD_STATUS_NOT_SUPPORTED;
+        lock_provider(old_provider);
+        const rad_status_t status = old_provider->ops.link ? old_provider->ops.link(old_provider->ops.context, old_relative, new_relative) : RAD_STATUS_NOT_SUPPORTED;
+        unlock_provider(old_provider);
+        return status;
     }
     return RAD_STATUS_NOT_SUPPORTED;
 }
@@ -3292,7 +3921,10 @@ rad_status_t rad_vfs_chmod(const char *path, uint32_t mode) {
     const char *relative = nullptr;
     VfsProviderRecord *provider = provider_for_path(normalized, &relative);
     if (provider) {
-        return provider->ops.chmod ? provider->ops.chmod(provider->ops.context, relative, mode) : RAD_STATUS_NOT_SUPPORTED;
+        lock_provider(provider);
+        const rad_status_t status = provider->ops.chmod ? provider->ops.chmod(provider->ops.context, relative, mode) : RAD_STATUS_NOT_SUPPORTED;
+        unlock_provider(provider);
+        return status;
     }
     VfsFileRecord *record = find_file_or_dir(normalized);
     return record ? RAD_STATUS_NOT_SUPPORTED : RAD_STATUS_NOT_FOUND;
@@ -3676,6 +4308,10 @@ int32_t rad_fd_open(const char *path, uint32_t flags) {
         rad_status_t status = rad_device_open(path, &record.device);
         if (status != RAD_STATUS_OK) return status;
         record.kind = FD_DEVICE;
+    } else if (flags & RAD_VFS_DIRECTORY) {
+        rad_status_t status = rad_vfs_opendir(path, &record.dir);
+        if (status != RAD_STATUS_OK) return status;
+        record.kind = FD_DIR;
     } else {
         rad_status_t status = rad_vfs_open(path, flags, &record.file);
         if (status != RAD_STATUS_OK) return status;
@@ -3723,6 +4359,23 @@ intptr_t rad_fd_write(int32_t fd, const void *buffer, size_t size) {
     return RAD_STATUS_INVALID_ARGUMENT;
 }
 
+intptr_t rad_fd_getdents(int32_t fd, rad_dirent_user_t *entries, size_t capacity) {
+    FdRecord *record = lookup_fd_record(fd);
+    if (!record || !entries) return RAD_STATUS_INVALID_ARGUMENT;
+    if (record->kind != FD_DIR) return RAD_STATUS_NOT_SUPPORTED;
+    size_t count = 0;
+    while (count < capacity) {
+        rad_vfs_dirent_t entry{};
+        const rad_status_t status = rad_vfs_readdir(record->dir, &entry);
+        if (status == RAD_STATUS_NOT_FOUND) break;
+        if (status != RAD_STATUS_OK) return status;
+        entries[count].type = entry.stat.is_directory ? 2u : 1u;
+        copy_string(entries[count].name, sizeof(entries[count].name), entry.name);
+        ++count;
+    }
+    return static_cast<intptr_t>(count);
+}
+
 int64_t rad_fd_lseek(int32_t fd, int64_t offset, rad_seek_origin_t origin) {
     FdRecord *record = lookup_fd_record(fd);
     if (!record) return RAD_STATUS_NOT_FOUND;
@@ -3759,6 +4412,12 @@ int32_t rad_fd_fstat(int32_t fd, rad_vfs_stat_t *stat) {
     if (record->kind == FD_SHM) {
         memset(stat, 0, sizeof(*stat));
         stat->mode = 0100000u;
+        return RAD_STATUS_OK;
+    }
+    if (record->kind == FD_DIR) {
+        memset(stat, 0, sizeof(*stat));
+        stat->is_directory = 1;
+        stat->mode = 0040755u;
         return RAD_STATUS_OK;
     }
     return RAD_STATUS_NOT_SUPPORTED;
@@ -4218,6 +4877,14 @@ intptr_t rad_syscall_dispatch(uintptr_t number, uintptr_t arg0, uintptr_t arg1, 
     case RAD_SYSCALL_BRK: return 0;
     case RAD_SYSCALL_PIPE: return rad_pipe_create(reinterpret_cast<int32_t*>(arg0));
     case RAD_SYSCALL_FCNTL: return rad_fd_fcntl(static_cast<int32_t>(arg0), static_cast<uint32_t>(arg1), arg2);
+    case RAD_SYSCALL_GETDENTS: return rad_fd_getdents(static_cast<int32_t>(arg0), reinterpret_cast<rad_dirent_user_t*>(arg1), static_cast<size_t>(arg2));
+    case RAD_SYSCALL_REMOVE: return rad_vfs_remove(reinterpret_cast<const char*>(arg0));
+    case RAD_SYSCALL_MKDIR: return rad_vfs_mkdir(reinterpret_cast<const char*>(arg0));
+    case RAD_SYSCALL_RMDIR: return rad_vfs_rmdir(reinterpret_cast<const char*>(arg0));
+    case RAD_SYSCALL_RENAME: return rad_vfs_rename(reinterpret_cast<const char*>(arg0), reinterpret_cast<const char*>(arg1));
+    case RAD_SYSCALL_TRUNCATE: return rad_vfs_truncate(reinterpret_cast<const char*>(arg0), static_cast<uint64_t>(arg1));
+    case RAD_SYSCALL_LOG_READ: return static_cast<intptr_t>(rad_log_read(reinterpret_cast<rad_log_entry_t*>(arg0), static_cast<size_t>(arg1), static_cast<uint64_t>(arg2)));
+    case RAD_SYSCALL_LOG_FLUSH: return rad_log_flush_to_path(reinterpret_cast<const char*>(arg0));
     case RAD_SYSCALL_ACCESS: {
         rad_vfs_stat_t stat{};
         return rad_vfs_stat(reinterpret_cast<const char*>(arg0), &stat);

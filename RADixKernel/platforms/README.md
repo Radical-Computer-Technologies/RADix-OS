@@ -1,9 +1,10 @@
 # RADix Platform Layout
 
 `platforms/a53` contains portable ARMv8-A/Cortex-A53 execution support: boot
-normalization contracts, process architecture registration, user-copy/MMU/COW
-interfaces, and generic A53 capability reporting. Code in this directory must
-not depend on Broadcom peripheral addresses.
+normalization contracts, 4 KiB page-table setup, TTBR0 process roots, TTBR1
+kernel-root setup, process architecture registration, user-copy/COW interfaces,
+and generic A53 capability reporting. Code in this directory must not depend on
+Broadcom peripheral addresses.
 
 `platforms/a53/bcm283x` contains Raspberry Pi Zero 2 W / BCM283x platform
 drivers: PL011, mailbox framebuffer, Broadcom interrupt routing, eMMC, DWC OTG,

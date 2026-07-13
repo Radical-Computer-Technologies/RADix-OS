@@ -14,6 +14,12 @@ typedef struct x86_user_context {
     uint64_t resume_rsp;
     uint64_t resume_rflags;
     uint64_t fork_rax;
+    uint64_t resume_rbx;
+    uint64_t resume_rbp;
+    uint64_t resume_r12;
+    uint64_t resume_r13;
+    uint64_t resume_r14;
+    uint64_t resume_r15;
 } x86_user_context_t;
 
 typedef struct x86_user_trap_frame {
@@ -24,6 +30,12 @@ typedef struct x86_user_trap_frame {
     uint64_t r10;
     uint64_t r8;
     uint64_t r9;
+    uint64_t rbx;
+    uint64_t rbp;
+    uint64_t r12;
+    uint64_t r13;
+    uint64_t r14;
+    uint64_t r15;
     uint64_t rip;
     uint64_t cs;
     uint64_t rflags;

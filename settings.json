@@ -1,0 +1,33 @@
+{
+  "radbuild_schema": "2.0",
+  "radbuild_version": "0.2.1",
+  "project_name": "RADix-OS",
+  "systems": [
+    {
+      "id": "radix-x86-64-grub-slint",
+      "type": "os.radix",
+      "name": "RADix x86_64 GRUB Slint VM image",
+      "provider": "radix-os",
+      "depends_on": [],
+      "toolchain": {
+        "architecture": "x86_64",
+        "boot": "grub-multiboot2",
+        "ui": "slint-framebuffer"
+      },
+      "config": {
+        "target": "x86_64-grub-slint",
+        "build_dir": "build/embedded/x86_64_grub_slint",
+        "smoke_script": "tools/embedded/x86_64_grub_slint_smoke.sh",
+        "artifact_dir": "artifacts/radix/x86_64-grub-slint",
+        "log_dir": ".radmeta/radix-os/logs",
+        "qemu_timeout": "90s",
+        "qemu_smp": [2, 4],
+        "jobs": 2
+      }
+    }
+  ],
+  "connections": [],
+  "artifacts": [],
+  "deploy": [],
+  "packages": {}
+}

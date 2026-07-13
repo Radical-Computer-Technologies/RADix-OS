@@ -16,7 +16,7 @@ constexpr uint16_t Ext4SIfreg = 0x8000u;
 constexpr uint16_t Ext4SIfLnk = 0xa000u;
 constexpr uint32_t Ext4NameMax = 255u;
 constexpr uint32_t MaxBlockSize = 4096u;
-constexpr uint32_t MaxOpenFiles = 8u;
+constexpr uint32_t MaxOpenFiles = 32u;
 constexpr uint32_t Ext4ExtentsFlag = 0x00080000u;
 constexpr uint16_t ExtentHeaderMagic = 0xf30au;
 constexpr uint8_t Ext4FtRegular = 1u;
@@ -897,7 +897,10 @@ rad_status_t ext4_open(void*, const char *path, uint32_t flags, void **file) {
         if (status != RAD_STATUS_OK) return status;
     }
     Ext4File *handle = allocate_file();
-    if (!handle) return RAD_STATUS_NO_MEMORY;
+    if (!handle) {
+        rad_debug_marker("RADIX_EXT4_OPEN_HANDLE_ALLOC_FAIL");
+        return RAD_STATUS_NO_MEMORY;
+    }
     handle->inode_number = inode_number;
     handle->inode = inode;
     handle->flags = flags;

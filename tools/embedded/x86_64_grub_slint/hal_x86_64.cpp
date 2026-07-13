@@ -26,9 +26,14 @@ uint8_t g_mouse_packet[3];
 uint8_t g_mouse_packet_index = 0;
 int32_t g_mouse_x = 512;
 int32_t g_mouse_y = 384;
+int32_t g_mouse_max_x = 1023;
+int32_t g_mouse_max_y = 767;
 uint32_t g_mouse_buttons = 0;
 int g_keyboard_irq_seen = 0;
 int g_mouse_irq_seen = 0;
+int g_mouse_motion_seen = 0;
+int g_ps2_drain_active = 0;
+volatile int g_serial_write_lock = 0;
 rad_input_queue_t g_keyboard_queue = nullptr;
 rad_input_queue_t g_mouse_queue = nullptr;
 
@@ -53,6 +58,14 @@ int serial_rx_ready() {
 void serial_put(char ch) {
     while (!serial_tx_ready()) {}
     outb(Com1, static_cast<uint8_t>(ch));
+}
+
+void serial_lock(void) {
+    while (__atomic_test_and_set(&g_serial_write_lock, __ATOMIC_ACQUIRE)) asm volatile("pause");
+}
+
+void serial_unlock(void) {
+    __atomic_clear(&g_serial_write_lock, __ATOMIC_RELEASE);
 }
 
 void program_pit_1000hz(void) {
@@ -86,10 +99,12 @@ rad_status_t serial_read(void*, void *buffer, size_t size, size_t *bytes_read) {
 rad_status_t serial_write(void*, const void *buffer, size_t size, size_t *bytes_written) {
     if (!buffer) return RAD_STATUS_INVALID_ARGUMENT;
     const auto *bytes = static_cast<const char*>(buffer);
+    serial_lock();
     for (size_t i = 0; i < size; ++i) {
         if (bytes[i] == '\n') serial_put('\r');
         serial_put(bytes[i]);
     }
+    serial_unlock();
     if (bytes_written) *bytes_written = size;
     return RAD_STATUS_OK;
 }
@@ -287,25 +302,31 @@ void mouse_enqueue_packet_events(void) {
     int32_t dy = static_cast<int8_t>(g_mouse_packet[2]);
     if (flags & 0x40u) dx = 0;
     if (flags & 0x80u) dy = 0;
-    g_mouse_x = clamp_mouse_coord(g_mouse_x + dx, 1023);
-    g_mouse_y = clamp_mouse_coord(g_mouse_y - dy, 767);
+    g_mouse_x = clamp_mouse_coord(g_mouse_x + dx, g_mouse_max_x);
+    g_mouse_y = clamp_mouse_coord(g_mouse_y - dy, g_mouse_max_y);
     const uint32_t buttons =
         ((flags & 0x01u) ? static_cast<uint32_t>(RAD_INPUT_POINTER_BUTTON_LEFT) : 0u)
         | ((flags & 0x02u) ? static_cast<uint32_t>(RAD_INPUT_POINTER_BUTTON_RIGHT) : 0u)
         | ((flags & 0x04u) ? static_cast<uint32_t>(RAD_INPUT_POINTER_BUTTON_MIDDLE) : 0u);
-
-    rad_input_event_t motion{};
-    motion.size = sizeof(motion);
-    motion.type = RAD_INPUT_EVENT_POINTER_MOTION;
-    motion.x = g_mouse_x;
-    motion.y = g_mouse_y;
-    motion.dx = dx;
-    motion.dy = -dy;
-    motion.buttons = buttons;
-    if (g_mouse_queue) rad_input_queue_push(g_mouse_queue, &motion);
-    rad_perf_counter_add("input.irq", 1);
-
     const uint32_t changed = buttons ^ g_mouse_buttons;
+
+    if (dx != 0 || dy != 0) {
+        rad_input_event_t motion{};
+        motion.size = sizeof(motion);
+        motion.type = RAD_INPUT_EVENT_POINTER_MOTION;
+        motion.x = g_mouse_x;
+        motion.y = g_mouse_y;
+        motion.dx = dx;
+        motion.dy = -dy;
+        motion.buttons = buttons;
+        if (g_mouse_queue) rad_input_queue_push(g_mouse_queue, &motion);
+        rad_perf_counter_add("input.irq", 1);
+        if (!g_mouse_motion_seen) {
+            g_mouse_motion_seen = 1;
+            rad_debug_marker("RADIX_INPUT_MOUSE_MOTION_OK");
+        }
+    }
+
     if (changed) {
         rad_input_event_t button{};
         button.size = sizeof(button);
@@ -326,23 +347,33 @@ void mouse_enqueue_packet_events(void) {
     }
 }
 
-void mouse_drain_port(void) {
-    while (ps2_aux_output_ready()) {
-        const uint8_t byte = inb(Ps2Data);
-        if (g_mouse_packet_index == 0 && (byte & 0x08u) == 0) continue;
-        g_mouse_packet[g_mouse_packet_index++] = byte;
-        if (g_mouse_packet_index < 3) continue;
-        g_mouse_packet_index = 0;
-        mouse_enqueue_packet_events();
+void mouse_accept_byte(uint8_t byte) {
+    if (g_mouse_packet_index == 0 && (byte & 0x08u) == 0) return;
+    g_mouse_packet[g_mouse_packet_index++] = byte;
+    if (g_mouse_packet_index < 3) return;
+    g_mouse_packet_index = 0;
+    mouse_enqueue_packet_events();
+}
+
+void mouse_drain_port(int force_mouse_data) {
+    while (ps2_output_ready()) {
+        if (!force_mouse_data && !ps2_aux_output_ready()) return;
+        mouse_accept_byte(inb(Ps2Data));
     }
 }
 
 void keyboard_irq_handler(uint32_t, void*) {
+    if (g_ps2_drain_active) return;
+    g_ps2_drain_active = 1;
     keyboard_drain_port();
+    g_ps2_drain_active = 0;
 }
 
 void mouse_irq_handler(uint32_t, void*) {
-    mouse_drain_port();
+    if (g_ps2_drain_active) return;
+    g_ps2_drain_active = 1;
+    mouse_drain_port(1);
+    g_ps2_drain_active = 0;
 }
 
 void timer_irq_handler(uint32_t, void*) {
@@ -408,9 +439,79 @@ extern "C" void x86_serial_init(void) {
 }
 
 extern "C" void x86_serial_write(const char *text) {
+    serial_lock();
     while (text && *text) {
         if (*text == '\n') serial_put('\r');
         serial_put(*text++);
+    }
+    serial_unlock();
+}
+
+extern "C" void x86_ps2_set_pointer_bounds(uint32_t width, uint32_t height) {
+    if (width == 0 || height == 0) return;
+    g_mouse_max_x = static_cast<int32_t>(width - 1u);
+    g_mouse_max_y = static_cast<int32_t>(height - 1u);
+    g_mouse_x = static_cast<int32_t>(width / 2u);
+    g_mouse_y = static_cast<int32_t>(height / 2u);
+}
+
+extern "C" void x86_input_pointer_absolute(int32_t raw_x, int32_t raw_y, int32_t min_x, int32_t max_x, int32_t min_y, int32_t max_y, uint32_t buttons) {
+    if (max_x <= min_x) max_x = min_x + 1;
+    if (max_y <= min_y) max_y = min_y + 1;
+    const int32_t old_x = g_mouse_x;
+    const int32_t old_y = g_mouse_y;
+    const int64_t scaled_x = (static_cast<int64_t>(raw_x - min_x) * g_mouse_max_x) / (max_x - min_x);
+    const int64_t scaled_y = (static_cast<int64_t>(raw_y - min_y) * g_mouse_max_y) / (max_y - min_y);
+    g_mouse_x = clamp_mouse_coord(static_cast<int32_t>(scaled_x), g_mouse_max_x);
+    g_mouse_y = clamp_mouse_coord(static_cast<int32_t>(scaled_y), g_mouse_max_y);
+    const int32_t dx = g_mouse_x - old_x;
+    const int32_t dy = g_mouse_y - old_y;
+    if (dx != 0 || dy != 0) {
+        rad_input_event_t motion{};
+        motion.size = sizeof(motion);
+        motion.type = RAD_INPUT_EVENT_POINTER_MOTION;
+        motion.x = g_mouse_x;
+        motion.y = g_mouse_y;
+        motion.dx = dx;
+        motion.dy = dy;
+        motion.buttons = buttons;
+        if (g_mouse_queue) rad_input_queue_push(g_mouse_queue, &motion);
+        if (!g_mouse_motion_seen) {
+            g_mouse_motion_seen = 1;
+            rad_debug_marker("RADIX_INPUT_MOUSE_MOTION_OK");
+        }
+    }
+}
+
+extern "C" void x86_input_pointer_buttons(uint32_t buttons) {
+    const uint32_t changed = buttons ^ g_mouse_buttons;
+    if (!changed) return;
+    rad_input_event_t button{};
+    button.size = sizeof(button);
+    button.type = RAD_INPUT_EVENT_POINTER_BUTTON;
+    button.x = g_mouse_x;
+    button.y = g_mouse_y;
+    button.buttons = buttons;
+    if (changed & RAD_INPUT_POINTER_BUTTON_LEFT) button.code = RAD_INPUT_POINTER_BUTTON_LEFT;
+    else if (changed & RAD_INPUT_POINTER_BUTTON_RIGHT) button.code = RAD_INPUT_POINTER_BUTTON_RIGHT;
+    else button.code = RAD_INPUT_POINTER_BUTTON_MIDDLE;
+    button.pressed = (buttons & button.code) ? 1u : 0u;
+    if (g_mouse_queue) rad_input_queue_push(g_mouse_queue, &button);
+    g_mouse_buttons = buttons;
+}
+
+extern "C" void x86_ps2_poll_devices(void) {
+    if (g_ps2_drain_active) return;
+    g_ps2_drain_active = 1;
+    keyboard_drain_port();
+    mouse_drain_port(0);
+    g_ps2_drain_active = 0;
+}
+
+extern "C" void x86_ui_idle_frame(void) {
+    for (uint32_t i = 0; i < 2000u; ++i) {
+        if ((i & 0x3fu) == 0) x86_ps2_poll_devices();
+        asm volatile("pause");
     }
 }
 
@@ -481,7 +582,9 @@ extern "C" rad_status_t rad_hal_interrupts_disable(void) {
 }
 
 extern "C" int rad_hal_interrupts_enabled(void) {
-    return g_interrupts_enabled;
+    uint64_t flags = 0;
+    asm volatile("pushfq; popq %0" : "=r"(flags));
+    return g_interrupts_enabled && ((flags & (1ull << 9)) != 0);
 }
 
 extern "C" void rad_hal_cpu_idle(void) {
@@ -490,7 +593,7 @@ extern "C" void rad_hal_cpu_idle(void) {
             g_idle_hlt_seen = 1;
             rad_debug_marker("RADIX_IDLE_HLT_OK");
         }
-        asm volatile("hlt");
+        asm volatile("sti; hlt" ::: "memory");
     } else {
         asm volatile("pause");
     }

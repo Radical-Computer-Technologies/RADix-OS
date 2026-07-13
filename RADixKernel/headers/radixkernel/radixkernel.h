@@ -119,6 +119,8 @@ extern "C" {
 #define RAD_TIMER_NAME_MAX 32u ///< Public constant or ioctl helper.
 #define RAD_INPUT_QUEUE_NAME_MAX 64u ///< Public constant or ioctl helper.
 #define RAD_WAIT_FOREVER 0xffffffffu ///< Public constant or ioctl helper.
+#define RAD_LOG_CATEGORY_MAX 32u ///< Public constant or ioctl helper.
+#define RAD_LOG_MESSAGE_MAX 192u ///< Public constant or ioctl helper.
 
 #define RAD_BOOT_MEMORY_USABLE 1u ///< Public constant or ioctl helper.
 #define RAD_BOOT_MEMORY_RESERVED 2u ///< Public constant or ioctl helper.
@@ -137,6 +139,16 @@ typedef enum rad_status {
     RAD_STATUS_ALREADY_EXISTS = -7, ///< RAD_STATUS_ALREADY_EXISTS.
     RAD_STATUS_NOT_INITIALIZED = -8 ///< RAD_STATUS_NOT_INITIALIZED.
 } rad_status_t; ///< Public typedef alias.
+
+/** @brief Public enumeration for rad_log_level. */
+typedef enum rad_log_level {
+    RAD_LOG_TRACE = 0, ///< RAD_LOG_TRACE.
+    RAD_LOG_DEBUG = 1, ///< RAD_LOG_DEBUG.
+    RAD_LOG_INFO = 2, ///< RAD_LOG_INFO.
+    RAD_LOG_WARNING = 3, ///< RAD_LOG_WARNING.
+    RAD_LOG_ERROR = 4, ///< RAD_LOG_ERROR.
+    RAD_LOG_CRITICAL = 5 ///< RAD_LOG_CRITICAL.
+} rad_log_level_t; ///< Public typedef alias.
 
 /** @brief Public enumeration for rad_posix_syscall. */
 typedef enum rad_posix_syscall {
@@ -178,7 +190,15 @@ typedef enum rad_posix_syscall {
     RAD_SYSCALL_MMAP = 35, ///< RAD_SYSCALL_MMAP.
     RAD_SYSCALL_MUNMAP = 36, ///< RAD_SYSCALL_MUNMAP.
     RAD_SYSCALL_SHM_OPEN = 37, ///< RAD_SYSCALL_SHM_OPEN.
-    RAD_SYSCALL_SHM_UNLINK = 38 ///< RAD_SYSCALL_SHM_UNLINK.
+    RAD_SYSCALL_SHM_UNLINK = 38, ///< RAD_SYSCALL_SHM_UNLINK.
+    RAD_SYSCALL_GETDENTS = 1000, ///< RAD_SYSCALL_GETDENTS.
+    RAD_SYSCALL_REMOVE = 1001, ///< RAD_SYSCALL_REMOVE.
+    RAD_SYSCALL_MKDIR = 1002, ///< RAD_SYSCALL_MKDIR.
+    RAD_SYSCALL_RMDIR = 1003, ///< RAD_SYSCALL_RMDIR.
+    RAD_SYSCALL_RENAME = 1004, ///< RAD_SYSCALL_RENAME.
+    RAD_SYSCALL_TRUNCATE = 1005, ///< RAD_SYSCALL_TRUNCATE.
+    RAD_SYSCALL_LOG_READ = 1006, ///< RAD_SYSCALL_LOG_READ.
+    RAD_SYSCALL_LOG_FLUSH = 1007 ///< RAD_SYSCALL_LOG_FLUSH.
 } rad_posix_syscall_t; ///< Public typedef alias.
 
 /** @brief Public enumeration for rad_process_state. */
@@ -200,7 +220,8 @@ typedef enum rad_vfs_open_flags {
     RAD_VFS_WRITE = 1u << 1, ///< RAD_VFS_WRITE.
     RAD_VFS_CREATE = 1u << 2, ///< RAD_VFS_CREATE.
     RAD_VFS_TRUNCATE = 1u << 3, ///< RAD_VFS_TRUNCATE.
-    RAD_VFS_APPEND = 1u << 4 ///< RAD_VFS_APPEND.
+    RAD_VFS_APPEND = 1u << 4, ///< RAD_VFS_APPEND.
+    RAD_VFS_DIRECTORY = 1u << 5 ///< RAD_VFS_DIRECTORY.
 } rad_vfs_open_flags_t; ///< Public typedef alias.
 
 /** @brief Public enumeration for rad_seek_origin. */
@@ -686,6 +707,12 @@ typedef struct rad_vfs_dirent {
     char name[96]; ///< Public structure field.
     rad_vfs_stat_t stat; ///< Public structure field.
 } rad_vfs_dirent_t; ///< Public typedef alias.
+
+/** @brief Public data structure for userspace directory enumeration. */
+typedef struct rad_dirent_user {
+    uint8_t type; ///< Public structure field: 1=file, 2=directory.
+    char name[256]; ///< Public structure field.
+} rad_dirent_user_t; ///< Public typedef alias.
 
 /** @brief Public callback typedef used by the RADix API. */
 typedef int (*rad_vfs_list_callback_t)(const char *name, const rad_vfs_stat_t *stat, void *context);
@@ -1218,6 +1245,15 @@ typedef struct rad_tty_window_size {
     uint16_t columns; ///< Public structure field.
 } rad_tty_window_size_t; ///< Public typedef alias.
 
+/** @brief Public data structure for rad_log_entry. */
+typedef struct rad_log_entry {
+    uint64_t sequence; ///< Public structure field.
+    uint64_t time_millis; ///< Public structure field.
+    rad_log_level_t level; ///< Public structure field.
+    char category[RAD_LOG_CATEGORY_MAX]; ///< Public structure field.
+    char message[RAD_LOG_MESSAGE_MAX]; ///< Public structure field.
+} rad_log_entry_t; ///< Public typedef alias.
+
 rad_status_t rad_kernel_init(const rad_kernel_config_t *config); ///< Public RADix kernel API entry point.
 void rad_kernel_shutdown(void); ///< Public RADix kernel API entry point.
 int rad_kernel_is_initialized(void); ///< Public RADix kernel API entry point.
@@ -1232,6 +1268,9 @@ int rad_printk(const char *format, ...); ///< Public RADix kernel API entry poin
 int rad_early_vprintk(const char *format, va_list args); ///< Public RADix kernel API entry point.
 int rad_early_printk(const char *format, ...); ///< Public RADix kernel API entry point.
 void rad_debug_marker(const char *marker); ///< Public RADix kernel API entry point.
+rad_status_t rad_log_write(rad_log_level_t level, const char *category, const char *message); ///< Public RADix kernel API entry point.
+size_t rad_log_read(rad_log_entry_t *entries, size_t capacity, uint64_t after_sequence); ///< Public RADix kernel API entry point.
+rad_status_t rad_log_flush_to_path(const char *path); ///< Public RADix kernel API entry point.
 rad_status_t rad_cpu_interrupts_enable(void); ///< Public RADix kernel API entry point.
 rad_status_t rad_cpu_interrupts_disable(void); ///< Public RADix kernel API entry point.
 int rad_cpu_interrupts_enabled(void); ///< Public RADix kernel API entry point.
@@ -1343,6 +1382,7 @@ rad_status_t rad_module_unregister(const char *name); ///< Public RADix kernel A
 size_t rad_module_list(rad_module_info_t *modules, size_t capacity); ///< Public RADix kernel API entry point.
 rad_status_t rad_service_register(const rad_service_descriptor_t *descriptor); ///< Public RADix kernel API entry point.
 rad_status_t rad_service_unregister(const char *name); ///< Public RADix kernel API entry point.
+rad_status_t rad_service_configure(const char *name, const rad_service_config_t *config); ///< Public RADix kernel API entry point.
 rad_status_t rad_service_configure_tree(rad_tree_node_t node); ///< Public RADix kernel API entry point.
 rad_status_t rad_service_start(const char *name); ///< Public RADix kernel API entry point.
 rad_status_t rad_service_stop(const char *name); ///< Public RADix kernel API entry point.
@@ -1369,6 +1409,7 @@ intptr_t rad_fd_read(int32_t fd, void *buffer, size_t size); ///< Public RADix k
 intptr_t rad_fd_write(int32_t fd, const void *buffer, size_t size); ///< Public RADix kernel API entry point.
 int64_t rad_fd_lseek(int32_t fd, int64_t offset, rad_seek_origin_t origin); ///< Public RADix kernel API entry point.
 int32_t rad_fd_ioctl(int32_t fd, uint32_t request, void *argument); ///< Public RADix kernel API entry point.
+intptr_t rad_fd_getdents(int32_t fd, rad_dirent_user_t *entries, size_t capacity); ///< Public RADix kernel API entry point.
 int32_t rad_fd_stat(const char *path, rad_vfs_stat_t *stat); ///< Public RADix kernel API entry point.
 int32_t rad_fd_fstat(int32_t fd, rad_vfs_stat_t *stat); ///< Public RADix kernel API entry point.
 int32_t rad_fd_dup(int32_t fd); ///< Public RADix kernel API entry point.

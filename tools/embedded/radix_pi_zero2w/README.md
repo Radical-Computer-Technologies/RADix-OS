@@ -21,13 +21,13 @@ Current checkpoint:
 - RAD-owned `/dev/mmcblk0` registration scaffold with QEMU smoke sector reads
 - RAD-owned `/dev/usb0` host-info scaffold
 - RAD-owned `/dev/input/event0` synthetic HID input scaffold
-- AArch64 process-architecture parity markers for EL0, SVC, user-copy, execve,
-  fork, and COW page-fault gates
+- AArch64 MMU/table setup, EL0/SVC/user-copy process markers, execve/fork
+  process-table checks, and COW page-fault gates
 - Slint/RADCompositor boot-shell, window-manager, terminal-window, and dirty
   present markers
 - RADix runtime boot markers and terminal commands
 
 The real BCM283x eMMC command engine, DWC OTG USB host enumeration, hardware
-HID input, AArch64 page-table/trap/fork/COW implementation, and Slint shell
+HID input, full AArch64 EL0 ELF execution/fork/exec parity, and Slint shell
 rendering on the Pi framebuffer are still the next pieces before this target
 reaches x86 parity.

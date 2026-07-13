@@ -7,6 +7,7 @@
 extern "C" char __kernel_start[];
 extern "C" char __kernel_end[];
 extern "C" void x86_serial_write(const char *text);
+extern "C" uint32_t x86_cpu_current_core(void);
 extern "C" int snprintf(char *buffer, size_t size, const char *format, ...);
 
 namespace {
@@ -17,9 +18,12 @@ constexpr uint64_t UserBase = 0x3ffff000u;
 constexpr uint64_t UserLimit = 0x41000000u;
 constexpr uint64_t LowIdentityLimit = 16u * 1024u * 1024u;
 constexpr uint64_t KernelIdentityLimit = 4ull * 1024ull * 1024ull * 1024ull;
+constexpr size_t MaxKernelMmioRanges = 16;
+constexpr uint32_t MaxVmCores = 4;
 constexpr uint64_t PtePresent = 1ull << 0;
 constexpr uint64_t PteWrite = 1ull << 1;
 constexpr uint64_t PteUser = 1ull << 2;
+constexpr uint64_t PteCacheDisable = 1ull << 4;
 constexpr uint64_t PteLarge = 1ull << 7;
 constexpr uint64_t PteCow = 1ull << 9;
 constexpr uint64_t PteAddressMask = 0x000ffffffffff000ull;
@@ -34,7 +38,16 @@ uint8_t g_page_state[MaxTrackedPages];
 uint16_t g_page_refs[MaxTrackedPages];
 x86_vm_summary_t g_summary{};
 uint64_t g_kernel_cr3 = 0;
-x86_address_space_t *g_current_space = nullptr;
+x86_address_space_t *g_current_space[MaxVmCores]{};
+volatile int g_ap_cow_seen = 0;
+
+struct KernelMmioRange {
+    uint64_t base;
+    uint64_t size;
+};
+
+KernelMmioRange g_kernel_mmio_ranges[MaxKernelMmioRanges];
+size_t g_kernel_mmio_range_count = 0;
 
 uint64_t align_down(uint64_t value, uint64_t alignment) {
     return value & ~(alignment - 1u);
@@ -92,6 +105,17 @@ uint16_t table_index(uint64_t virtual_address, uint8_t level) {
 
 uint64_t *table_ptr(uint64_t physical_address) {
     return reinterpret_cast<uint64_t*>(static_cast<uintptr_t>(physical_address));
+}
+
+x86_address_space_t *current_space(void) {
+    const uint32_t core = x86_cpu_current_core();
+    return core < MaxVmCores ? g_current_space[core] : g_current_space[0];
+}
+
+void set_current_space(x86_address_space_t *space) {
+    const uint32_t core = x86_cpu_current_core();
+    if (core < MaxVmCores) g_current_space[core] = space;
+    else g_current_space[0] = space;
 }
 
 int record_owned_page(x86_address_space_t *space, uint64_t page) {
@@ -173,14 +197,22 @@ int map_kernel_identity(x86_address_space_t *space) {
         if (address < UserLimit && address + LargePageSize > UserBase) continue;
         if (!map_large_page(space, address, address, PteWrite)) return 0;
     }
+    for (size_t i = 0; i < g_kernel_mmio_range_count; ++i) {
+        const uint64_t begin = g_kernel_mmio_ranges[i].base;
+        const uint64_t end = begin + g_kernel_mmio_ranges[i].size;
+        for (uint64_t address = begin; address < end; address += PageSize) {
+            if (!map_page(space, address, address, PteWrite | PteCacheDisable)) return 0;
+        }
+    }
     return 1;
 }
 
 int walk_user(uint64_t virtual_address, uint64_t *entry_out) {
-    if (!g_current_space || !g_current_space->pml4) return 0;
+    x86_address_space_t *space = current_space();
+    if (!space || !space->pml4) return 0;
     if (virtual_address < UserBase || virtual_address >= UserLimit) return 0;
 
-    uint64_t *pml4 = table_ptr(g_current_space->pml4);
+    uint64_t *pml4 = table_ptr(space->pml4);
     uint64_t entry = pml4[table_index(virtual_address, 3)];
     if ((entry & (PtePresent | PteUser)) != (PtePresent | PteUser)) return 0;
     uint64_t *pdpt = table_ptr(entry & PteAddressMask);
@@ -229,6 +261,7 @@ extern "C" void x86_vm_init(const rad_boot_info_t *boot, x86_vm_summary_t *summa
     memset(g_page_state, 0, sizeof(g_page_state));
     memset(g_page_refs, 0, sizeof(g_page_refs));
     memset(&g_summary, 0, sizeof(g_summary));
+    memset(g_current_space, 0, sizeof(g_current_space));
     g_summary.kernel_start = reinterpret_cast<uint64_t>(__kernel_start);
     g_summary.kernel_end = reinterpret_cast<uint64_t>(__kernel_end);
 
@@ -321,6 +354,29 @@ extern "C" int x86_vm_map_shared_page(x86_address_space_t *space, uint64_t virtu
     return 1;
 }
 
+extern "C" int x86_vm_map_kernel_mmio(uint64_t physical_address, uint64_t size) {
+    if (!g_kernel_cr3 || size == 0) return 0;
+    if (physical_address + size < physical_address) return 0;
+
+    const uint64_t begin = align_down(physical_address, PageSize);
+    const uint64_t end = align_up(physical_address + size, PageSize);
+    x86_address_space_t kernel{};
+    kernel.pml4 = g_kernel_cr3;
+    for (uint64_t address = begin; address < end; address += PageSize) {
+        if (!map_page(&kernel, address, address, PteWrite | PteCacheDisable)) return 0;
+        invalidate_page(address);
+    }
+
+    if (begin < KernelIdentityLimit) return 1;
+    const uint64_t range_size = end - begin;
+    for (size_t i = 0; i < g_kernel_mmio_range_count; ++i) {
+        if (g_kernel_mmio_ranges[i].base == begin && g_kernel_mmio_ranges[i].size == range_size) return 1;
+    }
+    if (g_kernel_mmio_range_count >= MaxKernelMmioRanges) return 1;
+    g_kernel_mmio_ranges[g_kernel_mmio_range_count++] = {begin, range_size};
+    return 1;
+}
+
 extern "C" int x86_vm_clone_cow(x86_address_space_t *child, x86_address_space_t *parent) {
     if (!child || !parent || !parent->pml4) return 0;
     if (!x86_vm_create_address_space(child)) return 0;
@@ -349,10 +405,11 @@ extern "C" int x86_vm_clone_cow(x86_address_space_t *child, x86_address_space_t 
 }
 
 extern "C" int x86_vm_handle_page_fault(uint64_t fault_address, uint64_t error_code) {
-    if (!g_current_space) return 0;
+    x86_address_space_t *space = current_space();
+    if (!space) return 0;
     if (((error_code >> 1u) & 1u) == 0 || ((error_code >> 2u) & 1u) == 0) return 0;
     const uint64_t va = align_down(fault_address, PageSize);
-    uint64_t *leaf = walk_user_leaf(g_current_space, va);
+    uint64_t *leaf = walk_user_leaf(space, va);
     if (!leaf || ((*leaf & PteCow) == 0)) return 0;
     const uint64_t old_phys = *leaf & PteAddressMask;
     const uint64_t old_page = old_phys / PageSize;
@@ -361,6 +418,9 @@ extern "C" int x86_vm_handle_page_fault(uint64_t fault_address, uint64_t error_c
         *leaf = (*leaf | PteWrite) & ~PteCow;
         invalidate_page(va);
         rad_debug_marker("RADIX_USER_COW_PAGE_FAULT_OK");
+        if (x86_cpu_current_core() > 0 && !__atomic_exchange_n(&g_ap_cow_seen, 1, __ATOMIC_ACQ_REL)) {
+            rad_debug_marker("RADIX_USER_AP_FORK_COW_OK");
+        }
         return 1;
     }
     const uint64_t new_phys = x86_vm_alloc_page();
@@ -368,7 +428,7 @@ extern "C" int x86_vm_handle_page_fault(uint64_t fault_address, uint64_t error_c
     memcpy(reinterpret_cast<void*>(static_cast<uintptr_t>(new_phys)),
         reinterpret_cast<const void*>(static_cast<uintptr_t>(old_phys)),
         PageSize);
-    if (!replace_owned_page(g_current_space, old_phys, new_phys)) {
+    if (!replace_owned_page(space, old_phys, new_phys)) {
         x86_vm_free_page(new_phys);
         return 0;
     }
@@ -376,6 +436,9 @@ extern "C" int x86_vm_handle_page_fault(uint64_t fault_address, uint64_t error_c
     *leaf = new_phys | ((*leaf | PteWrite) & ~(PteAddressMask | PteCow));
     invalidate_page(va);
     rad_debug_marker("RADIX_USER_COW_PAGE_FAULT_OK");
+    if (x86_cpu_current_core() > 0 && !__atomic_exchange_n(&g_ap_cow_seen, 1, __ATOMIC_ACQ_REL)) {
+        rad_debug_marker("RADIX_USER_AP_FORK_COW_OK");
+    }
     return 1;
 }
 
@@ -395,13 +458,13 @@ extern "C" void x86_vm_destroy_address_space(x86_address_space_t *space) {
 
 extern "C" void x86_vm_activate_address_space(const x86_address_space_t *space) {
     if (!space || !space->pml4) return;
-    g_current_space = const_cast<x86_address_space_t*>(space);
+    set_current_space(const_cast<x86_address_space_t*>(space));
     write_cr3(space->pml4);
 }
 
 extern "C" void x86_vm_activate_kernel_address_space(void) {
     if (g_kernel_cr3) write_cr3(g_kernel_cr3);
-    g_current_space = nullptr;
+    set_current_space(nullptr);
 }
 
 extern "C" int x86_vm_validate_user_range(uint64_t virtual_address, uint64_t size, int write) {
@@ -422,11 +485,11 @@ extern "C" int x86_vm_validate_user_range(uint64_t virtual_address, uint64_t siz
 
 extern "C" int x86_vm_address_space_isolated(const x86_address_space_t *space) {
     if (!space || !space->pml4) return 0;
-    x86_address_space_t *previous = g_current_space;
-    g_current_space = const_cast<x86_address_space_t*>(space);
+    x86_address_space_t *previous = current_space();
+    set_current_space(const_cast<x86_address_space_t*>(space));
     const int kernel_not_user = !x86_vm_validate_user_range(g_summary.kernel_start, 1, 0);
     const int low_not_user = !x86_vm_validate_user_range(0x1000u, 1, 0);
-    g_current_space = previous;
+    set_current_space(previous);
     return kernel_not_user && low_not_user;
 }
 

@@ -13,12 +13,16 @@ OBJCOPY := $(TOOLCHAIN_PREFIX)objcopy
 CXXFLAGS := -std=c++20 -Os -ffreestanding -fno-pic -fno-pie -fno-rtti -fno-exceptions -fno-stack-protector -Wall -Wextra -DRADLIB_EMBEDDED_NO_CPP_WRAPPERS=1 -DRADIX_KERNEL_BACKEND_bcm283x_pi=1
 CFLAGS := -Os -ffreestanding -fno-pic -fno-pie -fno-stack-protector -Wall -Wextra -DRADLIB_EMBEDDED_NO_CPP_WRAPPERS=1 -DRADIX_KERNEL_BACKEND_bcm283x_pi=1
 ASFLAGS := -x assembler-with-cpp
+USER_LDFLAGS := -nostdlib -static -fno-pic -fno-pie -Wl,-Ttext=0x80000000 -Wl,--build-id=none -Wl,-e,_start
 INCLUDES := -I$(RADIX_OS_ROOT)/RADixKernel/headers -I$(RADIX_OS_ROOT)/RADixKernel/boot -I$(RADIX_OS_ROOT)/RADixKernel/platforms/a53
 LDFLAGS := -nostdlib -static -Wl,-T,$(CURDIR)/linker.ld -Wl,--build-id=none
 
 OBJS := \
 	boot.o \
 	kernel.o \
+	a53_init_image.o \
+	a53_radsh_image.o \
+	a53_sh_image.o \
 	radixkernel_a53.o \
 	radboot.o \
 	radixkernel_runtime.o \
@@ -40,6 +44,24 @@ boot.o: boot.S
 kernel.o: kernel.cpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
 
+a53-init.elf: a53_user_init.S
+	$(CC) $(CFLAGS) $(ASFLAGS) $(USER_LDFLAGS) -o $@ $<
+
+a53-radsh.elf: a53_user_radsh.S
+	$(CC) $(CFLAGS) $(ASFLAGS) $(USER_LDFLAGS) -o $@ $<
+
+a53-sh.elf: a53_user_sh.S
+	$(CC) $(CFLAGS) $(ASFLAGS) $(USER_LDFLAGS) -o $@ $<
+
+a53_init_image.o: a53-init.elf
+	$(OBJCOPY) -I binary -O elf64-littleaarch64 -B aarch64 $< $@
+
+a53_radsh_image.o: a53-radsh.elf
+	$(OBJCOPY) -I binary -O elf64-littleaarch64 -B aarch64 $< $@
+
+a53_sh_image.o: a53-sh.elf
+	$(OBJCOPY) -I binary -O elf64-littleaarch64 -B aarch64 $< $@
+
 radixkernel_a53.o: $(RADIX_OS_ROOT)/RADixKernel/platforms/a53/radixkernel_a53.cpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
 
@@ -59,6 +81,6 @@ radixkernel_runtime_newlib.o: $(RADIX_OS_ROOT)/RADixKernel/hal/circle/radixkerne
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
 
 clean:
-	rm -f $(OBJS) RADIXKRN.ELF RADIXKRN.IMG
+	rm -f $(OBJS) a53-init.elf a53-radsh.elf a53-sh.elf RADIXKRN.ELF RADIXKRN.IMG
 
 .PHONY: all clean

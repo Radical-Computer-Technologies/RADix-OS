@@ -2024,8 +2024,11 @@ bool testA53PlatformCore() {
             && caps.fork_ready
             && caps.exec_ready
             && caps.cow_ready
+            && caps.mmu_ready
+            && caps.ttbr0_user_ready
+            && caps.ttbr1_kernel_ready
             && caps.page_size == 4096u,
-        "A53 capabilities should report boot, SVC, user-copy, fork, exec, and COW readiness");
+        "A53 capabilities should report boot, MMU, SVC, user-copy, fork, exec, and COW readiness");
     ok &= expect(rad_a53_vm_self_test() == 1, "A53 VM COW self-test should isolate parent and child pages");
     ok &= expect(rad_a53_process_self_test() == RAD_STATUS_OK, "A53 process self-test should fork, exec-mark, exit, and wait");
     return ok;

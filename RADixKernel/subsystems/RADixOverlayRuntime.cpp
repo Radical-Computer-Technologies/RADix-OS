@@ -1579,6 +1579,26 @@ rad_status_t rad_service_unregister(const char *name) {
     return RAD_STATUS_OK;
 }
 
+rad_status_t rad_service_configure(const char *name, const rad_service_config_t *config) {
+    if (!name || !*name || !config) return RAD_STATUS_INVALID_ARGUMENT;
+    if (config->size && config->size < sizeof(rad_service_config_t)) return RAD_STATUS_INVALID_ARGUMENT;
+    ServiceRecord *service = find_service_by_name(name);
+    if (!service) return RAD_STATUS_NOT_FOUND;
+
+    copy_string(service->tree_path, sizeof(service->tree_path), config->tree_path);
+    if (!service->tree_path[0]) copy_string(service->tree_path, sizeof(service->tree_path), service->name);
+    copy_string(service->backend, sizeof(service->backend), config->backend);
+    copy_string(service->display, sizeof(service->display), config->display);
+    copy_string(service->keyboard, sizeof(service->keyboard), config->keyboard);
+    copy_string(service->pointer, sizeof(service->pointer), config->pointer);
+    copy_string(service->terminal, sizeof(service->terminal), config->terminal);
+    service->autostart = config->autostart ? 1 : 0;
+    service->order = config->order ? config->order : service->descriptor.default_order;
+    service->state = RAD_SERVICE_CONFIGURED;
+    service->last_status = RAD_STATUS_OK;
+    return RAD_STATUS_OK;
+}
+
 rad_status_t rad_service_configure_tree(rad_tree_node_t node) {
     return configure_service_node(reinterpret_cast<TreeNode*>(node));
 }

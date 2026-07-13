@@ -1,0 +1,13 @@
+{
+  "name": "base-terminal",
+  "description": "Framebuffer PTY terminal service managed by kernel bootstrap for now",
+  "exec": "builtin:ready",
+  "args": [],
+  "autostart": true,
+  "order": 30,
+  "requires": ["storage-root"],
+  "after": ["userspace-shell"],
+  "restart": "no",
+  "stdout": "/var/log/radix/base-terminal.log",
+  "stderr": "/var/log/radix/base-terminal.log"
+}

@@ -112,6 +112,7 @@ set_target_properties(radixkernel_x86_64_grub_slint PROPERTIES
 set(ISO_ROOT "${CMAKE_BINARY_DIR}/iso")
 set(ISO_PATH "${CMAKE_BINARY_DIR}/radixkernel-x86-64-grub-slint.iso")
 set(RADIX_INIT_ELF "${CMAKE_BINARY_DIR}/radix-init.elf")
+set(RADIX_RADINIT_ELF "${CMAKE_BINARY_DIR}/radix-radinit.elf")
 set(RADIX_RADSH_ELF "${CMAKE_BINARY_DIR}/radix-radsh.elf")
 set(RADIX_SH_ELF "${CMAKE_BINARY_DIR}/radix-sh.elf")
 set(RADIX_RADGFX_ELF "${CMAKE_BINARY_DIR}/radix-radgfx-smoke.elf")
@@ -135,11 +136,26 @@ add_custom_command(
 add_custom_command(
     OUTPUT "${RADIX_RADSH_ELF}"
     COMMAND "${X86_64_LINUX_GNU_GCC_EXECUTABLE}" -nostdlib -static -no-pie
+            -ffreestanding -fno-stack-protector -fno-pic -fno-pie -fomit-frame-pointer -mno-red-zone
             -Wl,-Ttext=0x40000000
             -Wl,--build-id=none
             -o "${RADIX_RADSH_ELF}"
-            "${CMAKE_CURRENT_LIST_DIR}/user_radsh.S"
-    DEPENDS "${CMAKE_CURRENT_LIST_DIR}/user_radsh.S"
+            "${CMAKE_CURRENT_LIST_DIR}/user_radsh_entry.S"
+            "${CMAKE_CURRENT_LIST_DIR}/user_radsh.c"
+    DEPENDS "${CMAKE_CURRENT_LIST_DIR}/user_radsh_entry.S" "${CMAKE_CURRENT_LIST_DIR}/user_radsh.c"
+    VERBATIM
+)
+
+add_custom_command(
+    OUTPUT "${RADIX_RADINIT_ELF}"
+    COMMAND "${X86_64_LINUX_GNU_GCC_EXECUTABLE}" -nostdlib -static -no-pie
+            -ffreestanding -fno-stack-protector -fno-pic -fno-pie -fomit-frame-pointer -mno-red-zone
+            -Wl,-Ttext=0x40000000
+            -Wl,--build-id=none
+            -o "${RADIX_RADINIT_ELF}"
+            "${CMAKE_CURRENT_LIST_DIR}/user_radinit_entry.S"
+            "${CMAKE_CURRENT_LIST_DIR}/user_radinit.c"
+    DEPENDS "${CMAKE_CURRENT_LIST_DIR}/user_radinit_entry.S" "${CMAKE_CURRENT_LIST_DIR}/user_radinit.c"
     VERBATIM
 )
 
@@ -173,12 +189,30 @@ add_custom_command(
     COMMAND truncate -s 32M "${RADIX_EXT2_ROOTFS_IMAGE}"
     COMMAND "${MKFS_EXT2_EXECUTABLE}" -q -F "${RADIX_EXT2_ROOTFS_IMAGE}"
     COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "mkdir /bin" "${RADIX_EXT2_ROOTFS_IMAGE}"
-    COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "write ${RADIX_INIT_ELF} /bin/init" "${RADIX_EXT2_ROOTFS_IMAGE}"
+    COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "mkdir /sbin" "${RADIX_EXT2_ROOTFS_IMAGE}"
+    COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "mkdir /etc" "${RADIX_EXT2_ROOTFS_IMAGE}"
+    COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "mkdir /etc/radix" "${RADIX_EXT2_ROOTFS_IMAGE}"
+    COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "mkdir /etc/radix/services" "${RADIX_EXT2_ROOTFS_IMAGE}"
+    COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "mkdir /var" "${RADIX_EXT2_ROOTFS_IMAGE}"
+    COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "mkdir /var/log" "${RADIX_EXT2_ROOTFS_IMAGE}"
+    COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "mkdir /var/log/radix" "${RADIX_EXT2_ROOTFS_IMAGE}"
+    COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "mkdir /run" "${RADIX_EXT2_ROOTFS_IMAGE}"
+    COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "write ${RADIX_RADINIT_ELF} /bin/init" "${RADIX_EXT2_ROOTFS_IMAGE}"
+    COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "write ${RADIX_RADINIT_ELF} /sbin/radinit" "${RADIX_EXT2_ROOTFS_IMAGE}"
     COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "write ${RADIX_RADSH_ELF} /bin/radsh" "${RADIX_EXT2_ROOTFS_IMAGE}"
-    COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "write ${RADIX_SH_ELF} /bin/sh" "${RADIX_EXT2_ROOTFS_IMAGE}"
+    COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "write ${RADIX_RADSH_ELF} /bin/rash" "${RADIX_EXT2_ROOTFS_IMAGE}"
+    COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "write ${RADIX_RADSH_ELF} /bin/sh" "${RADIX_EXT2_ROOTFS_IMAGE}"
     COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "write ${RADIX_RADGFX_ELF} /bin/radgfx-smoke" "${RADIX_EXT2_ROOTFS_IMAGE}"
     COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "write ${CMAKE_CURRENT_LIST_DIR}/test_script.sh /bin/test.sh" "${RADIX_EXT2_ROOTFS_IMAGE}"
-    DEPENDS "${RADIX_INIT_ELF}" "${RADIX_RADSH_ELF}" "${RADIX_SH_ELF}" "${RADIX_RADGFX_ELF}" "${CMAKE_CURRENT_LIST_DIR}/test_script.sh"
+    COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "write ${CMAKE_CURRENT_LIST_DIR}/services/storage-root.json /etc/radix/services/storage-root.json" "${RADIX_EXT2_ROOTFS_IMAGE}"
+    COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "write ${CMAKE_CURRENT_LIST_DIR}/services/userspace-shell.json /etc/radix/services/userspace-shell.json" "${RADIX_EXT2_ROOTFS_IMAGE}"
+    COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "write ${CMAKE_CURRENT_LIST_DIR}/services/base-terminal.json /etc/radix/services/base-terminal.json" "${RADIX_EXT2_ROOTFS_IMAGE}"
+    COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "write ${CMAKE_CURRENT_LIST_DIR}/services/network-smoke.json /etc/radix/services/network-smoke.json" "${RADIX_EXT2_ROOTFS_IMAGE}"
+    COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "write ${CMAKE_CURRENT_LIST_DIR}/services/fatfs.json /etc/radix/services/fatfs.json" "${RADIX_EXT2_ROOTFS_IMAGE}"
+    DEPENDS "${RADIX_RADINIT_ELF}" "${RADIX_INIT_ELF}" "${RADIX_RADSH_ELF}" "${RADIX_SH_ELF}" "${RADIX_RADGFX_ELF}" "${CMAKE_CURRENT_LIST_DIR}/test_script.sh"
+            "${CMAKE_CURRENT_LIST_DIR}/services/storage-root.json" "${CMAKE_CURRENT_LIST_DIR}/services/userspace-shell.json"
+            "${CMAKE_CURRENT_LIST_DIR}/services/base-terminal.json" "${CMAKE_CURRENT_LIST_DIR}/services/network-smoke.json"
+            "${CMAKE_CURRENT_LIST_DIR}/services/fatfs.json"
     VERBATIM
 )
 
@@ -191,14 +225,32 @@ add_custom_command(
     COMMAND truncate -s 64M "${RADIX_ROOTFS_IMAGE}"
     COMMAND "${MKFS_EXT4_EXECUTABLE}" -q -F -O extent,^has_journal,^64bit,^metadata_csum "${RADIX_ROOTFS_IMAGE}"
     COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "mkdir /bin" "${RADIX_ROOTFS_IMAGE}"
+    COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "mkdir /sbin" "${RADIX_ROOTFS_IMAGE}"
+    COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "mkdir /etc" "${RADIX_ROOTFS_IMAGE}"
+    COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "mkdir /etc/radix" "${RADIX_ROOTFS_IMAGE}"
+    COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "mkdir /etc/radix/services" "${RADIX_ROOTFS_IMAGE}"
     COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "mkdir /tmp" "${RADIX_ROOTFS_IMAGE}"
-    COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "write ${RADIX_INIT_ELF} /bin/init" "${RADIX_ROOTFS_IMAGE}"
+    COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "mkdir /var" "${RADIX_ROOTFS_IMAGE}"
+    COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "mkdir /var/log" "${RADIX_ROOTFS_IMAGE}"
+    COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "mkdir /var/log/radix" "${RADIX_ROOTFS_IMAGE}"
+    COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "mkdir /run" "${RADIX_ROOTFS_IMAGE}"
+    COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "write ${RADIX_RADINIT_ELF} /bin/init" "${RADIX_ROOTFS_IMAGE}"
+    COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "write ${RADIX_RADINIT_ELF} /sbin/radinit" "${RADIX_ROOTFS_IMAGE}"
     COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "write ${RADIX_RADSH_ELF} /bin/radsh" "${RADIX_ROOTFS_IMAGE}"
-    COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "write ${RADIX_SH_ELF} /bin/sh" "${RADIX_ROOTFS_IMAGE}"
+    COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "write ${RADIX_RADSH_ELF} /bin/rash" "${RADIX_ROOTFS_IMAGE}"
+    COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "write ${RADIX_RADSH_ELF} /bin/sh" "${RADIX_ROOTFS_IMAGE}"
     COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "write ${RADIX_RADGFX_ELF} /bin/radgfx-smoke" "${RADIX_ROOTFS_IMAGE}"
     COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "write ${CMAKE_CURRENT_LIST_DIR}/test_script.sh /bin/test.sh" "${RADIX_ROOTFS_IMAGE}"
+    COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "write ${CMAKE_CURRENT_LIST_DIR}/services/storage-root.json /etc/radix/services/storage-root.json" "${RADIX_ROOTFS_IMAGE}"
+    COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "write ${CMAKE_CURRENT_LIST_DIR}/services/userspace-shell.json /etc/radix/services/userspace-shell.json" "${RADIX_ROOTFS_IMAGE}"
+    COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "write ${CMAKE_CURRENT_LIST_DIR}/services/base-terminal.json /etc/radix/services/base-terminal.json" "${RADIX_ROOTFS_IMAGE}"
+    COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "write ${CMAKE_CURRENT_LIST_DIR}/services/network-smoke.json /etc/radix/services/network-smoke.json" "${RADIX_ROOTFS_IMAGE}"
+    COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "write ${CMAKE_CURRENT_LIST_DIR}/services/fatfs.json /etc/radix/services/fatfs.json" "${RADIX_ROOTFS_IMAGE}"
     COMMAND "${DEBUGFS_EXECUTABLE}" -w -R "write ${RADIX_EXT4_WRITE_SEED} /tmp/radwrite.txt" "${RADIX_ROOTFS_IMAGE}"
-    DEPENDS "${RADIX_INIT_ELF}" "${RADIX_RADSH_ELF}" "${RADIX_SH_ELF}" "${RADIX_RADGFX_ELF}" "${CMAKE_CURRENT_LIST_DIR}/test_script.sh"
+    DEPENDS "${RADIX_RADINIT_ELF}" "${RADIX_INIT_ELF}" "${RADIX_RADSH_ELF}" "${RADIX_SH_ELF}" "${RADIX_RADGFX_ELF}" "${CMAKE_CURRENT_LIST_DIR}/test_script.sh"
+            "${CMAKE_CURRENT_LIST_DIR}/services/storage-root.json" "${CMAKE_CURRENT_LIST_DIR}/services/userspace-shell.json"
+            "${CMAKE_CURRENT_LIST_DIR}/services/base-terminal.json" "${CMAKE_CURRENT_LIST_DIR}/services/network-smoke.json"
+            "${CMAKE_CURRENT_LIST_DIR}/services/fatfs.json"
     VERBATIM
 )
 

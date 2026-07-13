@@ -9,6 +9,7 @@
 extern "C" void x86_serial_write(const char *text);
 extern "C" void x86_load_gdt(void *descriptor);
 extern "C" void x86_load_idt(void *descriptor);
+extern "C" void x86_cpu_init_ap(uint32_t core);
 extern "C" void x86_int80_entry(void);
 extern "C" void x86_irq_32_entry(void);
 extern "C" void x86_irq_33_entry(void);
@@ -26,6 +27,7 @@ extern "C" void x86_irq_44_entry(void);
 extern "C" void x86_irq_45_entry(void);
 extern "C" void x86_irq_46_entry(void);
 extern "C" void x86_irq_47_entry(void);
+extern "C" void x86_lapic_timer_entry(void);
 extern "C" void x86_exception_no_error_entry(void);
 extern "C" void x86_exception_error_entry(void);
 extern "C" void x86_invalid_opcode_entry(void);
@@ -51,6 +53,7 @@ extern "C" uint32_t x86_ap_trampoline_core_offset;
 extern "C" uint32_t x86_ap_trampoline_stack_offset;
 extern "C" uint32_t x86_ap_trampoline_entry_offset;
 extern "C" int snprintf(char *buffer, size_t size, const char *format, ...);
+extern "C" void rad_arch_scheduler_tick(uint32_t core);
 
 namespace {
 constexpr uint16_t KernelCode = 0x08;
@@ -77,8 +80,15 @@ constexpr size_t ApStackSize = 16384u;
 constexpr uint32_t LapicId = 0x20u;
 constexpr uint32_t LapicEoi = 0xb0u;
 constexpr uint32_t LapicSvr = 0xf0u;
+constexpr uint32_t LapicLvtTimer = 0x320u;
 constexpr uint32_t LapicIcrLow = 0x300u;
 constexpr uint32_t LapicIcrHigh = 0x310u;
+constexpr uint32_t LapicTimerInitialCount = 0x380u;
+constexpr uint32_t LapicTimerDivide = 0x3e0u;
+constexpr uint8_t LapicTimerVector = 0xefu;
+constexpr uint32_t LapicTimerPeriodic = 1u << 17;
+constexpr uint32_t LapicTimerDivideBy16 = 0x3u;
+constexpr uint32_t LapicTimerInitialCountValue = 1000000u;
 
 struct [[gnu::packed]] DescriptorPtr {
     uint16_t limit;
@@ -117,8 +127,8 @@ struct X86Context {
     uint64_t rbp;
 };
 
-alignas(16) uint64_t g_gdt[7];
-Tss g_tss{};
+alignas(16) uint64_t g_gdt[MaxX86Cores][7];
+Tss g_tss[MaxX86Cores]{};
 IdtGate g_idt[256]{};
 uint16_t g_pic_mask = 0xffffu;
 uint32_t g_detected_cores = 1;
@@ -132,6 +142,10 @@ alignas(16) uint8_t g_ap_stacks[MaxX86Cores][ApStackSize];
 void (*g_ap_worker_entries[MaxX86Cores])(uint32_t core){};
 volatile uint32_t g_ap_started_mask = 1u;
 volatile uint32_t g_ap_starting_core = 0;
+volatile uint64_t g_lapic_timer_irqs[MaxX86Cores]{};
+volatile uint32_t g_lapic_timer_started_mask = 0;
+volatile uint32_t g_lapic_timer_marker_seen = 0;
+volatile uint32_t g_ap_lapic_timer_marker_seen = 0;
 
 void (*const g_irq_entries[16])() = {
     x86_irq_32_entry,
@@ -158,7 +172,8 @@ uint64_t make_code_data_descriptor(uint32_t access, uint32_t flags) {
         | (static_cast<uint64_t>(flags) << 52);
 }
 
-void set_tss_descriptor(uint16_t selector, uintptr_t base, uint32_t limit) {
+void set_tss_descriptor(uint32_t core, uint16_t selector, uintptr_t base, uint32_t limit) {
+    if (core >= MaxX86Cores) core = 0;
     const size_t index = selector >> 3;
     uint64_t low = (limit & 0xffffu)
         | ((base & 0xffffffull) << 16)
@@ -166,8 +181,8 @@ void set_tss_descriptor(uint16_t selector, uintptr_t base, uint32_t limit) {
         | (((limit >> 16) & 0x0full) << 48)
         | (((base >> 24) & 0xffull) << 56);
     uint64_t high = base >> 32;
-    g_gdt[index] = low;
-    g_gdt[index + 1] = high;
+    g_gdt[core][index] = low;
+    g_gdt[core][index + 1] = high;
 }
 
 void set_idt_gate(uint8_t vector, void (*handler)(), uint8_t attributes) {
@@ -216,6 +231,10 @@ uint32_t lapic_read(uint32_t reg) {
 void lapic_write(uint32_t reg, uint32_t value) {
     lapic_base()[reg / 4u] = value;
     (void)lapic_read(LapicId);
+}
+
+void lapic_eoi(void) {
+    if (g_lapic_address) lapic_write(LapicEoi, 0);
 }
 
 void lapic_wait_icr(void) {
@@ -270,6 +289,40 @@ void pic_remap_and_mask(void) {
 
 void load_task_register(void) {
     asm volatile("ltr %0" : : "r"(TssSelector));
+}
+
+void prepare_gdt_tss_for_core(uint32_t core, uint64_t kernel_stack_top) {
+    if (core >= MaxX86Cores) core = 0;
+    memset(g_gdt[core], 0, sizeof(g_gdt[core]));
+    memset(&g_tss[core], 0, sizeof(g_tss[core]));
+    g_gdt[core][1] = make_code_data_descriptor(0x9au, 0x0au);
+    g_gdt[core][2] = make_code_data_descriptor(0x92u, 0x0au);
+    g_gdt[core][3] = make_code_data_descriptor(0xf2u, 0x0au);
+    g_gdt[core][4] = make_code_data_descriptor(0xfau, 0x0au);
+    g_tss[core].rsp0 = kernel_stack_top;
+    g_tss[core].iomap_base = sizeof(Tss);
+    set_tss_descriptor(core, TssSelector, reinterpret_cast<uintptr_t>(&g_tss[core]), sizeof(Tss) - 1u);
+}
+
+void load_gdt_tss_for_core(uint32_t core) {
+    if (core >= MaxX86Cores) core = 0;
+    DescriptorPtr gdt_ptr{static_cast<uint16_t>(sizeof(g_gdt[core]) - 1u), reinterpret_cast<uint64_t>(g_gdt[core])};
+    x86_load_gdt(&gdt_ptr);
+    load_task_register();
+}
+
+void load_shared_idt(void) {
+    DescriptorPtr idt_ptr{static_cast<uint16_t>(sizeof(g_idt) - 1u), reinterpret_cast<uint64_t>(g_idt)};
+    x86_load_idt(&idt_ptr);
+}
+
+void configure_syscall_msrs(void) {
+    const uint64_t efer = read_msr(MsrEfer) | 1u;
+    write_msr(MsrEfer, efer);
+    const uint64_t star = (static_cast<uint64_t>(0x13u) << 48) | (static_cast<uint64_t>(KernelCode) << 32);
+    write_msr(MsrStar, star);
+    write_msr(MsrLstar, reinterpret_cast<uintptr_t>(x86_syscall_entry));
+    write_msr(MsrSfmask, 0x200u);
 }
 
 void enable_sse(void) {
@@ -379,6 +432,7 @@ extern "C" uint64_t x86_cpu_lapic_address(void) {
 }
 
 extern "C" uint32_t x86_cpu_current_core(void) {
+    if (__atomic_load_n(&g_ap_started_mask, __ATOMIC_ACQUIRE) == 0) return 0;
     if (!g_lapic_address) return 0;
     const uint32_t apic_id = (lapic_read(LapicId) >> 24) & 0xffu;
     for (uint32_t core = 0; core < MaxX86Cores; ++core) {
@@ -391,10 +445,38 @@ extern "C" uint32_t x86_cpu_started_core_mask(void) {
     return __atomic_load_n(&g_ap_started_mask, __ATOMIC_ACQUIRE);
 }
 
+extern "C" void x86_lapic_timer_start_current_core(void) {
+    if (!g_lapic_address) return;
+    const uint32_t core = x86_cpu_current_core();
+    if (core >= MaxX86Cores) return;
+    lapic_write(LapicTimerDivide, LapicTimerDivideBy16);
+    lapic_write(LapicLvtTimer, LapicTimerVector | LapicTimerPeriodic);
+    lapic_write(LapicTimerInitialCount, LapicTimerInitialCountValue);
+    __atomic_fetch_or(&g_lapic_timer_started_mask, 1u << core, __ATOMIC_RELEASE);
+    if (!__atomic_exchange_n(&g_lapic_timer_marker_seen, 1u, __ATOMIC_ACQ_REL)) {
+        rad_debug_marker("RADIX_LAPIC_TIMER_OK");
+    }
+}
+
+extern "C" void x86_lapic_timer_dispatch(uint64_t interrupted_cs) {
+    const uint32_t core = x86_cpu_current_core();
+    if (core < MaxX86Cores) {
+        __atomic_fetch_add(&g_lapic_timer_irqs[core], 1u, __ATOMIC_RELAXED);
+        if (core > 0 && !__atomic_exchange_n(&g_ap_lapic_timer_marker_seen, 1u, __ATOMIC_ACQ_REL)) {
+            rad_debug_marker("RADIX_AP_TIMER_IRQ_OK");
+        }
+        lapic_eoi();
+        if ((interrupted_cs & 3u) == 3u) rad_arch_scheduler_tick(core);
+        return;
+    }
+    lapic_eoi();
+}
+
 extern "C" void x86_ap_entry(uint32_t core) {
     if (core >= MaxX86Cores) rad_cpu_halt_forever();
-    enable_sse();
+    x86_cpu_init_ap(core);
     __atomic_fetch_or(&g_ap_started_mask, 1u << core, __ATOMIC_RELEASE);
+    rad_cpu_interrupts_enable();
     void (*entry)(uint32_t) = g_ap_worker_entries[core];
     if (entry) entry(core);
     rad_cpu_halt_forever();
@@ -443,22 +525,9 @@ extern "C" rad_status_t x86_cpu_start_worker_core(uint32_t core, void (*entry)(u
 
 extern "C" void x86_cpu_init(uint64_t kernel_stack_top) {
     memset(g_gdt, 0, sizeof(g_gdt));
-    memset(&g_tss, 0, sizeof(g_tss));
+    memset(g_tss, 0, sizeof(g_tss));
     memset(g_idt, 0, sizeof(g_idt));
-
-    g_gdt[1] = make_code_data_descriptor(0x9au, 0x0au);
-    g_gdt[2] = make_code_data_descriptor(0x92u, 0x0au);
-    g_gdt[3] = make_code_data_descriptor(0xf2u, 0x0au);
-    g_gdt[4] = make_code_data_descriptor(0xfau, 0x0au);
-
-    g_tss.rsp0 = kernel_stack_top;
-    g_tss.iomap_base = sizeof(Tss);
-    set_tss_descriptor(TssSelector, reinterpret_cast<uintptr_t>(&g_tss), sizeof(Tss) - 1u);
-
-    DescriptorPtr gdt_ptr{static_cast<uint16_t>(sizeof(g_gdt) - 1u), reinterpret_cast<uint64_t>(g_gdt)};
-    x86_load_gdt(&gdt_ptr);
-    load_task_register();
-    enable_sse();
+    prepare_gdt_tss_for_core(0, kernel_stack_top);
 
     for (uint16_t i = 0; i < 32; ++i) {
         set_idt_gate(static_cast<uint8_t>(i), x86_exception_no_error_entry, 0x8eu);
@@ -476,28 +545,38 @@ extern "C" void x86_cpu_init(uint64_t kernel_stack_top) {
     set_idt_gate(19, x86_simd_floating_point_entry, 0x8eu);
     set_idt_gate(21, x86_control_protection_entry, 0x8eu);
     set_idt_gate(0x80, x86_int80_entry, 0xeeu);
+    set_idt_gate(LapicTimerVector, x86_lapic_timer_entry, 0x8eu);
     for (uint8_t i = 0; i < 16; ++i) {
         set_idt_gate(static_cast<uint8_t>(PicMasterVectorBase + i), g_irq_entries[i], 0x8eu);
     }
 
-    DescriptorPtr idt_ptr{static_cast<uint16_t>(sizeof(g_idt) - 1u), reinterpret_cast<uint64_t>(g_idt)};
-    x86_load_idt(&idt_ptr);
+    load_gdt_tss_for_core(0);
+    load_shared_idt();
+    enable_sse();
     pic_remap_and_mask();
-
-    const uint64_t efer = read_msr(MsrEfer) | 1u;
-    write_msr(MsrEfer, efer);
-    const uint64_t star = (static_cast<uint64_t>(0x13u) << 48) | (static_cast<uint64_t>(KernelCode) << 32);
-    write_msr(MsrStar, star);
-    write_msr(MsrLstar, reinterpret_cast<uintptr_t>(x86_syscall_entry));
-    write_msr(MsrSfmask, 0x200u);
+    configure_syscall_msrs();
+    if (g_lapic_address) lapic_write(LapicSvr, lapic_read(LapicSvr) | 0x100u);
+    x86_lapic_timer_start_current_core();
 
     rad_debug_marker("RADIX_X86_CPU_OK");
     rad_debug_marker("RADIX_IRQ_CORE_OK");
     rad_debug_marker("RADIX_PIC_REMAP_OK");
 }
 
+extern "C" void x86_cpu_init_ap(uint32_t core) {
+    if (core >= MaxX86Cores) rad_cpu_halt_forever();
+    prepare_gdt_tss_for_core(core, reinterpret_cast<uint64_t>(&g_ap_stacks[core][ApStackSize]));
+    load_gdt_tss_for_core(core);
+    load_shared_idt();
+    enable_sse();
+    configure_syscall_msrs();
+    if (g_lapic_address) lapic_write(LapicSvr, lapic_read(LapicSvr) | 0x100u);
+    x86_lapic_timer_start_current_core();
+}
+
 extern "C" void x86_cpu_set_kernel_stack_top(uint64_t kernel_stack_top) {
-    if (kernel_stack_top) g_tss.rsp0 = kernel_stack_top;
+    const uint32_t core = x86_cpu_current_core();
+    if (kernel_stack_top && core < MaxX86Cores) g_tss[core].rsp0 = kernel_stack_top;
 }
 
 extern "C" int x86_cpu_self_test(void) {

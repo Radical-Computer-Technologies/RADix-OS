@@ -1,0 +1,13 @@
+{
+  "name": "fatfs",
+  "description": "FAT test volume mounted by early kernel bootstrap",
+  "exec": "builtin:ready",
+  "args": [],
+  "autostart": true,
+  "order": 50,
+  "requires": ["storage-root"],
+  "after": ["storage-root"],
+  "restart": "no",
+  "stdout": "/var/log/radix/fatfs.log",
+  "stderr": "/var/log/radix/fatfs.log"
+}

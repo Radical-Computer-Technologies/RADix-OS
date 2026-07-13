@@ -31,6 +31,17 @@ x86_64 GRUB + Slint ISO smoke:
 tools/embedded/x86_64_grub_slint_smoke.sh
 ```
 
+Canonical RadBuild OS build:
+
+```bash
+../RadBuild/radbuild/.tools/radbuild.py build os --settings settings.json --json-events
+```
+
+RadBuild 0.2.1 runs the x86_64 GRUB + Slint smoke for the configured SMP
+counts, stages the ISO, kernel, ext4 rootfs, FAT32 image, serial logs, and
+`SHA256SUMS` under `artifacts/radix/x86_64-grub-slint/`, and writes the
+machine-readable artifact manifest under `.radmeta/artifacts/`.
+
 The ISO is generated at:
 
 ```text
@@ -45,6 +56,9 @@ docs:
 ```bash
 RADIX_SOURCE_DIR="$PWD" RADIX_DOCS_OUTPUT="$PWD/build/docs" doxygen docs/Doxyfile
 ```
+
+The public Crimson docs are published through RadicalPackages under
+`docs/radix-os/0.1.0/api/`.
 
 ## Filesystems
 
