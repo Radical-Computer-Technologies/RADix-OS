@@ -19,7 +19,7 @@ typedef struct x86_vm_summary {
 
 typedef struct x86_address_space {
     uint64_t pml4;
-    uint64_t owned_pages[512];
+    uint64_t owned_pages[16384];
     size_t owned_page_count;
 } x86_address_space_t;
 

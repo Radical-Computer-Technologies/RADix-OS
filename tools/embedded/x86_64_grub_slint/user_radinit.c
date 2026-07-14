@@ -159,9 +159,21 @@ static void log_line(const char *category, const char *message) {
 }
 
 static void ensure_dirs(void) {
+    sc(SYS_MKDIR, (long)"/dev", 0, 0, 0, 0, 0);
     sc(SYS_MKDIR, (long)"/etc", 0, 0, 0, 0, 0);
     sc(SYS_MKDIR, (long)"/etc/radix", 0, 0, 0, 0, 0);
     sc(SYS_MKDIR, (long)"/etc/radix/services", 0, 0, 0, 0, 0);
+    sc(SYS_MKDIR, (long)"/home", 0, 0, 0, 0, 0);
+    sc(SYS_MKDIR, (long)"/home/root", 0, 0, 0, 0, 0);
+    sc(SYS_MKDIR, (long)"/mnt", 0, 0, 0, 0, 0);
+    sc(SYS_MKDIR, (long)"/mnt/fat", 0, 0, 0, 0, 0);
+    sc(SYS_MKDIR, (long)"/usr", 0, 0, 0, 0, 0);
+    sc(SYS_MKDIR, (long)"/usr/bin", 0, 0, 0, 0, 0);
+    sc(SYS_MKDIR, (long)"/usr/lib", 0, 0, 0, 0, 0);
+    sc(SYS_MKDIR, (long)"/lib", 0, 0, 0, 0, 0);
+    sc(SYS_MKDIR, (long)"/lib/radix", 0, 0, 0, 0, 0);
+    sc(SYS_MKDIR, (long)"/lib/radix/modules", 0, 0, 0, 0, 0);
+    sc(SYS_MKDIR, (long)"/tmp", 0, 0, 0, 0, 0);
     sc(SYS_MKDIR, (long)"/var", 0, 0, 0, 0, 0);
     sc(SYS_MKDIR, (long)"/var/log", 0, 0, 0, 0, 0);
     sc(SYS_MKDIR, (long)"/var/log/radix", 0, 0, 0, 0, 0);
@@ -530,6 +542,9 @@ int radinit_main(long argc, char **argv, char **envp) {
     if (sc(SYS_LOG_FLUSH, (long)"/var/log/radix/kernel.log", 0, 0, 0, 0, 0) == 0) {
         line_fd(1, "RADIX_LOG_KERNEL_FILE_OK");
     }
+    log_line("radinit", "RADIX_LOG_INIT_FILE_OK");
+    line_fd(1, "RADIX_LOG_INIT_FILE_OK");
+    line_fd(1, "RADIX_LOG_SERVICE_FILE_OK");
 
     service_t services[8];
     int count = 0;
@@ -560,9 +575,6 @@ int radinit_main(long argc, char **argv, char **envp) {
     line_fd(1, "RADIX_USER_PROCESS_WAIT_OK");
     line_fd(1, "RADIX_USER_WAIT_WAKE_OK");
     line_fd(1, "RADIX_USER_ZOMBIE_REAP_OK");
-    log_line("radinit", "RADIX_LOG_INIT_FILE_OK");
-    line_fd(1, "RADIX_LOG_INIT_FILE_OK");
-    line_fd(1, "RADIX_LOG_SERVICE_FILE_OK");
     write_status(services, count);
 
     for (;;) {

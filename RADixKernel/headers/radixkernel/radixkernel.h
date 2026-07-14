@@ -51,6 +51,7 @@ extern "C" {
 #define RAD_IOCTL_TYPE_NET 'N' ///< Public constant or ioctl helper.
 #define RAD_IOCTL_TYPE_COMPOSITOR 'C' ///< Public constant or ioctl helper.
 #define RAD_IOCTL_TYPE_USB 'U' ///< Public constant or ioctl helper.
+#define RAD_IOCTL_TYPE_TTY 'Y' ///< Public constant or ioctl helper.
 
 #define RAD_DEVICE_IOCTL_I2C_TRANSFER RAD_IOWR(RAD_IOCTL_TYPE_I2C, 1u, struct rad_i2c_transfer) ///< Public constant or ioctl helper.
 #define RAD_DEVICE_IOCTL_SPI_TRANSFER RAD_IOWR(RAD_IOCTL_TYPE_SPI, 1u, struct rad_spi_transfer) ///< Public constant or ioctl helper.
@@ -70,6 +71,13 @@ extern "C" {
 #define RAD_DEVICE_IOCTL_COMPOSITOR_QUEUE_DAMAGE RAD_IOW(RAD_IOCTL_TYPE_COMPOSITOR, 2u, struct rad_compositor_ipc_damage) ///< Public constant or ioctl helper.
 #define RAD_DEVICE_IOCTL_FRAMEBUFFER_PRESENT RAD_IOW(RAD_IOCTL_TYPE_FRAMEBUFFER, 3u, struct rad_framebuffer_present) ///< Public constant or ioctl helper.
 #define RAD_DEVICE_IOCTL_USB_HOST_INFO RAD_IOR(RAD_IOCTL_TYPE_USB, 1u, struct rad_usb_host_info) ///< Public constant or ioctl helper.
+#define RAD_DEVICE_IOCTL_TTY_GET_WINSIZE RAD_IOR(RAD_IOCTL_TYPE_TTY, 1u, struct rad_tty_window_size) ///< Public constant or ioctl helper.
+#define RAD_DEVICE_IOCTL_TTY_SET_WINSIZE RAD_IOW(RAD_IOCTL_TYPE_TTY, 2u, struct rad_tty_window_size) ///< Public constant or ioctl helper.
+#define RAD_DEVICE_IOCTL_TTY_GET_MODE RAD_IOR(RAD_IOCTL_TYPE_TTY, 3u, uint32_t) ///< Public constant or ioctl helper.
+#define RAD_DEVICE_IOCTL_TTY_SET_MODE RAD_IOW(RAD_IOCTL_TYPE_TTY, 4u, uint32_t) ///< Public constant or ioctl helper.
+#define RAD_DEVICE_IOCTL_TTY_GET_TERMIOS RAD_IOR(RAD_IOCTL_TYPE_TTY, 5u, struct rad_tty_termios) ///< Public constant or ioctl helper.
+#define RAD_DEVICE_IOCTL_TTY_SET_TERMIOS RAD_IOW(RAD_IOCTL_TYPE_TTY, 6u, struct rad_tty_termios) ///< Public constant or ioctl helper.
+#define RAD_DEVICE_IOCTL_TTY_FLUSH RAD_IOW(RAD_IOCTL_TYPE_TTY, 7u, uint32_t) ///< Public constant or ioctl helper.
 
 #define RAD_BOOT_MAX_ARGS 16u ///< Public constant or ioctl helper.
 #define RAD_BOOT_MAX_MEMORY_REGIONS 8u ///< Public constant or ioctl helper.
@@ -191,6 +199,7 @@ typedef enum rad_posix_syscall {
     RAD_SYSCALL_MUNMAP = 36, ///< RAD_SYSCALL_MUNMAP.
     RAD_SYSCALL_SHM_OPEN = 37, ///< RAD_SYSCALL_SHM_OPEN.
     RAD_SYSCALL_SHM_UNLINK = 38, ///< RAD_SYSCALL_SHM_UNLINK.
+    RAD_SYSCALL_POLL = 39, ///< RAD_SYSCALL_POLL.
     RAD_SYSCALL_GETDENTS = 1000, ///< RAD_SYSCALL_GETDENTS.
     RAD_SYSCALL_REMOVE = 1001, ///< RAD_SYSCALL_REMOVE.
     RAD_SYSCALL_MKDIR = 1002, ///< RAD_SYSCALL_MKDIR.
@@ -198,7 +207,18 @@ typedef enum rad_posix_syscall {
     RAD_SYSCALL_RENAME = 1004, ///< RAD_SYSCALL_RENAME.
     RAD_SYSCALL_TRUNCATE = 1005, ///< RAD_SYSCALL_TRUNCATE.
     RAD_SYSCALL_LOG_READ = 1006, ///< RAD_SYSCALL_LOG_READ.
-    RAD_SYSCALL_LOG_FLUSH = 1007 ///< RAD_SYSCALL_LOG_FLUSH.
+    RAD_SYSCALL_LOG_FLUSH = 1007, ///< RAD_SYSCALL_LOG_FLUSH.
+    RAD_SYSCALL_GETUID = 1008, ///< RAD_SYSCALL_GETUID.
+    RAD_SYSCALL_GETEUID = 1009, ///< RAD_SYSCALL_GETEUID.
+    RAD_SYSCALL_GETGID = 1010, ///< RAD_SYSCALL_GETGID.
+    RAD_SYSCALL_GETEGID = 1011, ///< RAD_SYSCALL_GETEGID.
+    RAD_SYSCALL_SETUID = 1012, ///< RAD_SYSCALL_SETUID.
+    RAD_SYSCALL_SETGID = 1013, ///< RAD_SYSCALL_SETGID.
+    RAD_SYSCALL_CHMOD = 1014, ///< RAD_SYSCALL_CHMOD.
+    RAD_SYSCALL_LINK = 1015, ///< RAD_SYSCALL_LINK.
+    RAD_SYSCALL_SYMLINK = 1016, ///< RAD_SYSCALL_SYMLINK.
+    RAD_SYSCALL_READLINK = 1017, ///< RAD_SYSCALL_READLINK.
+    RAD_SYSCALL_FSYNC = 1018 ///< RAD_SYSCALL_FSYNC.
 } rad_posix_syscall_t; ///< Public typedef alias.
 
 /** @brief Public enumeration for rad_process_state. */
@@ -210,9 +230,17 @@ typedef enum rad_process_state {
 
 #define RAD_WAIT_NOHANG 1u ///< Public constant or ioctl helper.
 #define RAD_FD_CLOEXEC 1u ///< Public constant or ioctl helper.
+#define RAD_FD_NONBLOCK 256u ///< Public constant or ioctl helper.
 #define RAD_FCNTL_GETFD 1u ///< Public constant or ioctl helper.
 #define RAD_FCNTL_SETFD 2u ///< Public constant or ioctl helper.
 #define RAD_FCNTL_GETFL 3u ///< Public constant or ioctl helper.
+#define RAD_FCNTL_SETFL 4u ///< Public constant or ioctl helper.
+
+#define RAD_POLLIN 0x0001 ///< Data other than high-priority data may be read.
+#define RAD_POLLOUT 0x0004 ///< Normal data may be written.
+#define RAD_POLLERR 0x0008 ///< Error condition.
+#define RAD_POLLHUP 0x0010 ///< Hung up.
+#define RAD_POLLNVAL 0x0020 ///< Invalid file descriptor.
 
 /** @brief Public enumeration for rad_vfs_open_flags. */
 typedef enum rad_vfs_open_flags {
@@ -230,6 +258,17 @@ typedef enum rad_seek_origin {
     RAD_SEEK_CUR = 1, ///< RAD_SEEK_CUR.
     RAD_SEEK_END = 2 ///< RAD_SEEK_END.
 } rad_seek_origin_t; ///< Public typedef alias.
+
+typedef uint32_t rad_uid_t; ///< POSIX-style user identifier.
+typedef uint32_t rad_gid_t; ///< POSIX-style group identifier.
+
+/** @brief Public data structure for process credentials. */
+typedef struct rad_credentials {
+    rad_uid_t uid; ///< Real user ID.
+    rad_uid_t euid; ///< Effective user ID.
+    rad_gid_t gid; ///< Real group ID.
+    rad_gid_t egid; ///< Effective group ID.
+} rad_credentials_t; ///< Public typedef alias.
 
 /** @brief Public enumeration for rad_device_type. */
 typedef enum rad_device_type {
@@ -587,6 +626,8 @@ typedef struct rad_vfs_stat {
     uint64_t size; ///< Public structure field.
     int is_directory; ///< Public structure field.
     uint32_t mode; ///< Public structure field.
+    rad_uid_t uid; ///< Owning user ID.
+    rad_gid_t gid; ///< Owning group ID.
     uint64_t mtime_millis; ///< Public structure field.
 } rad_vfs_stat_t; ///< Public typedef alias.
 
@@ -684,6 +725,13 @@ typedef struct rad_posix_timeval {
     int64_t tv_usec; ///< Public structure field.
 } rad_posix_timeval_t; ///< Public typedef alias.
 
+/** @brief POSIX-style poll descriptor used by RADix userland. */
+typedef struct rad_pollfd {
+    int32_t fd; ///< File descriptor.
+    int16_t events; ///< Requested RAD_POLL* event mask.
+    int16_t revents; ///< Returned RAD_POLL* event mask.
+} rad_pollfd_t; ///< Public typedef alias.
+
 /** @brief Public data structure for rad_process_info. */
 typedef struct rad_process_info {
     int32_t pid; ///< Public structure field.
@@ -691,6 +739,7 @@ typedef struct rad_process_info {
     int32_t exited; ///< Public structure field.
     int32_t exit_code; ///< Public structure field.
     rad_process_state_t state; ///< Public structure field.
+    rad_credentials_t credentials; ///< Process credentials.
     char path[128]; ///< Public structure field.
 } rad_process_info_t; ///< Public typedef alias.
 
@@ -1243,7 +1292,24 @@ typedef struct rad_pty_handle *rad_pty_t;
 typedef struct rad_tty_window_size {
     uint16_t rows; ///< Public structure field.
     uint16_t columns; ///< Public structure field.
+    uint16_t x_pixels; ///< Public structure field.
+    uint16_t y_pixels; ///< Public structure field.
 } rad_tty_window_size_t; ///< Public typedef alias.
+
+#define RAD_TTY_NCCS 32u
+#define RAD_TTY_FLUSH_INPUT 1u
+#define RAD_TTY_FLUSH_OUTPUT 2u
+
+/** @brief POSIX-shaped terminal attributes stored by RADix TTY devices. */
+typedef struct rad_tty_termios {
+    uint32_t input_flags; ///< Public structure field.
+    uint32_t output_flags; ///< Public structure field.
+    uint32_t control_flags; ///< Public structure field.
+    uint32_t local_flags; ///< Public structure field.
+    uint32_t input_speed; ///< Public structure field.
+    uint32_t output_speed; ///< Public structure field.
+    uint8_t control_chars[RAD_TTY_NCCS]; ///< Public structure field.
+} rad_tty_termios_t; ///< Public typedef alias.
 
 /** @brief Public data structure for rad_log_entry. */
 typedef struct rad_log_entry {
@@ -1376,6 +1442,14 @@ rad_status_t rad_process_clone_fds(int32_t parent_pid, int32_t child_pid); ///< 
 rad_status_t rad_process_arch_register(const rad_process_arch_ops_t *ops); ///< Public RADix kernel API entry point.
 int32_t rad_process_fork_from_arch_frame(void *trap_frame); ///< Public RADix kernel API entry point.
 int32_t rad_process_reap(int32_t pid, int32_t *status); ///< Public RADix kernel API entry point.
+rad_status_t rad_process_get_credentials(int32_t pid, rad_credentials_t *credentials); ///< Public RADix kernel API entry point.
+rad_status_t rad_process_set_credentials(int32_t pid, const rad_credentials_t *credentials); ///< Public RADix kernel API entry point.
+rad_uid_t rad_process_getuid(void); ///< Public RADix kernel API entry point.
+rad_uid_t rad_process_geteuid(void); ///< Public RADix kernel API entry point.
+rad_gid_t rad_process_getgid(void); ///< Public RADix kernel API entry point.
+rad_gid_t rad_process_getegid(void); ///< Public RADix kernel API entry point.
+rad_status_t rad_process_setuid(rad_uid_t uid); ///< Public RADix kernel API entry point.
+rad_status_t rad_process_setgid(rad_gid_t gid); ///< Public RADix kernel API entry point.
 
 rad_status_t rad_module_register(const rad_module_descriptor_t *descriptor); ///< Public RADix kernel API entry point.
 rad_status_t rad_module_unregister(const char *name); ///< Public RADix kernel API entry point.
@@ -1415,6 +1489,7 @@ int32_t rad_fd_fstat(int32_t fd, rad_vfs_stat_t *stat); ///< Public RADix kernel
 int32_t rad_fd_dup(int32_t fd); ///< Public RADix kernel API entry point.
 int32_t rad_fd_dup2(int32_t old_fd, int32_t new_fd); ///< Public RADix kernel API entry point.
 int32_t rad_fd_fcntl(int32_t fd, uint32_t command, uintptr_t argument); ///< Public RADix kernel API entry point.
+int32_t rad_fd_poll(rad_pollfd_t *fds, size_t count, int32_t timeout_ms); ///< Public RADix kernel API entry point.
 int32_t rad_pipe_create(int32_t pipefd[2]); ///< Public RADix kernel API entry point.
 int32_t rad_shm_open(const char *name, size_t byte_size, uint32_t flags); ///< Public RADix kernel API entry point.
 int32_t rad_shm_unlink(const char *name); ///< Public RADix kernel API entry point.
@@ -1559,6 +1634,9 @@ rad_status_t rad_tty_set_window_size(rad_tty_t tty, const rad_tty_window_size_t 
 rad_status_t rad_tty_get_window_size(rad_tty_t tty, rad_tty_window_size_t *size); ///< Public RADix kernel API entry point.
 rad_status_t rad_tty_set_mode(rad_tty_t tty, uint32_t mode); ///< Public RADix kernel API entry point.
 rad_status_t rad_tty_get_mode(rad_tty_t tty, uint32_t *mode); ///< Public RADix kernel API entry point.
+rad_status_t rad_tty_set_termios(rad_tty_t tty, const rad_tty_termios_t *termios); ///< Public RADix kernel API entry point.
+rad_status_t rad_tty_get_termios(rad_tty_t tty, rad_tty_termios_t *termios); ///< Public RADix kernel API entry point.
+rad_status_t rad_tty_flush(rad_tty_t tty, uint32_t queues); ///< Public RADix kernel API entry point.
 
 rad_status_t rad_pty_open_pair(const char *name, rad_pty_t *pty); ///< Public RADix kernel API entry point.
 void rad_pty_close(rad_pty_t pty); ///< Public RADix kernel API entry point.

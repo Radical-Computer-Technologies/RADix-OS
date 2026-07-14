@@ -4,9 +4,75 @@
   "project_name": "RADix-OS",
   "systems": [
     {
-      "id": "radix-x86-64-grub-slint",
+      "id": "radix-x86-64-grub-terminal",
       "type": "os.radix",
-      "name": "RADix x86_64 GRUB Slint VM image",
+      "name": "RADix x86_64 GRUB terminal VM image",
+      "provider": "radix-os",
+      "depends_on": [],
+      "toolchain": {
+        "architecture": "x86_64",
+        "boot": "grub-multiboot2",
+        "ui": "framebuffer-terminal"
+      },
+      "config": {
+        "target": "x86_64-grub-terminal",
+        "ui_profile": "terminal",
+        "feature_chunks": [
+          "kernel.core",
+          "kernel.x86_64",
+          "drivers.framebuffer",
+          "drivers.input.ps2",
+          "drivers.block.virtio",
+          "drivers.net.virtio",
+          "fs.ext4",
+          "fs.fat",
+          "services.radinit",
+          "services.base-terminal",
+          "userspace.rash",
+          "terminal.posix-compat",
+          "terminal.ncurses"
+        ],
+        "rkconfig": {
+          "hostname": "radix",
+          "root_password": "radix",
+          "rootfs_size_mb": 256,
+          "terminal_scale": "auto",
+          "terminal_font": "radix-default",
+          "terminal_theme": "radix-dark",
+          "terminal_autocomplete": true,
+          "terminal_posix_compat": true,
+          "terminal_ncurses": true,
+          "terminal_nano": true,
+          "terminal_nano_variant": "both"
+        },
+        "radpm": {
+          "repository": "../RadicalPackages",
+          "suite": "experimental",
+          "packages": [
+            "radix-core",
+            "radlib"
+          ]
+        },
+        "build_dir": "build/embedded/x86_64_grub_terminal",
+        "smoke_script": "tools/embedded/x86_64_grub_slint_smoke.sh",
+        "artifact_dir": "artifacts/radix/x86_64-grub-terminal",
+        "log_dir": ".radmeta/radix-os/terminal/logs",
+        "artifact_names": {
+          "kernel": "radixkernel-x86-64-grub-terminal",
+          "iso": "radixkernel-x86-64-grub-terminal.iso",
+          "rootfs": "radix-rootfs.ext4",
+          "fat32": "radix-fat32.img",
+          "serial_log": "x86-64-grub-terminal-smoke.log"
+        },
+        "qemu_timeout": "90s",
+        "qemu_smp": [2],
+        "jobs": 2
+      }
+    },
+    {
+      "id": "radix-x86-64-grub-wm",
+      "type": "os.radix",
+      "name": "RADix x86_64 GRUB RADCompositor WM image",
       "provider": "radix-os",
       "depends_on": [],
       "toolchain": {
@@ -15,13 +81,60 @@
         "ui": "slint-framebuffer"
       },
       "config": {
-        "target": "x86_64-grub-slint",
-        "build_dir": "build/embedded/x86_64_grub_slint",
+        "target": "x86_64-grub-wm",
+        "ui_profile": "wm",
+        "feature_chunks": [
+          "kernel.core",
+          "kernel.x86_64",
+          "drivers.framebuffer",
+          "drivers.input.ps2",
+          "drivers.block.virtio",
+          "drivers.net.virtio",
+          "fs.ext4",
+          "fs.fat",
+          "services.radinit",
+          "services.radcompositor",
+          "services.slint-shell",
+          "userspace.rash",
+          "terminal.posix-compat",
+          "terminal.ncurses"
+        ],
+        "rkconfig": {
+          "hostname": "radix",
+          "root_password": "radix",
+          "rootfs_size_mb": 256,
+          "terminal_scale": "auto",
+          "terminal_font": "radix-default",
+          "terminal_theme": "radix-dark",
+          "terminal_autocomplete": true,
+          "terminal_posix_compat": true,
+          "terminal_ncurses": true,
+          "terminal_nano": true,
+          "terminal_nano_variant": "both"
+        },
+        "radpm": {
+          "repository": "../RadicalPackages",
+          "suite": "experimental",
+          "packages": [
+            "radix-core",
+            "radlib",
+            "radlib-ui"
+          ]
+        },
+        "build_dir": "build/embedded/x86_64_grub_wm",
         "smoke_script": "tools/embedded/x86_64_grub_slint_smoke.sh",
-        "artifact_dir": "artifacts/radix/x86_64-grub-slint",
-        "log_dir": ".radmeta/radix-os/logs",
-        "qemu_timeout": "90s",
-        "qemu_smp": [2, 4],
+        "artifact_dir": "artifacts/radix/x86_64-grub-wm",
+        "log_dir": ".radmeta/radix-os/wm/logs",
+        "skip_qemu": true,
+        "artifact_names": {
+          "kernel": "radixkernel-x86-64-grub-wm",
+          "iso": "radixkernel-x86-64-grub-wm.iso",
+          "rootfs": "radix-rootfs.ext4",
+          "fat32": "radix-fat32.img",
+          "serial_log": "x86-64-grub-wm-smoke.log"
+        },
+        "qemu_timeout": "120s",
+        "qemu_smp": [2],
         "jobs": 2
       }
     }

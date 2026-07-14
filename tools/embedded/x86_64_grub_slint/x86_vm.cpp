@@ -15,7 +15,9 @@ constexpr uint64_t PageSize = 4096;
 constexpr uint64_t LargePageSize = 2u * 1024u * 1024u;
 constexpr uint64_t MaxTrackedPages = 262144; // 1 GiB of early physical memory.
 constexpr uint64_t UserBase = 0x3ffff000u;
-constexpr uint64_t UserLimit = 0x41000000u;
+constexpr uint64_t UserLimit = 0x90000000u;
+constexpr uint64_t UserStackTop = 0x80000000u;
+constexpr uint64_t UserStackGrowLimit = 0x78000000u;
 constexpr uint64_t LowIdentityLimit = 16u * 1024u * 1024u;
 constexpr uint64_t KernelIdentityLimit = 4ull * 1024ull * 1024ull * 1024ull;
 constexpr size_t MaxKernelMmioRanges = 16;
@@ -407,8 +409,23 @@ extern "C" int x86_vm_clone_cow(x86_address_space_t *child, x86_address_space_t 
 extern "C" int x86_vm_handle_page_fault(uint64_t fault_address, uint64_t error_code) {
     x86_address_space_t *space = current_space();
     if (!space) return 0;
-    if (((error_code >> 1u) & 1u) == 0 || ((error_code >> 2u) & 1u) == 0) return 0;
+    const int present = static_cast<int>((error_code >> 0u) & 1u);
+    const int write = static_cast<int>((error_code >> 1u) & 1u);
+    const int user = static_cast<int>((error_code >> 2u) & 1u);
     const uint64_t va = align_down(fault_address, PageSize);
+    if (!present && user && fault_address >= UserStackGrowLimit && fault_address < UserStackTop) {
+        const uint64_t phys = x86_vm_alloc_page();
+        if (!phys) return 0;
+        memset(reinterpret_cast<void*>(static_cast<uintptr_t>(phys)), 0, PageSize);
+        if (!map_page(space, va, phys, PteUser | PteWrite) || !record_owned_page(space, phys)) {
+            x86_vm_free_page(phys);
+            return 0;
+        }
+        invalidate_page(va);
+        rad_debug_marker("RADIX_USER_STACK_GROW_OK");
+        return 1;
+    }
+    if (!write || !user) return 0;
     uint64_t *leaf = walk_user_leaf(space, va);
     if (!leaf || ((*leaf & PteCow) == 0)) return 0;
     const uint64_t old_phys = *leaf & PteAddressMask;

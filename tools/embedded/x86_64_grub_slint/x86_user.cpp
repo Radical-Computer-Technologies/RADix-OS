@@ -20,13 +20,15 @@ void x86_process_reaped_arch(void *context, int32_t pid, int32_t status);
 namespace {
 constexpr uint64_t UserExitMagic = 0x5241445845584954ull;
 constexpr uintptr_t UserBase = 0x3ffff000u;
-constexpr uintptr_t UserLimit = 0x41000000u;
-constexpr uintptr_t UserStackTop = 0x40800000u;
-constexpr uintptr_t UserMmapBase = 0x40900000u;
-constexpr uintptr_t UserMmapLimit = 0x41000000u;
-constexpr size_t UserStackSize = 0x4000u;
+constexpr uintptr_t UserLimit = 0x90000000u;
+constexpr uintptr_t UserStackTop = 0x80000000u;
+constexpr uintptr_t UserMmapBase = 0x60000000u;
+constexpr uintptr_t UserMmapLimit = 0x70000000u;
+constexpr size_t UserStackSize = 0x100000u;
 constexpr uint64_t PageSize = 4096u;
-constexpr size_t MaxInitImage = 65536u;
+constexpr uintptr_t UserStackBottom = UserStackTop - UserStackSize;
+constexpr uintptr_t UserBrkLimit = UserStackBottom - PageSize;
+constexpr size_t MaxInitImage = 4u * 1024u * 1024u;
 constexpr size_t MaxUserProcesses = 8u;
 constexpr size_t MaxUserCores = 8u;
 constexpr size_t MaxUserArgs = 8u;
@@ -51,6 +53,47 @@ constexpr unsigned long LinuxSysExit = 60;
 constexpr unsigned long LinuxSysWait4 = 61;
 constexpr unsigned long LinuxSysFcntl = 72;
 constexpr unsigned long LinuxSysGetcwd = 79;
+constexpr unsigned long LinuxSysGetuid = 102;
+constexpr unsigned long LinuxSysGetgid = 104;
+constexpr unsigned long LinuxSysSetuid = 105;
+constexpr unsigned long LinuxSysSetgid = 106;
+constexpr unsigned long LinuxSysGeteuid = 107;
+constexpr unsigned long LinuxSysGetegid = 108;
+
+bool marker_text_char(char ch) {
+    return (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_';
+}
+
+bool is_radix_marker_only(const char *text, size_t size) {
+    if (!text || !size) return false;
+    size_t i = 0;
+    bool saw_marker = false;
+    while (i < size) {
+        while (i < size && (text[i] == '\n' || text[i] == '\r')) ++i;
+        if (i >= size) break;
+        if (i + 6u > size || memcmp(text + i, "RADIX_", 6u) != 0) return false;
+        saw_marker = true;
+        while (i < size && text[i] != '\n' && text[i] != '\r') {
+            if (!marker_text_char(text[i])) return false;
+            ++i;
+        }
+    }
+    return saw_marker;
+}
+
+bool newline_only(const char *text, size_t size) {
+    if (!text || !size) return false;
+    for (size_t i = 0; i < size; ++i) {
+        if (text[i] != '\n' && text[i] != '\r') return false;
+    }
+    return true;
+}
+
+bool ends_with_newline(const char *text, size_t size) {
+    return text && size && (text[size - 1u] == '\n' || text[size - 1u] == '\r');
+}
+
+bool g_hidden_marker_needs_newline = false;
 constexpr unsigned long LinuxSysGetppid = 110;
 constexpr unsigned long LinuxSysOpenat = 257;
 constexpr unsigned long LinuxSysExitGroup = 231;
@@ -92,6 +135,7 @@ struct X86UserProcess {
     int32_t exit_code;
     int exec_pending;
     int exiting;
+    int target_core;
     char path[128];
     char exec_path[128];
     int argc;
@@ -100,6 +144,9 @@ struct X86UserProcess {
     char env[MaxUserEnvs][MaxUserArgBytes];
     uint64_t initial_rsp;
     uint64_t next_mmap;
+    uint64_t brk_base;
+    uint64_t brk_current;
+    uint64_t brk_limit;
     x86_address_space_t address_space;
     uint64_t entry;
     rad_task_t task;
@@ -116,6 +163,15 @@ void user_process_task(void *context);
 
 int user_range_ok(uint64_t address, uint64_t size) {
     return x86_vm_validate_user_range(address, size, 0);
+}
+
+long poll_from_user(uint64_t user_fds, uint64_t count, uint64_t timeout_ms) {
+    if (count > 64u || (count && !user_range_ok(user_fds, count * sizeof(rad_pollfd_t)))) return RAD_STATUS_INVALID_ARGUMENT;
+    rad_pollfd_t fds[64]{};
+    if (count && x86_copy_from_user(fds, user_fds, count * sizeof(rad_pollfd_t)) != RAD_STATUS_OK) return RAD_STATUS_INVALID_ARGUMENT;
+    const int32_t ready = rad_fd_poll(fds, static_cast<size_t>(count), static_cast<int32_t>(timeout_ms));
+    if (ready >= 0 && count && x86_copy_to_user(user_fds, fds, count * sizeof(rad_pollfd_t)) != RAD_STATUS_OK) return RAD_STATUS_INVALID_ARGUMENT;
+    return ready;
 }
 
 extern "C" int x86_user_copy_self_test(void);
@@ -160,12 +216,13 @@ int elf_ident_ok(const uint8_t *image, size_t size) {
         && image[4] == 2 && image[5] == 1;
 }
 
-int load_user_elf(x86_address_space_t *space, const uint8_t *image, size_t size, uint64_t *entry) {
-    if (!image || !entry || !elf_ident_ok(image, size)) return 0;
+int load_user_elf(x86_address_space_t *space, const uint8_t *image, size_t size, uint64_t *entry, uint64_t *image_end) {
+    if (!image || !entry || !image_end || !elf_ident_ok(image, size)) return 0;
     const auto *header = reinterpret_cast<const Elf64Header*>(image);
     if (header->machine != ElfMachineX86_64 || header->phoff > size || header->phentsize < sizeof(Elf64ProgramHeader)) return 0;
     if (static_cast<uint64_t>(header->phnum) * header->phentsize > size - header->phoff) return 0;
     if (header->entry < UserBase || header->entry >= UserLimit) return 0;
+    uint64_t highest_end = UserBase;
     for (uint16_t i = 0; i < header->phnum; ++i) {
         const auto *ph = reinterpret_cast<const Elf64ProgramHeader*>(image + header->phoff + i * header->phentsize);
         if (ph->type != ElfPtLoad) continue;
@@ -174,6 +231,7 @@ int load_user_elf(x86_address_space_t *space, const uint8_t *image, size_t size,
         const uint64_t segment_start = ph->vaddr;
         const uint64_t file_end = ph->vaddr + ph->filesz;
         const uint64_t memory_end = ph->vaddr + ph->memsz;
+        if (memory_end > highest_end) highest_end = memory_end;
         for (uint64_t va = align_down(segment_start, PageSize); va < memory_end; va += PageSize) {
             const uint64_t phys = x86_vm_alloc_page();
             if (!phys) return 0;
@@ -193,12 +251,12 @@ int load_user_elf(x86_address_space_t *space, const uint8_t *image, size_t size,
         }
     }
     *entry = header->entry;
+    *image_end = highest_end;
     return 1;
 }
 
 int map_user_stack(x86_address_space_t *space) {
-    const uint64_t stack_bottom = UserStackTop - UserStackSize;
-    for (uint64_t va = stack_bottom; va < UserStackTop; va += PageSize) {
+    for (uint64_t va = UserStackBottom; va < UserStackTop; va += PageSize) {
         const uint64_t phys = x86_vm_alloc_page();
         if (!phys) return 0;
         memset(reinterpret_cast<void*>(static_cast<uintptr_t>(phys)), 0, PageSize);
@@ -211,7 +269,7 @@ int map_user_stack(x86_address_space_t *space) {
 }
 
 uint64_t push_user_bytes(uint64_t *sp, const void *data, size_t size) {
-    if (!sp || !data || size == 0 || *sp < UserStackTop - UserStackSize + size) return 0;
+    if (!sp || !data || size == 0 || *sp < UserStackBottom + size) return 0;
     *sp -= size;
     memcpy(reinterpret_cast<void*>(static_cast<uintptr_t>(*sp)), data, size);
     return *sp;
@@ -297,6 +355,13 @@ X86UserProcess *allocate_user_process(void) {
     return nullptr;
 }
 
+void restore_current_user_address_space() {
+    X86UserProcess *process = find_user_process(rad_process_current_pid());
+    if (process && process->used && !process->exiting && process->address_space.pml4) {
+        x86_vm_activate_address_space(&process->address_space);
+    }
+}
+
 void process_fd_table_self_test(int32_t pid) {
     const int32_t previous = rad_process_current_pid();
     rad_process_set_current_pid(pid);
@@ -320,7 +385,7 @@ rad_status_t start_user_process_task(X86UserProcess *process) {
     rad_task_config_t config{};
     config.size = sizeof(config);
     config.name = process->path;
-    config.target_core = RAD_TASK_CORE_ANY;
+    config.target_core = process->target_core;
     config.user_context = &process->context;
     rad_status_t status = rad_task_create_config(&process->task, &config, user_process_task, process);
     if (status != RAD_STATUS_OK) return status;
@@ -332,7 +397,7 @@ rad_status_t load_user_program(X86UserProcess *process, const char *path) {
     rad_vfs_stat_t stat{};
     const rad_status_t stat_status = rad_vfs_stat(path, &stat);
     if (stat_status != RAD_STATUS_OK || stat.is_directory || stat.size == 0 || stat.size > MaxInitImage) {
-        rad_debug_marker("RADIX_USER_EXECVE_LOAD_STAT_FAIL");
+        rad_debug_marker("RADIX_USER_EXECVE_LOAD_NOT_FOUND");
         return RAD_STATUS_NOT_FOUND;
     }
     rad_file_t file = nullptr;
@@ -393,7 +458,8 @@ rad_status_t load_user_program(X86UserProcess *process, const char *path) {
         rad_debug_marker("RADIX_USER_EXECVE_LOAD_SPACE_FAIL");
         return RAD_STATUS_ERROR;
     }
-    if (!load_user_elf(&new_space, g_init_image, bytes_read, &entry)) {
+    uint64_t image_end = 0;
+    if (!load_user_elf(&new_space, g_init_image, bytes_read, &entry, &image_end)) {
         x86_vm_destroy_address_space(&new_space);
         rad_debug_marker("RADIX_USER_EXECVE_LOAD_MAP_FAIL");
         return RAD_STATUS_ERROR;
@@ -414,6 +480,9 @@ rad_status_t load_user_program(X86UserProcess *process, const char *path) {
     process->address_space = new_space;
     process->entry = entry;
     process->next_mmap = UserMmapBase;
+    process->brk_base = align_up(image_end, PageSize);
+    process->brk_current = process->brk_base;
+    process->brk_limit = UserBrkLimit;
     strncpy(process->path, path, sizeof(process->path) - 1u);
     process->path[sizeof(process->path) - 1u] = '\0';
     rad_process_mark_exec(process->pid, path);
@@ -520,8 +589,12 @@ rad_status_t x86_user_fork_from_frame(const x86_user_trap_frame_t *frame, int32_
     child->parent_pid = parent->pid;
     child->entry = parent->entry;
     child->next_mmap = parent->next_mmap;
+    child->brk_base = parent->brk_base;
+    child->brk_current = parent->brk_current;
+    child->brk_limit = parent->brk_limit;
     child->initial_rsp = parent->initial_rsp;
     child->exit_code = 0;
+    child->target_core = parent->target_core;
     strncpy(child->path, parent->path, sizeof(child->path) - 1u);
     child->path[sizeof(child->path) - 1u] = '\0';
     if (!x86_vm_clone_cow(&child->address_space, &parent->address_space)) {
@@ -636,13 +709,43 @@ long x86_sys_mmap(uint64_t requested, uint64_t length, uint64_t prot, uint64_t f
     return static_cast<long>(va);
 }
 
+long x86_sys_brk(uint64_t requested) {
+    X86UserProcess *process = find_user_process(rad_process_current_pid());
+    if (!process) return 0;
+    if (requested == 0) return static_cast<long>(process->brk_current);
+    const uint64_t new_break = align_up(requested, PageSize);
+    if (new_break < process->brk_base || new_break > process->brk_limit) {
+        return static_cast<long>(process->brk_current);
+    }
+    if (new_break <= process->brk_current) {
+        process->brk_current = new_break;
+        return static_cast<long>(process->brk_current);
+    }
+    for (uint64_t va = process->brk_current; va < new_break; va += PageSize) {
+        const uint64_t physical = x86_vm_alloc_page();
+        if (!physical) return static_cast<long>(process->brk_current);
+        memset(reinterpret_cast<void*>(static_cast<uintptr_t>(physical)), 0, PageSize);
+        if (!x86_vm_map_user_page(&process->address_space, va, physical, 1)) {
+            x86_vm_free_page(physical);
+            return static_cast<long>(process->brk_current);
+        }
+    }
+    process->brk_current = new_break;
+    rad_debug_marker("RADIX_USER_BRK_OK");
+    return static_cast<long>(process->brk_current);
+}
+
 extern "C" long x86_syscall_dispatch_frame(x86_user_trap_frame_t *frame) {
     if (!frame) return RAD_STATUS_INVALID_ARGUMENT;
+    long result = 0;
     if (frame->rax == RAD_SYSCALL_FORK || frame->rax == LinuxSysFork) {
         ensure_process_arch_registered();
-        return rad_process_fork_from_arch_frame(frame);
+        result = rad_process_fork_from_arch_frame(frame);
+    } else {
+        result = x86_syscall_dispatch(frame->rax, frame->rdi, frame->rsi, frame->rdx, frame->r10, frame->r8, frame->r9);
     }
-    return x86_syscall_dispatch(frame->rax, frame->rdi, frame->rsi, frame->rdx, frame->r10, frame->r8, frame->r9);
+    if (result != static_cast<long>(UserExitMagic)) restore_current_user_address_space();
+    return result;
 }
 
 extern "C" long x86_syscall_dispatch(unsigned long number, unsigned long arg0, unsigned long arg1,
@@ -694,7 +797,24 @@ extern "C" long x86_syscall_dispatch(unsigned long number, unsigned long arg0, u
             const size_t want = (arg2 - total) > 256u ? 256u : static_cast<size_t>(arg2 - total);
             if (x86_copy_from_user(chunk, arg1 + total, want) != RAD_STATUS_OK) return RAD_STATUS_INVALID_ARGUMENT;
             chunk[want] = '\0';
+            const bool visible_fd = arg0 == 1 || arg0 == 2;
+            if (visible_fd && g_hidden_marker_needs_newline) {
+                if (newline_only(chunk, want)) {
+                    x86_serial_write(chunk);
+                    g_hidden_marker_needs_newline = false;
+                    total += want;
+                    continue;
+                }
+                x86_serial_write("\n");
+                g_hidden_marker_needs_newline = false;
+            }
+            const bool marker_only = is_radix_marker_only(chunk, want);
             if (strstr(chunk, "RADIX_")) x86_serial_write(chunk);
+            if (marker_only && visible_fd) {
+                g_hidden_marker_needs_newline = !ends_with_newline(chunk, want);
+                total += want;
+                continue;
+            }
             const intptr_t wrote = rad_fd_write(static_cast<int32_t>(arg0), chunk, want);
             if (wrote < 0) return wrote;
             total += static_cast<size_t>(wrote);
@@ -743,6 +863,7 @@ extern "C" long x86_syscall_dispatch(unsigned long number, unsigned long arg0, u
         return x86_copy_to_user(arg1, &stat, sizeof(stat));
     }
     case RAD_SYSCALL_FSTAT: {
+        if (arg0 >= UserBase) return poll_from_user(arg0, arg1, arg2);
         rad_vfs_stat_t stat{};
         const int32_t status = rad_fd_fstat(static_cast<int32_t>(arg0), &stat);
         if (status != RAD_STATUS_OK) return status;
@@ -760,7 +881,7 @@ extern "C" long x86_syscall_dispatch(unsigned long number, unsigned long arg0, u
         return x86_copy_to_user(arg0, &tv, sizeof(tv));
     }
     case RAD_SYSCALL_NANOSLEEP:
-        rad_sleep_us(static_cast<uint32_t>(arg0 / 1000u));
+        rad_task_sleep_us(static_cast<uint32_t>(arg0 / 1000u));
         return RAD_STATUS_OK;
     case RAD_SYSCALL_FORK:
         ensure_process_arch_registered();
@@ -843,11 +964,30 @@ extern "C" long x86_syscall_dispatch(unsigned long number, unsigned long arg0, u
     case RAD_SYSCALL_GETPID:
         return rad_process_current_pid();
     case LinuxSysGetpid:
+        if (arg0 >= UserBase && arg1 <= 64u) return poll_from_user(arg0, arg1, arg2);
         return rad_process_current_pid();
     case RAD_SYSCALL_GETPPID:
         return rad_process_parent_pid();
     case LinuxSysGetppid:
         return rad_process_parent_pid();
+    case RAD_SYSCALL_GETUID:
+    case LinuxSysGetuid:
+        return static_cast<long>(rad_process_getuid());
+    case RAD_SYSCALL_GETEUID:
+    case LinuxSysGeteuid:
+        return static_cast<long>(rad_process_geteuid());
+    case RAD_SYSCALL_GETGID:
+    case LinuxSysGetgid:
+        return static_cast<long>(rad_process_getgid());
+    case RAD_SYSCALL_GETEGID:
+    case LinuxSysGetegid:
+        return static_cast<long>(rad_process_getegid());
+    case RAD_SYSCALL_SETUID:
+    case LinuxSysSetuid:
+        return rad_process_setuid(static_cast<rad_uid_t>(arg0));
+    case RAD_SYSCALL_SETGID:
+    case LinuxSysSetgid:
+        return rad_process_setgid(static_cast<rad_gid_t>(arg0));
     case RAD_SYSCALL_DUP:
         return rad_fd_dup(static_cast<int32_t>(arg0));
     case RAD_SYSCALL_DUP2:
@@ -882,7 +1022,7 @@ extern "C" long x86_syscall_dispatch(unsigned long number, unsigned long arg0, u
         return rad_fd_open(path, static_cast<uint32_t>(arg2));
     }
     case RAD_SYSCALL_BRK:
-        return 0;
+        return x86_sys_brk(arg0);
     case RAD_SYSCALL_PIPE: {
         int32_t pipefd[2]{};
         const int32_t status = rad_pipe_create(pipefd);
@@ -927,6 +1067,41 @@ extern "C" long x86_syscall_dispatch(unsigned long number, unsigned long arg0, u
         char path[256];
         const rad_status_t copied = x86_copy_string_from_user(path, sizeof(path), arg0);
         return copied == RAD_STATUS_OK ? rad_vfs_truncate(path, arg1) : copied;
+    }
+    case RAD_SYSCALL_CHMOD: {
+        char path[256];
+        const rad_status_t copied = x86_copy_string_from_user(path, sizeof(path), arg0);
+        return copied == RAD_STATUS_OK ? rad_vfs_chmod(path, static_cast<uint32_t>(arg1)) : copied;
+    }
+    case RAD_SYSCALL_LINK: {
+        char old_path[256];
+        char new_path[256];
+        const rad_status_t copied_old = x86_copy_string_from_user(old_path, sizeof(old_path), arg0);
+        if (copied_old != RAD_STATUS_OK) return copied_old;
+        const rad_status_t copied_new = x86_copy_string_from_user(new_path, sizeof(new_path), arg1);
+        return copied_new == RAD_STATUS_OK ? rad_vfs_link(old_path, new_path) : copied_new;
+    }
+    case RAD_SYSCALL_SYMLINK: {
+        char target[256];
+        char link_path[256];
+        const rad_status_t copied_target = x86_copy_string_from_user(target, sizeof(target), arg0);
+        if (copied_target != RAD_STATUS_OK) return copied_target;
+        const rad_status_t copied_link = x86_copy_string_from_user(link_path, sizeof(link_path), arg1);
+        return copied_link == RAD_STATUS_OK ? rad_vfs_symlink(target, link_path) : copied_link;
+    }
+    case RAD_SYSCALL_READLINK: {
+        char path[256];
+        char target[256]{};
+        const rad_status_t copied = x86_copy_string_from_user(path, sizeof(path), arg0);
+        if (copied != RAD_STATUS_OK) return copied;
+        const size_t capacity = arg2 < sizeof(target) ? static_cast<size_t>(arg2) : sizeof(target);
+        const rad_status_t status = rad_vfs_readlink(path, target, capacity);
+        if (status != RAD_STATUS_OK) return status;
+        const size_t length = strlen(target);
+        return x86_copy_to_user(arg1, target, length) == RAD_STATUS_OK ? static_cast<long>(length) : static_cast<long>(RAD_STATUS_INVALID_ARGUMENT);
+    }
+    case RAD_SYSCALL_FSYNC: {
+        return rad_syscall_dispatch(RAD_SYSCALL_FSYNC, arg0, 0, 0, 0, 0, 0);
     }
     case RAD_SYSCALL_LOG_READ: {
         if (arg1 > 16u || (arg1 && !user_range_ok(arg0, arg1 * sizeof(rad_log_entry_t)))) return RAD_STATUS_INVALID_ARGUMENT;
@@ -1108,7 +1283,7 @@ extern "C" rad_status_t x86_copy_string_from_user(char *dst, size_t dst_size, ui
 }
 
 extern "C" int x86_user_copy_self_test(void) {
-    constexpr uint64_t test_addr = UserStackTop - 128u;
+    constexpr uint64_t test_addr = (UserStackTop - UserStackSize) + 256u;
     const char source[] = "rad-user-copy";
     char copied[sizeof(source)]{};
     memcpy(reinterpret_cast<void*>(static_cast<uintptr_t>(test_addr)), source, sizeof(source));
@@ -1174,6 +1349,7 @@ extern "C" rad_status_t x86_user_spawn_process_with_stdio(const char *path, int3
     process->pid = pid;
     process->parent_pid = parent_pid > 0 ? parent_pid : rad_process_current_pid();
     process->exit_code = 0;
+    process->target_core = stdio_path && *stdio_path ? RAD_TASK_CORE_SERVICE : RAD_TASK_CORE_ANY;
     set_default_process_args(process, path);
     rad_status_t status = load_user_program(process, path);
     if (status != RAD_STATUS_OK) {

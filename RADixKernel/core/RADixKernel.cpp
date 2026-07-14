@@ -101,6 +101,7 @@ struct TtyRecord {
     std::string output_buffer;
     std::string attached_device_name;
     uint32_t mode = RAD_TTY_MODE_CANONICAL | RAD_TTY_MODE_ECHO | RAD_TTY_MODE_CRLF;
+    rad_tty_termios_t termios{};
     rad_tty_window_size_t window{30, 120};
     rad_tty_output_t output = nullptr;
     void *output_context = nullptr;
@@ -188,6 +189,7 @@ struct ProcessRecord {
     rad_process_state_t state = RAD_PROCESS_RUNNING;
     int32_t exit_code = 0;
     std::string path;
+    rad_credentials_t credentials{0, 0, 0, 0};
 };
 
 struct ModuleRecord {
@@ -341,8 +343,21 @@ void fill_stat_from_path(const std::filesystem::path& resolved, rad_vfs_stat_t *
     stat->is_directory = std::filesystem::is_directory(resolved, ec) ? 1 : 0;
     stat->size = stat->is_directory ? 0 : static_cast<uint64_t>(std::filesystem::file_size(resolved, ec));
     stat->mode = stat->is_directory ? 0040755u : 0100644u;
+    stat->uid = 0;
+    stat->gid = 0;
     const auto timestamp = std::filesystem::last_write_time(resolved, ec);
     stat->mtime_millis = ec ? 0 : static_cast<uint64_t>(timestamp.time_since_epoch().count());
+}
+
+ProcessRecord *find_process_record_locked(int32_t pid) {
+    if (pid <= 0) pid = state().current_pid;
+    auto it = state().processes.find(pid);
+    return it == state().processes.end() ? nullptr : &it->second;
+}
+
+rad_credentials_t current_credentials_locked() {
+    ProcessRecord *process = find_process_record_locked(state().current_pid);
+    return process ? process->credentials : rad_credentials_t{0, 0, 0, 0};
 }
 
 std::vector<std::string> tokenize(const char *line) {
@@ -384,10 +399,61 @@ PtyRecord *find_pty_locked(uint32_t id) {
     return it == state().ptys.end() || !it->second.open ? nullptr : &it->second;
 }
 
+constexpr uint32_t TtyIflagIcrnl = 0x00000004u;
+constexpr uint32_t TtyOflagOpost = 0x00000001u;
+constexpr uint32_t TtyLflagIcanon = 0x00000001u;
+constexpr uint32_t TtyLflagEcho = 0x00000002u;
+constexpr uint32_t TtyLflagIsig = 0x00000008u;
+constexpr uint32_t TtyLflagIexten = 0x00000010u;
+constexpr uint32_t TtySpeedDefault = 9600u;
+constexpr size_t TtyCcVintr = 0u;
+constexpr size_t TtyCcVeof = 1u;
+constexpr size_t TtyCcVerase = 2u;
+constexpr size_t TtyCcVmin = 3u;
+constexpr size_t TtyCcVtime = 4u;
+constexpr size_t TtyCcVkill = 5u;
+
+rad_tty_termios_t default_tty_termios(void) {
+    rad_tty_termios_t termios{};
+    termios.input_flags = TtyIflagIcrnl;
+    termios.output_flags = TtyOflagOpost;
+    termios.local_flags = TtyLflagIcanon | TtyLflagEcho | TtyLflagIsig | TtyLflagIexten;
+    termios.input_speed = TtySpeedDefault;
+    termios.output_speed = TtySpeedDefault;
+    termios.control_chars[TtyCcVintr] = 3;
+    termios.control_chars[TtyCcVeof] = 4;
+    termios.control_chars[TtyCcVerase] = 0x7f;
+    termios.control_chars[TtyCcVmin] = 1;
+    termios.control_chars[TtyCcVtime] = 0;
+    termios.control_chars[TtyCcVkill] = 21;
+    return termios;
+}
+
+uint32_t tty_mode_from_termios(const rad_tty_termios_t& termios) {
+    uint32_t mode = 0;
+    if (termios.local_flags & TtyLflagIcanon) mode |= RAD_TTY_MODE_CANONICAL;
+    if (termios.local_flags & TtyLflagEcho) mode |= RAD_TTY_MODE_ECHO;
+    if (termios.input_flags & TtyIflagIcrnl) mode |= RAD_TTY_MODE_CRLF;
+    return mode;
+}
+
+void tty_termios_from_mode(rad_tty_termios_t& termios, uint32_t mode) {
+    if (mode & RAD_TTY_MODE_CANONICAL) termios.local_flags |= TtyLflagIcanon;
+    else termios.local_flags &= ~TtyLflagIcanon;
+    if (mode & RAD_TTY_MODE_ECHO) termios.local_flags |= TtyLflagEcho;
+    else termios.local_flags &= ~TtyLflagEcho;
+    if (mode & RAD_TTY_MODE_CRLF) termios.input_flags |= TtyIflagIcrnl;
+    else termios.input_flags &= ~TtyIflagIcrnl;
+}
+
 TtyRecord *ensure_tty_locked(const std::string& name) {
     if (name.empty()) return nullptr;
     auto [it, inserted] = state().ttys.try_emplace(name);
-    if (inserted) it->second.name = name;
+    if (inserted) {
+        it->second.name = name;
+        it->second.termios = default_tty_termios();
+        it->second.mode = tty_mode_from_termios(it->second.termios);
+    }
     return &it->second;
 }
 
@@ -409,6 +475,15 @@ rad_status_t tty_read_record(TtyRecord *tty, void *buffer, size_t size, size_t *
     return RAD_STATUS_OK;
 }
 
+bool tty_record_input_ready(const TtyRecord *tty) {
+    return tty && !tty->input_buffer.empty();
+}
+
+TtyRecord *tty_record_from_device(rad_device_t device) {
+    if (!device || device->record.type != RAD_DEVICE_TTY) return nullptr;
+    return static_cast<TtyRecord*>(device->record.ops.context);
+}
+
 rad_status_t tty_write_record(TtyRecord *tty, const void *buffer, size_t size, size_t *bytes_written) {
     if (!tty || (!buffer && size)) return RAD_STATUS_INVALID_ARGUMENT;
     rad_tty_output_t output = nullptr;
@@ -421,6 +496,23 @@ rad_status_t tty_write_record(TtyRecord *tty, const void *buffer, size_t size, s
     }
     if (output && size) output(buffer, size, context);
     if (bytes_written) *bytes_written = size;
+    return RAD_STATUS_OK;
+}
+
+rad_status_t tty_flush_record_locked(TtyRecord *tty, uint32_t queues) {
+    if (!tty) return RAD_STATUS_INVALID_ARGUMENT;
+    if (queues == 0) queues = RAD_TTY_FLUSH_INPUT | RAD_TTY_FLUSH_OUTPUT;
+    if (queues & RAD_TTY_FLUSH_INPUT) {
+        tty->input_buffer.clear();
+        tty->line_buffer.clear();
+    }
+    if (queues & RAD_TTY_FLUSH_OUTPUT) {
+        tty->output_buffer.clear();
+        if (tty->pty_id) {
+            PtyRecord *pty = find_pty_locked(tty->pty_id);
+            if (pty) pty->master_buffer.clear();
+        }
+    }
     return RAD_STATUS_OK;
 }
 
@@ -489,6 +581,49 @@ rad_status_t tty_device_write(void *context, const void *buffer, size_t size, si
     return tty_write_record(static_cast<TtyRecord*>(context), buffer, size, bytes_written);
 }
 
+rad_status_t tty_device_ioctl(void *context, uint32_t request, void *argument) {
+    auto *tty = static_cast<TtyRecord*>(context);
+    if (!tty) return RAD_STATUS_INVALID_ARGUMENT;
+    std::lock_guard<std::mutex> lock(state().mutex);
+    switch (request) {
+    case RAD_DEVICE_IOCTL_TTY_GET_WINSIZE:
+        if (!argument) return RAD_STATUS_INVALID_ARGUMENT;
+        *static_cast<rad_tty_window_size_t*>(argument) = tty->window;
+        return RAD_STATUS_OK;
+    case RAD_DEVICE_IOCTL_TTY_SET_WINSIZE:
+        if (!argument) return RAD_STATUS_INVALID_ARGUMENT;
+        tty->window = *static_cast<const rad_tty_window_size_t*>(argument);
+        return tty->window.rows && tty->window.columns ? RAD_STATUS_OK : RAD_STATUS_INVALID_ARGUMENT;
+    case RAD_DEVICE_IOCTL_TTY_GET_MODE:
+        if (!argument) return RAD_STATUS_INVALID_ARGUMENT;
+        *static_cast<uint32_t*>(argument) = tty->mode;
+        return RAD_STATUS_OK;
+    case RAD_DEVICE_IOCTL_TTY_SET_MODE:
+        if (!argument) return RAD_STATUS_INVALID_ARGUMENT;
+        tty->mode = *static_cast<const uint32_t*>(argument);
+        tty_termios_from_mode(tty->termios, tty->mode);
+        tty->line_buffer.clear();
+        return RAD_STATUS_OK;
+    case RAD_DEVICE_IOCTL_TTY_GET_TERMIOS:
+        if (!argument) return RAD_STATUS_INVALID_ARGUMENT;
+        *static_cast<rad_tty_termios_t*>(argument) = tty->termios;
+        return RAD_STATUS_OK;
+    case RAD_DEVICE_IOCTL_TTY_SET_TERMIOS:
+        if (!argument) return RAD_STATUS_INVALID_ARGUMENT;
+        tty->termios = *static_cast<const rad_tty_termios_t*>(argument);
+        if (tty->termios.input_speed == 0) tty->termios.input_speed = TtySpeedDefault;
+        if (tty->termios.output_speed == 0) tty->termios.output_speed = TtySpeedDefault;
+        tty->mode = tty_mode_from_termios(tty->termios);
+        tty->line_buffer.clear();
+        return RAD_STATUS_OK;
+    case RAD_DEVICE_IOCTL_TTY_FLUSH:
+        if (!argument) return RAD_STATUS_INVALID_ARGUMENT;
+        return tty_flush_record_locked(tty, *static_cast<const uint32_t*>(argument));
+    default:
+        return RAD_STATUS_NOT_SUPPORTED;
+    }
+}
+
 void serial_tty_output(const void *data, size_t size, void *context) {
     const char *device_name = static_cast<const char*>(context);
     if (!device_name || (!data && size)) return;
@@ -510,6 +645,7 @@ void register_tty_device(const char *name) {
     ops.context = tty;
     ops.read = tty_device_read;
     ops.write = tty_device_write;
+    ops.ioctl = tty_device_ioctl;
     rad_device_register(name, RAD_DEVICE_TTY, &ops);
 }
 
@@ -583,6 +719,7 @@ void reset_posix_state_locked() {
     init.parent_pid = 0;
     init.state = RAD_PROCESS_RUNNING;
     init.path = "/bin/init";
+    init.credentials = {0, 0, 0, 0};
     state().processes[init.pid] = init;
 }
 
@@ -1865,6 +2002,9 @@ int32_t rad_process_create(const char *path, int32_t parent_pid) {
     process.path = path;
     process.state = RAD_PROCESS_RUNNING;
     process.exit_code = 0;
+    if (ProcessRecord *parent = find_process_record_locked(process.parent_pid)) {
+        process.credentials = parent->credentials;
+    }
     state().processes[pid] = process;
     return pid;
 }
@@ -1962,11 +2102,75 @@ size_t rad_process_list(rad_process_info_t *processes, size_t capacity) {
             processes[count].exited = process.state == RAD_PROCESS_ZOMBIE ? 1 : 0;
             processes[count].exit_code = process.exit_code;
             processes[count].state = process.state;
+            processes[count].credentials = process.credentials;
             std::snprintf(processes[count].path, sizeof(processes[count].path), "%s", process.path.c_str());
         }
         ++count;
     }
     return count;
+}
+
+rad_status_t rad_process_get_credentials(int32_t pid, rad_credentials_t *credentials) {
+    if (!credentials) return RAD_STATUS_INVALID_ARGUMENT;
+    std::lock_guard<std::mutex> lock(state().mutex);
+    ProcessRecord *process = find_process_record_locked(pid);
+    if (!process) return RAD_STATUS_NOT_FOUND;
+    *credentials = process->credentials;
+    return RAD_STATUS_OK;
+}
+
+rad_status_t rad_process_set_credentials(int32_t pid, const rad_credentials_t *credentials) {
+    if (!credentials) return RAD_STATUS_INVALID_ARGUMENT;
+    std::lock_guard<std::mutex> lock(state().mutex);
+    ProcessRecord *process = find_process_record_locked(pid);
+    if (!process) return RAD_STATUS_NOT_FOUND;
+    const rad_credentials_t current = current_credentials_locked();
+    if (current.euid != 0 && process->pid != state().current_pid) return RAD_STATUS_INVALID_ARGUMENT;
+    if (current.euid != 0 && (credentials->uid != process->credentials.uid || credentials->euid != process->credentials.uid)) {
+        return RAD_STATUS_INVALID_ARGUMENT;
+    }
+    process->credentials = *credentials;
+    return RAD_STATUS_OK;
+}
+
+rad_uid_t rad_process_getuid(void) {
+    std::lock_guard<std::mutex> lock(state().mutex);
+    return current_credentials_locked().uid;
+}
+
+rad_uid_t rad_process_geteuid(void) {
+    std::lock_guard<std::mutex> lock(state().mutex);
+    return current_credentials_locked().euid;
+}
+
+rad_gid_t rad_process_getgid(void) {
+    std::lock_guard<std::mutex> lock(state().mutex);
+    return current_credentials_locked().gid;
+}
+
+rad_gid_t rad_process_getegid(void) {
+    std::lock_guard<std::mutex> lock(state().mutex);
+    return current_credentials_locked().egid;
+}
+
+rad_status_t rad_process_setuid(rad_uid_t uid) {
+    std::lock_guard<std::mutex> lock(state().mutex);
+    ProcessRecord *process = find_process_record_locked(state().current_pid);
+    if (!process) return RAD_STATUS_NOT_FOUND;
+    if (process->credentials.euid != 0 && uid != process->credentials.uid) return RAD_STATUS_INVALID_ARGUMENT;
+    process->credentials.uid = uid;
+    process->credentials.euid = uid;
+    return RAD_STATUS_OK;
+}
+
+rad_status_t rad_process_setgid(rad_gid_t gid) {
+    std::lock_guard<std::mutex> lock(state().mutex);
+    ProcessRecord *process = find_process_record_locked(state().current_pid);
+    if (!process) return RAD_STATUS_NOT_FOUND;
+    if (process->credentials.euid != 0 && gid != process->credentials.gid) return RAD_STATUS_INVALID_ARGUMENT;
+    process->credentials.gid = gid;
+    process->credentials.egid = gid;
+    return RAD_STATUS_OK;
 }
 
 rad_status_t rad_process_arch_register(const rad_process_arch_ops_t *ops) {
@@ -2172,8 +2376,14 @@ intptr_t rad_fd_read(int32_t fd, void *buffer, size_t size) {
         return status == RAD_STATUS_OK ? static_cast<intptr_t>(done) : static_cast<intptr_t>(status);
     }
     if (object->kind == FdKind::Device) {
-        const rad_status_t status = rad_device_read(object->device, buffer, size, &done);
-        return status == RAD_STATUS_OK ? static_cast<intptr_t>(done) : static_cast<intptr_t>(status);
+        auto *tty = tty_record_from_device(object->device);
+        for (;;) {
+            const rad_status_t status = rad_device_read(object->device, buffer, size, &done);
+            if (status != RAD_STATUS_OK) return static_cast<intptr_t>(status);
+            if (done > 0 || size == 0 || !tty) return static_cast<intptr_t>(done);
+            if (object->flags & RAD_FD_NONBLOCK) return RAD_STATUS_TIMEOUT;
+            rad_task_sleep_ms(1);
+        }
     }
     if (object->kind == FdKind::Pipe) {
         if (object->pipe_write_end || !object->pipe || !buffer) return RAD_STATUS_INVALID_ARGUMENT;
@@ -2238,16 +2448,22 @@ int32_t rad_fd_fstat(int32_t fd, rad_vfs_stat_t *stat) {
     if (object->kind == FdKind::Device) {
         *stat = {};
         stat->mode = 0020000u;
+        stat->uid = 0;
+        stat->gid = 0;
         return RAD_STATUS_OK;
     }
     if (object->kind == FdKind::Pipe) {
         *stat = {};
         stat->mode = 0010000u;
+        stat->uid = 0;
+        stat->gid = 0;
         return RAD_STATUS_OK;
     }
     if (object->kind == FdKind::Socket) {
         *stat = {};
         stat->mode = 0140000u;
+        stat->uid = 0;
+        stat->gid = 0;
         return RAD_STATUS_OK;
     }
     return RAD_STATUS_NOT_SUPPORTED;
@@ -2557,8 +2773,78 @@ int32_t rad_fd_fcntl(int32_t fd, uint32_t command, uintptr_t argument) {
         return RAD_STATUS_OK;
     case RAD_FCNTL_GETFL:
         return static_cast<int32_t>(it->second.object->flags);
+    case RAD_FCNTL_SETFL:
+        it->second.object->flags = (it->second.object->flags & ~RAD_FD_NONBLOCK)
+            | (static_cast<uint32_t>(argument) & RAD_FD_NONBLOCK);
+        return RAD_STATUS_OK;
     default:
         return RAD_STATUS_NOT_SUPPORTED;
+    }
+}
+
+int16_t fd_poll_events_host(FdObject *object, int16_t requested) {
+    if (!object) return RAD_POLLNVAL;
+    int16_t ready = 0;
+    switch (object->kind) {
+    case FdKind::File:
+        if (requested & RAD_POLLIN) ready |= RAD_POLLIN;
+        if (requested & RAD_POLLOUT) ready |= RAD_POLLOUT;
+        break;
+    case FdKind::Device:
+        if (requested & RAD_POLLIN) {
+            TtyRecord *tty = tty_record_from_device(object->device);
+            if (!tty || tty_record_input_ready(tty)) ready |= RAD_POLLIN;
+        }
+        if (requested & RAD_POLLOUT) ready |= RAD_POLLOUT;
+        break;
+    case FdKind::Pipe:
+        if (!object->pipe) {
+            ready |= RAD_POLLNVAL;
+            break;
+        }
+        if (object->pipe_write_end) {
+            if ((requested & RAD_POLLOUT) && object->pipe->read_refs > 0 && object->pipe->buffer.size() < 512u) ready |= RAD_POLLOUT;
+            if (object->pipe->read_refs <= 0) ready |= RAD_POLLHUP;
+        } else {
+            if ((requested & RAD_POLLIN) && !object->pipe->buffer.empty()) ready |= RAD_POLLIN;
+            if (object->pipe->write_refs <= 0) ready |= RAD_POLLHUP;
+        }
+        break;
+    case FdKind::Socket:
+        if (!object->socket) {
+            ready |= RAD_POLLNVAL;
+            break;
+        }
+        if (requested & RAD_POLLOUT) ready |= RAD_POLLOUT;
+        if ((requested & RAD_POLLIN)
+            && (!object->socket->datagrams.empty() || !object->socket->stream_rx.empty() || !object->socket->pending_accepts.empty())) {
+            ready |= RAD_POLLIN;
+        }
+        if (object->socket->shutdown_read || object->socket->shutdown_write || object->socket->tcp_state == RAD_TCP_FIN_WAIT) ready |= RAD_POLLHUP;
+        break;
+    default:
+        ready |= RAD_POLLNVAL;
+        break;
+    }
+    return ready;
+}
+
+int32_t rad_fd_poll(rad_pollfd_t *fds, size_t count, int32_t timeout_ms) {
+    if (!fds && count) return RAD_STATUS_INVALID_ARGUMENT;
+    if (count > 64u) return RAD_STATUS_INVALID_ARGUMENT;
+    const uint64_t start = rad_time_millis();
+    for (;;) {
+        int32_t ready_count = 0;
+        for (size_t i = 0; i < count; ++i) {
+            fds[i].revents = 0;
+            if (fds[i].fd < 0) continue;
+            FdEntry *entry = lookup_fd_entry(fds[i].fd);
+            fds[i].revents = fd_poll_events_host(entry ? entry->object : nullptr, fds[i].events);
+            if (fds[i].revents) ++ready_count;
+        }
+        if (ready_count > 0 || timeout_ms == 0) return ready_count;
+        if (timeout_ms > 0 && rad_time_millis() - start >= static_cast<uint64_t>(timeout_ms)) return 0;
+        rad_sleep_us(1000u);
     }
 }
 
@@ -2591,6 +2877,12 @@ intptr_t rad_syscall_dispatch(uintptr_t number, uintptr_t arg0, uintptr_t arg1, 
     case RAD_SYSCALL_WAITPID: return rad_process_waitpid(static_cast<int32_t>(arg0), reinterpret_cast<int32_t*>(arg1), static_cast<uint32_t>(arg2));
     case RAD_SYSCALL_GETPID: return rad_process_current_pid();
     case RAD_SYSCALL_GETPPID: return rad_process_parent_pid();
+    case RAD_SYSCALL_GETUID: return static_cast<intptr_t>(rad_process_getuid());
+    case RAD_SYSCALL_GETEUID: return static_cast<intptr_t>(rad_process_geteuid());
+    case RAD_SYSCALL_GETGID: return static_cast<intptr_t>(rad_process_getgid());
+    case RAD_SYSCALL_GETEGID: return static_cast<intptr_t>(rad_process_getegid());
+    case RAD_SYSCALL_SETUID: return rad_process_setuid(static_cast<rad_uid_t>(arg0));
+    case RAD_SYSCALL_SETGID: return rad_process_setgid(static_cast<rad_gid_t>(arg0));
     case RAD_SYSCALL_DUP: return rad_fd_dup(static_cast<int32_t>(arg0));
     case RAD_SYSCALL_DUP2: return rad_fd_dup2(static_cast<int32_t>(arg0), static_cast<int32_t>(arg1));
     case RAD_SYSCALL_CHDIR: return rad_vfs_chdir(reinterpret_cast<const char*>(arg0));
@@ -2617,6 +2909,15 @@ intptr_t rad_syscall_dispatch(uintptr_t number, uintptr_t arg0, uintptr_t arg1, 
     case RAD_SYSCALL_RECVFROM: return rad_socket_recvfrom(static_cast<int32_t>(arg0), reinterpret_cast<void*>(arg1), static_cast<size_t>(arg2), static_cast<uint32_t>(arg3), reinterpret_cast<rad_sockaddr_in_t*>(arg4), reinterpret_cast<size_t*>(arg5));
     case RAD_SYSCALL_SETSOCKOPT: return rad_socket_setsockopt(static_cast<int32_t>(arg0), static_cast<int>(arg1), static_cast<int>(arg2), reinterpret_cast<const void*>(arg3), static_cast<size_t>(arg4));
     case RAD_SYSCALL_GETSOCKOPT: return rad_socket_getsockopt(static_cast<int32_t>(arg0), static_cast<int>(arg1), static_cast<int>(arg2), reinterpret_cast<void*>(arg3), reinterpret_cast<size_t*>(arg4));
+    case RAD_SYSCALL_POLL: return rad_fd_poll(reinterpret_cast<rad_pollfd_t*>(arg0), static_cast<size_t>(arg1), static_cast<int32_t>(arg2));
+    case RAD_SYSCALL_CHMOD: return rad_vfs_chmod(reinterpret_cast<const char*>(arg0), static_cast<uint32_t>(arg1));
+    case RAD_SYSCALL_LINK: return rad_vfs_link(reinterpret_cast<const char*>(arg0), reinterpret_cast<const char*>(arg1));
+    case RAD_SYSCALL_SYMLINK: return rad_vfs_symlink(reinterpret_cast<const char*>(arg0), reinterpret_cast<const char*>(arg1));
+    case RAD_SYSCALL_READLINK: return rad_vfs_readlink(reinterpret_cast<const char*>(arg0), reinterpret_cast<char*>(arg1), static_cast<size_t>(arg2));
+    case RAD_SYSCALL_FSYNC: {
+        FdObject *object = lookup_fd_object(static_cast<int32_t>(arg0));
+        return object && object->kind == FdKind::File ? rad_vfs_fsync(object->file) : RAD_STATUS_NOT_SUPPORTED;
+    }
     default: return RAD_STATUS_NOT_SUPPORTED;
     }
 }
@@ -3008,6 +3309,7 @@ rad_status_t rad_tty_set_mode(rad_tty_t tty, uint32_t mode) {
     if (!tty || !tty->record) return RAD_STATUS_INVALID_ARGUMENT;
     std::lock_guard<std::mutex> lock(state().mutex);
     tty->record->mode = mode;
+    tty_termios_from_mode(tty->record->termios, mode);
     tty->record->line_buffer.clear();
     return RAD_STATUS_OK;
 }
@@ -3017,6 +3319,30 @@ rad_status_t rad_tty_get_mode(rad_tty_t tty, uint32_t *mode) {
     std::lock_guard<std::mutex> lock(state().mutex);
     *mode = tty->record->mode;
     return RAD_STATUS_OK;
+}
+
+rad_status_t rad_tty_set_termios(rad_tty_t tty, const rad_tty_termios_t *termios) {
+    if (!tty || !tty->record || !termios) return RAD_STATUS_INVALID_ARGUMENT;
+    std::lock_guard<std::mutex> lock(state().mutex);
+    tty->record->termios = *termios;
+    if (tty->record->termios.input_speed == 0) tty->record->termios.input_speed = TtySpeedDefault;
+    if (tty->record->termios.output_speed == 0) tty->record->termios.output_speed = TtySpeedDefault;
+    tty->record->mode = tty_mode_from_termios(tty->record->termios);
+    tty->record->line_buffer.clear();
+    return RAD_STATUS_OK;
+}
+
+rad_status_t rad_tty_get_termios(rad_tty_t tty, rad_tty_termios_t *termios) {
+    if (!tty || !tty->record || !termios) return RAD_STATUS_INVALID_ARGUMENT;
+    std::lock_guard<std::mutex> lock(state().mutex);
+    *termios = tty->record->termios;
+    return RAD_STATUS_OK;
+}
+
+rad_status_t rad_tty_flush(rad_tty_t tty, uint32_t queues) {
+    if (!tty || !tty->record) return RAD_STATUS_INVALID_ARGUMENT;
+    std::lock_guard<std::mutex> lock(state().mutex);
+    return tty_flush_record_locked(tty->record, queues);
 }
 
 rad_status_t rad_pty_open_pair(const char *name, rad_pty_t *pty) {

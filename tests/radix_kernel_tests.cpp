@@ -1093,6 +1093,22 @@ bool testPosixSyscallCore() {
             reinterpret_cast<uintptr_t>(&stat), 0, 0, 0, 0) == RAD_STATUS_OK
             && stat.size == sizeof(payload) - 1,
         "syscall stat should report file size");
+    ok &= expect(rad_syscall_dispatch(RAD_SYSCALL_CHMOD, reinterpret_cast<uintptr_t>("/posix/sys.txt"),
+            0755, 0, 0, 0, 0) == RAD_STATUS_OK,
+        "syscall chmod should update VFS permissions");
+    ok &= expect(rad_syscall_dispatch(RAD_SYSCALL_LINK, reinterpret_cast<uintptr_t>("/posix/sys.txt"),
+            reinterpret_cast<uintptr_t>("/posix/sys-hardlink.txt"), 0, 0, 0, 0) == RAD_STATUS_OK,
+        "syscall link should create a hard link");
+    ok &= expect(rad_syscall_dispatch(RAD_SYSCALL_SYMLINK, reinterpret_cast<uintptr_t>("/posix/sys.txt"),
+            reinterpret_cast<uintptr_t>("/posix/sys-symlink.txt"), 0, 0, 0, 0) == RAD_STATUS_OK,
+        "syscall symlink should create a symbolic link");
+    char linkTarget[128]{};
+    ok &= expect(rad_syscall_dispatch(RAD_SYSCALL_READLINK, reinterpret_cast<uintptr_t>("/posix/sys-symlink.txt"),
+            reinterpret_cast<uintptr_t>(linkTarget), sizeof(linkTarget), 0, 0, 0) == RAD_STATUS_OK
+            && std::string(linkTarget) == "/posix/sys.txt",
+        "syscall readlink should return symbolic link target");
+    ok &= expect(rad_syscall_dispatch(RAD_SYSCALL_FSYNC, fd, 0, 0, 0, 0, 0) == RAD_STATUS_OK,
+        "syscall fsync should flush file fds");
     ok &= expect(rad_syscall_dispatch(RAD_SYSCALL_FSTAT, fixed, reinterpret_cast<uintptr_t>(&stat),
             0, 0, 0, 0) == RAD_STATUS_NOT_SUPPORTED,
         "first-pass fstat should reject VFS fds without stored path");
@@ -1112,9 +1128,22 @@ bool testPosixSyscallCore() {
             0, 0, 0, 0, 0) == RAD_STATUS_OK
             && pipefd[0] >= 3 && pipefd[1] >= 3 && pipefd[0] != pipefd[1],
         "syscall pipe should allocate readable and writable fds");
+    rad_pollfd_t pollfds[2]{{pipefd[0], RAD_POLLIN, 0}, {pipefd[1], RAD_POLLOUT, 0}};
+    ok &= expect(rad_syscall_dispatch(RAD_SYSCALL_POLL, reinterpret_cast<uintptr_t>(pollfds),
+            2, 0, 0, 0, 0) == 1
+            && (pollfds[1].revents & RAD_POLLOUT)
+            && pollfds[0].revents == 0,
+        "poll should report an empty pipe write end ready");
     const char pipePayload[] = "pipe-data";
     ok &= expect(rad_fd_write(pipefd[1], pipePayload, sizeof(pipePayload) - 1) == static_cast<intptr_t>(sizeof(pipePayload) - 1),
         "pipe write should accept payload");
+    pollfds[0].revents = 0;
+    pollfds[1].revents = 0;
+    ok &= expect(rad_syscall_dispatch(RAD_SYSCALL_POLL, reinterpret_cast<uintptr_t>(pollfds),
+            2, 0, 0, 0, 0) == 2
+            && (pollfds[0].revents & RAD_POLLIN)
+            && (pollfds[1].revents & RAD_POLLOUT),
+        "poll should report pipe read and write readiness after write");
     char pipeBuffer[32]{};
     ok &= expect(rad_fd_read(pipefd[0], pipeBuffer, sizeof(pipeBuffer)) == static_cast<intptr_t>(sizeof(pipePayload) - 1),
         "pipe read should return payload");

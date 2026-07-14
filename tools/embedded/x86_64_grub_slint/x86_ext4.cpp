@@ -967,6 +967,8 @@ rad_status_t ext4_stat(void*, const char *path, rad_vfs_stat_t *stat) {
     stat->size = inode_size(inode);
     stat->is_directory = inode_is_dir(inode);
     stat->mode = inode.mode;
+    stat->uid = inode.uid;
+    stat->gid = inode.gid;
     stat->mtime_millis = static_cast<uint64_t>(inode.mtime) * 1000u;
     return RAD_STATUS_OK;
 }
@@ -999,6 +1001,8 @@ rad_status_t ext4_list(void*, const char *path, rad_vfs_list_callback_t callback
                     stat.size = inode_size(child);
                     stat.is_directory = inode_is_dir(child);
                     stat.mode = child.mode;
+                    stat.uid = child.uid;
+                    stat.gid = child.gid;
                     stat.mtime_millis = static_cast<uint64_t>(child.mtime) * 1000u;
                 }
                 if (!callback(name, &stat, callback_context)) return RAD_STATUS_OK;

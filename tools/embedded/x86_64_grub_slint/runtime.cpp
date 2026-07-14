@@ -15,6 +15,14 @@ struct alignas(64) HeapBlock {
 
 static_assert(sizeof(HeapBlock) == 64u);
 
+struct AllocationHeader {
+    HeapBlock *block;
+    uint32_t magic;
+    uint32_t reserved;
+};
+
+constexpr uint32_t AllocationMagic = 0x52414441u;
+
 alignas(64) uint8_t g_heap[64u * 1024u * 1024u];
 HeapBlock *g_heap_head = nullptr;
 volatile int g_heap_lock = 0;
@@ -36,6 +44,10 @@ void heap_unlock(void) {
 
 size_t align_up_size(size_t value, size_t alignment) {
     return (value + alignment - 1u) & ~(alignment - 1u);
+}
+
+uintptr_t align_up_uintptr(uintptr_t value, size_t alignment) {
+    return (value + alignment - 1u) & ~(static_cast<uintptr_t>(alignment) - 1u);
 }
 
 void heap_init(void) {
@@ -70,16 +82,22 @@ void coalesce_heap(void) {
 void *allocate_aligned(size_t size, size_t alignment) {
     if (size == 0) size = 1;
     if (alignment < 16u) alignment = 16u;
-    if ((alignment & (alignment - 1u)) != 0 || alignment > 64u) return nullptr;
-    size = align_up_size(size, 64u);
+    if ((alignment & (alignment - 1u)) != 0 || alignment > 4096u) return nullptr;
+    const size_t total = align_up_size(size + alignment - 1u + sizeof(AllocationHeader), 64u);
     heap_lock();
     heap_init();
     for (HeapBlock *block = g_heap_head; block; block = block->next) {
-        if (!block->free || block->size < size) continue;
-        split_block(block, size);
+        if (!block->free || block->size < total) continue;
+        split_block(block, total);
         block->free = 0;
+        const uintptr_t raw = reinterpret_cast<uintptr_t>(block + 1);
+        const uintptr_t user = align_up_uintptr(raw + sizeof(AllocationHeader), alignment);
+        auto *header = reinterpret_cast<AllocationHeader*>(user - sizeof(AllocationHeader));
+        header->block = block;
+        header->magic = AllocationMagic;
+        header->reserved = 0;
         heap_unlock();
-        return block + 1;
+        return reinterpret_cast<void*>(user);
     }
     heap_unlock();
     return nullptr;
@@ -307,12 +325,19 @@ void *malloc(size_t size) {
 
 void free(void *pointer) {
     if (!pointer) return;
-    auto *block = reinterpret_cast<HeapBlock*>(pointer) - 1;
+    auto *header = reinterpret_cast<AllocationHeader*>(static_cast<uint8_t*>(pointer) - sizeof(AllocationHeader));
+    if (header->magic != AllocationMagic) return;
+    auto *block = header->block;
     const uintptr_t block_addr = reinterpret_cast<uintptr_t>(block);
     const uintptr_t heap_begin = reinterpret_cast<uintptr_t>(g_heap);
     const uintptr_t heap_end = heap_begin + sizeof(g_heap);
     if (block_addr < heap_begin || block_addr >= heap_end) return;
     heap_lock();
+    if (block->free) {
+        heap_unlock();
+        return;
+    }
+    header->magic = 0;
     block->free = 1;
     coalesce_heap();
     heap_unlock();

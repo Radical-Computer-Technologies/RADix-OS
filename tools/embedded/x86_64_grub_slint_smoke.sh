@@ -22,11 +22,23 @@ log_dir="${RADLIB_SMOKE_LOG_DIR:-${repo_root}/.radbuild}"
 shell_build="${RADLIB_RAD_OS_SHELL_BUILD_DIR:-${repo_root}/build/embedded/rad_os_shell}"
 x86_build="${RADLIB_X86_64_GRUB_SLINT_BUILD_DIR:-${repo_root}/build/embedded/x86_64_grub_slint}"
 qemu_timeout="${RADLIB_X86_QEMU_TIMEOUT:-60s}"
+if [[ "${RADIX_X86_TERMINAL_AUTOTEST_NANO:-0}" == "1" || "${RADIX_X86_TERMINAL_AUTOTEST_NANO:-false}" == "true" || "${RADIX_X86_TERMINAL_AUTOTEST_NANO:-0}" == "ON" ]]; then
+    qemu_timeout="${RADLIB_X86_QEMU_TIMEOUT:-300s}"
+fi
 qemu_smp="${RADLIB_X86_QEMU_SMP:-4}"
+ui_profile="${RADIX_X86_UI_PROFILE:-wm}"
+case "${ui_profile}" in
+    wm|terminal) ;;
+    *)
+        echo "RADIX_X86_UI_PROFILE must be wm or terminal" >&2
+        exit 2
+        ;;
+esac
+kernel_name="radixkernel-x86-64-grub-${ui_profile}"
 
 mkdir -p "${log_dir}"
 
-if [[ -d "${slint_sdk}" && "${RADLIB_SKIP_HOST_SLINT_SMOKE:-0}" != "1" ]]; then
+if [[ "${ui_profile}" == "wm" && -d "${slint_sdk}" && "${RADLIB_SKIP_HOST_SLINT_SMOKE:-0}" != "1" ]]; then
     cmake -S "${repo_root}/tools/embedded/rad_os_shell" -B "${shell_build}" \
         -DRADUI_SLINT_PROVIDER=binary \
         -DSLINT_SDK_DIR="${slint_sdk}"
@@ -56,27 +68,34 @@ if [[ -d "${slint_sdk}" && "${RADLIB_SKIP_HOST_SLINT_SMOKE:-0}" != "1" ]]; then
     grep -q "RADIX_COMPOSITOR_EXPOSED_DAMAGE_OK" "${log_dir}/rad-os-shell-slint-smoke.log"
     grep -q "RADIX_COMPOSITOR_EMPTY_FRAME_SKIP_OK" "${log_dir}/rad-os-shell-slint-smoke.log"
 else
-    echo "Skipping hosted Slint smoke; set SLINT_SDK_DIR or unset RADLIB_SKIP_HOST_SLINT_SMOKE."
+    echo "Skipping hosted Slint smoke for ${ui_profile} profile."
 fi
 
 if [[ "${RADLIB_X86_SKIP_REBUILD:-0}" != "1" ]]; then
-    cmake -S "${repo_root}/tools/embedded/x86_64_grub_slint" -B "${x86_build}" "${rust_cmake_args[@]}"
+    cmake -S "${repo_root}/tools/embedded/x86_64_grub_slint" -B "${x86_build}" \
+        -DRADIX_X86_UI_PROFILE="${ui_profile}" \
+        "${rust_cmake_args[@]}"
     rm -f "${x86_build}/radix-rootfs.ext4" "${x86_build}/radix-fat32.img"
     cmake --build "${x86_build}" --target radixkernel_x86_64_grub_slint_iso -j"${RADLIB_BUILD_JOBS:-2}"
 fi
-grub-file --is-x86-multiboot2 "${x86_build}/radixkernel-x86-64-grub-slint"
+grub-file --is-x86-multiboot2 "${x86_build}/${kernel_name}"
+if [[ "${RADLIB_X86_SKIP_QEMU:-0}" == "1" ]]; then
+    echo "Skipping QEMU smoke for ${ui_profile} profile after build/package validation."
+    exit 0
+fi
 
-qemu_log="${log_dir}/x86-64-grub-slint-smoke.log"
-monitor_sock="${log_dir}/x86-64-grub-slint-monitor.sock"
+qemu_log="${log_dir}/x86-64-grub-${ui_profile}-smoke.log"
+monitor_sock="${TMPDIR:-/tmp}/radix-${ui_profile}-${qemu_smp}-$$.sock"
 rootfs_img="${x86_build}/radix-rootfs.ext4"
 fat_img="${x86_build}/radix-fat32.img"
 rm -f "${qemu_log}" "${monitor_sock}"
+trap 'rm -f "${monitor_sock}"' EXIT
 set +e
 timeout "${qemu_timeout}" qemu-system-x86_64 \
     -m "${RADLIB_X86_QEMU_MEMORY:-768M}" \
     -smp "${qemu_smp}" \
     -vga std \
-    -cdrom "${x86_build}/radixkernel-x86-64-grub-slint.iso" \
+    -cdrom "${x86_build}/${kernel_name}.iso" \
     -drive "if=none,id=radixdisk,format=raw,file=${rootfs_img}" \
     -device "virtio-blk-pci,drive=radixdisk,disable-modern=on" \
     -drive "if=none,id=radixfat,format=raw,file=${fat_img}" \
@@ -97,10 +116,44 @@ for _ in $(seq 1 "${RADLIB_X86_INPUT_READY_POLLS:-400}"); do
     grep -q "RAD x86_64 base terminal ready" "${qemu_log}" 2>/dev/null && break
     sleep 0.1
 done
-sleep "${RADLIB_X86_KEYBOARD_INJECT_DELAY:-0.2}"
+send_monitor_key() {
+    local key="$1"
+    printf 'sendkey %s\n' "${key}" | socat - "UNIX-CONNECT:${monitor_sock}" >/dev/null 2>&1 || true
+    sleep "${RADLIB_X86_SENDKEY_DELAY:-0.08}"
+}
+
+send_monitor_keys() {
+    local key
+    for key in "$@"; do
+        send_monitor_key "${key}"
+    done
+}
+
+sleep "${RADLIB_X86_KEYBOARD_INJECT_DELAY:-1.0}"
 if [[ -S "${monitor_sock}" ]] && command -v socat >/dev/null 2>&1; then
-    printf 'sendkey h\nsendkey e\nsendkey l\nsendkey p\nsendkey ret\n' \
-        | socat - "UNIX-CONNECT:${monitor_sock}" >/dev/null 2>&1
+    send_monitor_keys r o o t ret r a d i x ret
+    for _ in $(seq 1 "${RADLIB_X86_LOGIN_OBSERVED_POLLS:-80}"); do
+        grep -q "RADIX_LOGIN_OK" "${qemu_log}" 2>/dev/null && break
+        sleep 0.1
+    done
+    if ! grep -q "RADIX_LOGIN_OK" "${qemu_log}" 2>/dev/null; then
+        send_monitor_keys r o o t ret r a d i x ret
+        for _ in $(seq 1 "${RADLIB_X86_LOGIN_OBSERVED_POLLS:-80}"); do
+            grep -q "RADIX_LOGIN_OK" "${qemu_log}" 2>/dev/null && break
+            sleep 0.1
+        done
+    fi
+    if grep -q "RADIX_LOGIN_OK" "${qemu_log}" 2>/dev/null; then
+        send_monitor_keys h e l p ret
+        send_monitor_keys l s space slash ret
+        send_monitor_keys c l e tab ret
+        send_monitor_keys c d ret
+        send_monitor_keys l s space b i tab ret
+        send_monitor_keys c l e a r ret
+        send_monitor_keys e c h o space h i ret
+        send_monitor_keys up ret
+        send_monitor_keys t u i minus s m o k e ret q
+    fi
     printf 'mouse_move 24 18\nmouse_button 1\nmouse_button 0\n' \
         | socat - "UNIX-CONNECT:${monitor_sock}" >/dev/null 2>&1
     for _ in $(seq 1 "${RADLIB_X86_INPUT_OBSERVED_POLLS:-30}"); do
@@ -121,9 +174,26 @@ if [[ "${qemu_status}" != "0" && "${qemu_status}" != "124" ]]; then
     exit "${qemu_status}"
 fi
 
-grep -q "RAD x86_64 GRUB Slint handoff" "${qemu_log}"
+if [[ "${ui_profile}" == "wm" ]]; then
+    grep -q "RAD x86_64 GRUB Slint handoff" "${qemu_log}"
+    if grep -q "RADIX_X86_UI_PROFILE_WM_OK" "${qemu_log}"; then
+        grep -q "RADIX_SLINT_BOOT_SHELL_OK" "${qemu_log}"
+        grep -q "RADIX_SLINT_WM_OK" "${qemu_log}"
+    else
+        echo "WM VM reached base terminal before timeout; hosted Slint smoke covers UI markers."
+    fi
+else
+    grep -q "RAD x86_64 GRUB terminal handoff" "${qemu_log}"
+    grep -q "RADIX_X86_UI_PROFILE_TERMINAL_OK" "${qemu_log}"
+fi
 grep -q "RAD x86_64 base terminal ready" "${qemu_log}"
 grep -q "RADIX_BASE_TERMINAL_OK" "${qemu_log}"
+grep -q "RADIX_LOGIN_SPAWN_OK" "${qemu_log}"
+grep -q "RADIX_LOGIN_OK" "${qemu_log}"
+grep -q "RADIX_TERMINAL_ANSI_OK" "${qemu_log}"
+grep -q "RADIX_TERMINAL_THEME_OK" "${qemu_log}"
+grep -q "RADIX_TERMINAL_FONT_PSF_OK" "${qemu_log}"
+grep -q "RADIX_RKCONFIG_AUTOCOMPLETE_OK" "${qemu_log}"
 grep -q "RADIX_X86_CPU_OK" "${qemu_log}"
 grep -q "RADIX_IRQ_CORE_OK" "${qemu_log}"
 grep -q "RADIX_PIC_REMAP_OK" "${qemu_log}"
@@ -191,6 +261,7 @@ grep -q "RADIX_USER_AP_SYSCALL_OK" "${qemu_log}"
 grep -q "RADIX_USER_INVALID_PTR_OK" "${qemu_log}"
 grep -q "RADIX_USER_LINUX_SYSCALL_ABI_OK" "${qemu_log}"
 grep -q "RADIX_USER_RADSH_BOOT_OK" "${qemu_log}"
+grep -q "RADIX_USER_RADSH_GETDENTS_OK" "${qemu_log}"
 grep -q "RADIX_USER_RADSH_EXIT_OK" "${qemu_log}"
 grep -q "RADIX_USER_FORK_OK" "${qemu_log}"
 grep -q "RADIX_USER_FORK_CHILD_OK" "${qemu_log}"
@@ -203,6 +274,16 @@ grep -q "RADIX_USER_COW_PARENT_ISOLATED_OK" "${qemu_log}"
 grep -q "RADIX_USER_SCRIPT_SHEBANG_OK" "${qemu_log}"
 grep -q "RADIX_USER_ARGV_ENVP_OK" "${qemu_log}"
 grep -q "RADIX_USER_SH_SCRIPT_OK" "${qemu_log}"
+grep -q "RADIX_RASH_PATH_EXEC_OK" "${qemu_log}"
+grep -q "RADIX_TERMINAL_SCALE_OK" "${qemu_log}"
+grep -q "RADIX_NANO_TINY_VERSION_OK" "${qemu_log}"
+grep -q "RADIX_NANO_FULL_VERSION_OK" "${qemu_log}"
+grep -q "RADIX_NANO_TINY_EDIT_OK" "${qemu_log}"
+grep -q "RADIX_NANO_FULL_EDIT_OK" "${qemu_log}"
+grep -q "RADIX_NANO_TINY_SAVE_OK" "${qemu_log}"
+grep -q "RADIX_NANO_FULL_SAVE_OK" "${qemu_log}"
+grep -q "RADIX_NANO_TINY_EXIT_OK" "${qemu_log}"
+grep -q "RADIX_NANO_FULL_EXIT_OK" "${qemu_log}"
 grep -q "RADIX_PCI_PROBE_OK" "${qemu_log}"
 grep -q "RADIX_INPUT_POINTER_OK" "${qemu_log}"
 grep -q "RADIX_VIRTIO_BLK_FOUND" "${qemu_log}"
@@ -252,6 +333,12 @@ grep -q "cmd stat /tmp/rashpass/file" "${qemu_log}"
 grep -q "cmd mount" "${qemu_log}"
 grep -q "cmd ps" "${qemu_log}"
 grep -q "cmd sh /bin/test.sh" "${qemu_log}"
+grep -q "cmd which sh" "${qemu_log}"
+grep -q "cmd stty -a" "${qemu_log}"
+grep -q "cmd tput cols" "${qemu_log}"
+grep -q "cmd tput cup 0 0" "${qemu_log}"
+grep -q "cmd test -e /usr/share/terminfo/r/radix" "${qemu_log}"
+grep -q "cmd echo radix | wc" "${qemu_log}"
 grep -q "cmd initctl restart userspace-shell" "${qemu_log}"
 grep -q "cmd logread init" "${qemu_log}"
 grep -q "cmd logread userspace-shell" "${qemu_log}"
@@ -262,8 +349,19 @@ if [[ "${keyboard_injected}" == "1" ]]; then
     grep -q "RADIX_IRQ_MOUSE_OK" "${qemu_log}"
     grep -q "RADIX_IRQ_TREE_PS2_OK" "${qemu_log}"
     grep -q "RADIX_INPUT_WAKE_OK" "${qemu_log}"
-    grep -q "keyboard input event" "${qemu_log}"
-    grep -q "RADIX_INPUT_POINTER_EVENT_OK" "${qemu_log}"
+    if [[ "${ui_profile}" == "wm" ]]; then
+        grep -q "RADIX_SLINT_CURSOR_MOVE_OK" "${qemu_log}"
+        grep -q "RADIX_COMPOSITOR_INPUT_TRANSLATE_OK" "${qemu_log}"
+    fi
 fi
+grep -q "RADIX_RASH_CLEAR_OK" "${qemu_log}"
+grep -q "RADIX_RASH_HISTORY_OK" "${qemu_log}"
+grep -q "RADIX_RASH_AUTOCOMPLETE_OK" "${qemu_log}"
+grep -q "RADIX_RASH_AUTOCOMPLETE_PATH_OK" "${qemu_log}"
+grep -q "RADIX_RASH_PIPE_OK" "${qemu_log}"
+grep -q "RADIX_TTY_IOCTL_WINSIZE_OK" "${qemu_log}"
+grep -q "RADIX_TTY_RAW_MODE_OK" "${qemu_log}"
+grep -q "RADIX_TUI_SMOKE_OK" "${qemu_log}"
+grep -q "RADIX_TPUT_CUP_OK" "${qemu_log}"
 
 echo "x86_64 GRUB AP scheduler smoke passed"

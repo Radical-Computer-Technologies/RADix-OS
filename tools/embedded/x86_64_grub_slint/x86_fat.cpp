@@ -435,6 +435,8 @@ rad_status_t fat_stat(void*, const char *path, rad_vfs_stat_t *stat) {
     if (!path || !*path || strcmp(path, "/") == 0) {
         stat->is_directory = 1;
         stat->mode = 0040755u;
+        stat->uid = 0;
+        stat->gid = 0;
         stat->size = 0;
         stat->mtime_millis = 0;
         return RAD_STATUS_OK;
@@ -446,6 +448,8 @@ rad_status_t fat_stat(void*, const char *path, rad_vfs_stat_t *stat) {
     if (status != RAD_STATUS_OK) return status;
     stat->is_directory = (entry.attr & AttrDirectory) != 0;
     stat->mode = stat->is_directory ? 0040755u : 0100644u;
+    stat->uid = 0;
+    stat->gid = 0;
     stat->size = entry.size;
     stat->mtime_millis = 0;
     return RAD_STATUS_OK;
@@ -483,6 +487,8 @@ rad_status_t fat_list(void*, const char *path, rad_vfs_list_callback_t callback,
         rad_vfs_stat_t stat{};
         stat.is_directory = (entry.attr & AttrDirectory) != 0;
         stat.mode = stat.is_directory ? 0040755u : 0100644u;
+        stat.uid = 0;
+        stat.gid = 0;
         stat.size = entry.size;
         if (!callback(name, &stat, callback_context)) break;
     }

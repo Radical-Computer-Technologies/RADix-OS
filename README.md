@@ -9,7 +9,7 @@ performance with a POSIX-like feature set.
   `<radixkernel/...>` headers, host simulator backend, and embedded/platform
   backends.
 - `tools/embedded/` contains the current bootable targets and smoke scripts,
-  including the x86_64 GRUB + Slint VM target.
+  including x86_64 GRUB terminal and RADCompositor/Slint VM profiles.
 - `tests/` contains host-side RADix kernel tests.
 
 RADLib is now an optional sibling dependency for RADLib/Slint UI integration.
@@ -25,27 +25,39 @@ cmake --build build-host -j2
 ./build-host/tests/RADixKernelTests
 ```
 
-x86_64 GRUB + Slint ISO smoke:
+x86_64 GRUB terminal ISO smoke:
 
 ```bash
-tools/embedded/x86_64_grub_slint_smoke.sh
+RADIX_X86_UI_PROFILE=terminal tools/embedded/x86_64_grub_slint_smoke.sh
 ```
 
-Canonical RadBuild OS build:
+x86_64 GRUB RADCompositor/Slint ISO smoke:
+
+```bash
+RADIX_X86_UI_PROFILE=wm tools/embedded/x86_64_grub_slint_smoke.sh
+```
+
+Canonical RadBuild OS builds:
 
 ```bash
 ../RadBuild/radbuild/.tools/radbuild.py build os --settings settings.json --json-events
+../RadBuild/radbuild/.tools/radbuild.py build os --settings settings.terminal.json --json-events
+../RadBuild/radbuild/.tools/radbuild.py build os --settings settings.wm.json --json-events
 ```
 
-RadBuild 0.2.1 runs the x86_64 GRUB + Slint smoke for the configured SMP
-counts, stages the ISO, kernel, ext4 rootfs, FAT32 image, serial logs, and
-`SHA256SUMS` under `artifacts/radix/x86_64-grub-slint/`, and writes the
-machine-readable artifact manifest under `.radmeta/artifacts/`.
+RadBuild 0.2.1 treats each JSON as an OS build configuration. The terminal
+profile excludes Slint/RADCompositor chunks and runs the terminal VM smoke; the
+WM profile includes the Slint-backed RADCompositor shell, runs the hosted UI
+smoke, and packages the VM image without making the current Slint VM path a
+release gate.
+Each profile has its own build directory, artifact directory, writable ext4/FAT
+images, serial logs, and `SHA256SUMS`.
 
-The ISO is generated at:
+The profile ISOs are generated at:
 
 ```text
-build/embedded/x86_64_grub_slint/radixkernel-x86-64-grub-slint.iso
+build/embedded/x86_64_grub_terminal/radixkernel-x86-64-grub-terminal.iso
+build/embedded/x86_64_grub_wm/radixkernel-x86-64-grub-wm.iso
 ```
 
 ## API Documentation

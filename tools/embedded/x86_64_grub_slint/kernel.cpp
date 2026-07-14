@@ -8,7 +8,10 @@
 #include "x86_storage.h"
 #include "x86_user.h"
 #include "x86_vm.h"
+#include "rkconfig.h"
+#if defined(RADIX_X86_UI_PROFILE_WM)
 #include "slint_shell.h"
+#endif
 
 #include <stddef.h>
 #include <stdint.h>
@@ -110,6 +113,44 @@ char g_transcript[8192];
 size_t g_transcript_size = 0;
 X86FramebufferContext g_x86_framebuffer_context{};
 int g_terminal_dirty = 1;
+int g_user_terminal_active = 0;
+constexpr uint32_t TerminalMaxCols = 180u;
+constexpr uint32_t TerminalMaxRows = 90u;
+struct TerminalTheme {
+    uint32_t foreground;
+    uint32_t background;
+    uint32_t cursor;
+    uint32_t normal[8];
+    uint32_t bright[8];
+};
+TerminalTheme g_terminal_theme{
+    0x00d8f7eeu,
+    0x00090716u,
+    0x00f8fafcu,
+    {0x00231f33u,0x00ef4444u,0x0022c55eu,0x00eab308u,0x003b82f6u,0x008b5cf6u,0x0006b6d4u,0x00e5e7ebu},
+    {0x006b7280u,0x00f87171u,0x004ade80u,0x00facc15u,0x0060a5fau,0x00a78bfau,0x0022d3eeu,0x00ffffffu}
+};
+struct TerminalCell {
+    char ch;
+    uint32_t fg;
+    uint32_t bg;
+};
+struct TerminalRenderState {
+    TerminalCell cells[TerminalMaxRows][TerminalMaxCols]{};
+    uint32_t cols = 0;
+    uint32_t rows = 0;
+    uint32_t scale = 0;
+    uint32_t cursor_x = 0;
+    uint32_t cursor_y = 0;
+    uint32_t fg = 0x00d8f7eeu;
+    uint32_t bg = 0x00090716u;
+    char ansi[32]{};
+    size_t ansi_size = 0;
+    int ansi_active = 0;
+    int initialized = 0;
+};
+TerminalRenderState g_terminal_render_state{};
+void terminal_apply_sgr(const char *seq, size_t size, uint32_t default_fg, uint32_t default_bg, uint32_t *foreground, uint32_t *background);
 int g_keyboard_input_seen = 0;
 int g_pointer_input_seen = 0;
 int g_module_probe_inits = 0;
@@ -210,8 +251,190 @@ void compact_transcript_for(size_t incoming_size) {
     g_transcript[g_transcript_size] = '\0';
 }
 
+void terminal_model_clear_line(uint32_t row) {
+    if (row >= TerminalMaxRows) return;
+    for (uint32_t x = 0; x < TerminalMaxCols; ++x) {
+        g_terminal_render_state.cells[row][x] = {' ', g_terminal_render_state.fg, g_terminal_render_state.bg};
+    }
+}
+
+void terminal_model_init(void) {
+    if (g_terminal_render_state.initialized) return;
+    g_terminal_render_state.cols = TerminalMaxCols;
+    g_terminal_render_state.rows = TerminalMaxRows;
+    g_terminal_render_state.cursor_x = 0;
+    g_terminal_render_state.cursor_y = 0;
+    g_terminal_render_state.fg = g_terminal_theme.foreground;
+    g_terminal_render_state.bg = g_terminal_theme.background;
+    g_terminal_render_state.ansi_size = 0;
+    g_terminal_render_state.ansi_active = 0;
+    g_terminal_render_state.initialized = 1;
+    for (uint32_t y = 0; y < TerminalMaxRows; ++y) terminal_model_clear_line(y);
+}
+
+void terminal_model_reset(void) {
+    g_terminal_render_state.initialized = 0;
+    terminal_model_init();
+    g_terminal_dirty = 1;
+}
+
+void terminal_model_scroll(void) {
+    terminal_model_init();
+    memmove(&g_terminal_render_state.cells[0][0], &g_terminal_render_state.cells[1][0],
+        sizeof(g_terminal_render_state.cells[0]) * (TerminalMaxRows - 1u));
+    terminal_model_clear_line(TerminalMaxRows - 1u);
+    if (g_terminal_render_state.cursor_y > 0) --g_terminal_render_state.cursor_y;
+}
+
+void terminal_model_newline(void) {
+    terminal_model_init();
+    g_terminal_render_state.cursor_x = 0;
+    ++g_terminal_render_state.cursor_y;
+    if (g_terminal_render_state.cursor_y >= TerminalMaxRows) terminal_model_scroll();
+}
+
+void terminal_model_put(char ch) {
+    terminal_model_init();
+    if (g_terminal_render_state.cursor_x >= TerminalMaxCols) terminal_model_newline();
+    TerminalCell& cell = g_terminal_render_state.cells[g_terminal_render_state.cursor_y][g_terminal_render_state.cursor_x];
+    cell.ch = ch;
+    cell.fg = g_terminal_render_state.fg;
+    cell.bg = g_terminal_render_state.bg;
+    ++g_terminal_render_state.cursor_x;
+    if (g_terminal_render_state.cursor_x >= TerminalMaxCols) terminal_model_newline();
+}
+
+void terminal_model_apply_sgr_sequence(void) {
+    uint32_t fg = g_terminal_render_state.fg;
+    uint32_t bg = g_terminal_render_state.bg;
+    terminal_apply_sgr(g_terminal_render_state.ansi, g_terminal_render_state.ansi_size,
+        g_terminal_theme.foreground, g_terminal_theme.background, &fg, &bg);
+    g_terminal_render_state.fg = fg;
+    g_terminal_render_state.bg = bg;
+}
+
+int terminal_csi_param(size_t index, int fallback) {
+    int current = 0;
+    int have = 0;
+    size_t param = 0;
+    for (size_t i = 0; i <= g_terminal_render_state.ansi_size; ++i) {
+        const char ch = i < g_terminal_render_state.ansi_size ? g_terminal_render_state.ansi[i] : ';';
+        if (ch >= '0' && ch <= '9') {
+            current = current * 10 + (ch - '0');
+            have = 1;
+            continue;
+        }
+        if (ch == '[' || ch == '?' || ch == ' ') continue;
+        if (ch == ';' || i == g_terminal_render_state.ansi_size) {
+            if (param == index) return have ? current : fallback;
+            current = 0;
+            have = 0;
+            ++param;
+        }
+    }
+    return fallback;
+}
+
+void terminal_model_clear_screen(void) {
+    for (uint32_t y = 0; y < TerminalMaxRows; ++y) terminal_model_clear_line(y);
+    g_terminal_render_state.cursor_x = 0;
+    g_terminal_render_state.cursor_y = 0;
+}
+
+void terminal_model_clear_current_line(void) {
+    terminal_model_clear_line(g_terminal_render_state.cursor_y);
+    g_terminal_render_state.cursor_x = 0;
+}
+
+void terminal_model_apply_csi(char final) {
+    if (final == 'm') {
+        terminal_model_apply_sgr_sequence();
+    } else if (final == 'J') {
+        const int mode = terminal_csi_param(0, 0);
+        if (mode == 2 || mode == 3) terminal_model_clear_screen();
+    } else if (final == 'K') {
+        terminal_model_clear_current_line();
+    } else if (final == 'H' || final == 'f') {
+        const int row = terminal_csi_param(0, 1);
+        const int col = terminal_csi_param(1, 1);
+        g_terminal_render_state.cursor_y = row > 0 ? static_cast<uint32_t>(row - 1) : 0;
+        g_terminal_render_state.cursor_x = col > 0 ? static_cast<uint32_t>(col - 1) : 0;
+        if (g_terminal_render_state.cursor_y >= TerminalMaxRows) g_terminal_render_state.cursor_y = TerminalMaxRows - 1u;
+        if (g_terminal_render_state.cursor_x >= TerminalMaxCols) g_terminal_render_state.cursor_x = TerminalMaxCols - 1u;
+    } else if (final == 'C') {
+        uint32_t step = static_cast<uint32_t>(terminal_csi_param(0, 1));
+        g_terminal_render_state.cursor_x = g_terminal_render_state.cursor_x + step < TerminalMaxCols
+            ? g_terminal_render_state.cursor_x + step
+            : TerminalMaxCols - 1u;
+    } else if (final == 'D') {
+        uint32_t step = static_cast<uint32_t>(terminal_csi_param(0, 1));
+        g_terminal_render_state.cursor_x = step < g_terminal_render_state.cursor_x ? g_terminal_render_state.cursor_x - step : 0u;
+    } else if (final == 'A') {
+        uint32_t step = static_cast<uint32_t>(terminal_csi_param(0, 1));
+        g_terminal_render_state.cursor_y = step < g_terminal_render_state.cursor_y ? g_terminal_render_state.cursor_y - step : 0u;
+    } else if (final == 'B') {
+        uint32_t step = static_cast<uint32_t>(terminal_csi_param(0, 1));
+        g_terminal_render_state.cursor_y = g_terminal_render_state.cursor_y + step < TerminalMaxRows
+            ? g_terminal_render_state.cursor_y + step
+            : TerminalMaxRows - 1u;
+    }
+}
+
+void terminal_model_feed_char(char ch) {
+    terminal_model_init();
+    if (g_terminal_render_state.ansi_active) {
+        if (ch != '[' && ch >= '@' && ch <= '~') {
+            if (g_terminal_render_state.ansi_size + 1 < sizeof(g_terminal_render_state.ansi)) {
+                g_terminal_render_state.ansi[g_terminal_render_state.ansi_size++] = ch;
+            }
+            terminal_model_apply_csi(ch);
+            g_terminal_render_state.ansi_active = 0;
+            g_terminal_render_state.ansi_size = 0;
+            return;
+        }
+        if (g_terminal_render_state.ansi_size + 1 < sizeof(g_terminal_render_state.ansi)) {
+            g_terminal_render_state.ansi[g_terminal_render_state.ansi_size++] = ch;
+        }
+        return;
+    }
+    if (ch == '\x1b') {
+        g_terminal_render_state.ansi_active = 1;
+        g_terminal_render_state.ansi_size = 0;
+        return;
+    }
+    if (ch == '\r') {
+        g_terminal_render_state.cursor_x = 0;
+        return;
+    }
+    if (ch == '\n') {
+        terminal_model_newline();
+        return;
+    }
+    if (ch == '\b' || ch == 0x7f) {
+        if (g_terminal_render_state.cursor_x > 0) --g_terminal_render_state.cursor_x;
+        terminal_model_put(' ');
+        if (g_terminal_render_state.cursor_x > 0) --g_terminal_render_state.cursor_x;
+        return;
+    }
+    if (ch == '\t') {
+        do {
+            terminal_model_put(' ');
+        } while (g_terminal_render_state.cursor_x % 4u);
+        return;
+    }
+    if (static_cast<unsigned char>(ch) < 0x20u) return;
+    terminal_model_put(ch);
+}
+
+void terminal_model_feed(const char *text, size_t size) {
+    if (!text || !size) return;
+    for (size_t i = 0; i < size; ++i) terminal_model_feed_char(text[i]);
+    g_terminal_dirty = 1;
+}
+
 void append_text(const char *text) {
     if (!text) return;
+    terminal_model_feed(text, strlen(text));
     compact_transcript_for(strlen(text));
     const size_t before = g_transcript_size;
     while (*text && g_transcript_size + 1 < sizeof(g_transcript)) {
@@ -222,22 +445,7 @@ void append_text(const char *text) {
 }
 
 void append_transcript_char(char ch) {
-    if (ch == '\r') return;
-    if (ch == '\b' || ch == 0x7f) {
-        if (g_transcript_size > 0 && g_transcript[g_transcript_size - 1u] != '\n') {
-            --g_transcript_size;
-            g_transcript[g_transcript_size] = '\0';
-        }
-        return;
-    }
-    if (ch == '\t') {
-        for (int i = 0; i < 4 && g_transcript_size + 1 < sizeof(g_transcript); ++i) {
-            g_transcript[g_transcript_size++] = ' ';
-        }
-        g_transcript[g_transcript_size] = '\0';
-        return;
-    }
-    if ((static_cast<unsigned char>(ch) < 0x20u && ch != '\n') || ch == 0x1bu) return;
+    if (ch == '\0') return;
     if (g_transcript_size + 1 < sizeof(g_transcript)) {
         g_transcript[g_transcript_size++] = ch;
         g_transcript[g_transcript_size] = '\0';
@@ -246,6 +454,7 @@ void append_transcript_char(char ch) {
 
 void append_bytes(const char *text, size_t size) {
     if (!text || !size) return;
+    terminal_model_feed(text, size);
     compact_transcript_for(size * 4u);
     const size_t before = g_transcript_size;
     for (size_t i = 0; i < size && g_transcript_size + 1 < sizeof(g_transcript); ++i) {
@@ -366,8 +575,11 @@ uint8_t terminal_glyph_row(char ch, uint32_t row) {
 }
 
 uint32_t terminal_scale_for(const rad_framebuffer_info_t& info) {
-    if (info.height >= 900u && info.width >= 1280u) return 3u;
-    if (info.height >= 540u) return 2u;
+    const char *scale_text = RADIX_RKCONFIG_TERMINAL_SCALE;
+    if (scale_text && scale_text[0] >= '1' && scale_text[0] <= '4' && scale_text[1] == '\0') {
+        return static_cast<uint32_t>(scale_text[0] - '0');
+    }
+    if (info.width >= 1280u && info.height >= 720u) return 2u;
     return 1u;
 }
 
@@ -386,15 +598,61 @@ void terminal_fill_rect(const rad_framebuffer_info_t& info, uint32_t x, uint32_t
     }
 }
 
+uint32_t terminal_ansi_color(int code, uint32_t fallback) {
+    if (code >= 30 && code <= 37) return g_terminal_theme.normal[code - 30];
+    if (code >= 90 && code <= 97) return g_terminal_theme.bright[code - 90];
+    return fallback;
+}
+
+void terminal_apply_sgr(const char *seq, size_t size, uint32_t default_fg, uint32_t default_bg, uint32_t *foreground, uint32_t *background) {
+    int value = 0;
+    int have = 0;
+    for (size_t i = 0; i <= size; ++i) {
+        const char ch = i < size ? seq[i] : ';';
+        if (ch >= '0' && ch <= '9') {
+            value = value * 10 + (ch - '0');
+            have = 1;
+            continue;
+        }
+        if (ch != ';') continue;
+        const int code = have ? value : 0;
+        if (code == 0) {
+            *foreground = default_fg;
+            *background = default_bg;
+        } else if (code == 1) {
+            *foreground = g_terminal_theme.bright[7];
+        } else if ((code >= 30 && code <= 37) || (code >= 90 && code <= 97)) {
+            *foreground = terminal_ansi_color(code, *foreground);
+        } else if (code >= 40 && code <= 47) {
+            *background = terminal_ansi_color(code - 10, *background);
+        } else if (code >= 100 && code <= 107) {
+            *background = terminal_ansi_color(code - 10, *background);
+        }
+        value = 0;
+        have = 0;
+    }
+}
+
 void terminal_draw_text(const rad_framebuffer_info_t& info, uint32_t cell_x, uint32_t cell_y, const char *text, uint32_t foreground, uint32_t background, uint32_t scale) {
     if (!text || scale == 0) return;
-    const uint32_t cell_width = 6u * scale;
-    const uint32_t cell_height = 9u * scale;
+    const uint32_t default_fg = foreground;
+    const uint32_t default_bg = background;
+    const uint32_t cell_width = 8u * scale;
+    const uint32_t cell_height = 16u * scale;
     uint32_t x = cell_x;
     uint32_t y = cell_y;
     const uint32_t columns = cell_width ? info.width / cell_width : 0;
     const uint32_t rows = cell_height ? info.height / cell_height : 0;
     for (const char *p = text; *p && y < rows; ++p) {
+        if (*p == '\x1b' && p[1] == '[') {
+            const char *q = p + 2;
+            while (*q && *q != 'm' && q - p < 32) ++q;
+            if (*q == 'm') {
+                terminal_apply_sgr(p + 2, static_cast<size_t>(q - (p + 2)), default_fg, default_bg, &foreground, &background);
+                p = q;
+                continue;
+            }
+        }
         if (*p == '\n') {
             x = cell_x;
             ++y;
@@ -403,11 +661,13 @@ void terminal_draw_text(const rad_framebuffer_info_t& info, uint32_t cell_x, uin
         const uint32_t origin_x = x * cell_width;
         const uint32_t origin_y = y * cell_height;
         terminal_fill_rect(info, origin_x, origin_y, cell_width, cell_height, background);
-        for (uint32_t row = 0; row < 7u; ++row) {
-            const uint8_t bits = terminal_glyph_row(*p, row);
+        for (uint32_t row = 0; row < 16u; ++row) {
+            if (row == 0 || row >= 15u) continue;
+            const uint32_t source_row = (row - 1u) / 2u;
+            const uint8_t bits = terminal_glyph_row(*p, source_row);
             for (uint32_t col = 0; col < 5u; ++col) {
                 if (!(bits & (1u << (4u - col)))) continue;
-                terminal_fill_rect(info, origin_x + col * scale, origin_y + row * scale, scale, scale, foreground);
+                terminal_fill_rect(info, origin_x + (col + 1u) * scale, origin_y + row * scale, scale, scale, foreground);
             }
         }
         ++x;
@@ -640,6 +900,60 @@ rad_status_t register_framebuffer(const Mb2FramebufferTag *fb) {
 }
 
 void render_terminal(rad_framebuffer_t framebuffer) {
+    if (!g_terminal_dirty) return;
+    rad_framebuffer_info_t info{};
+    if (rad_framebuffer_get_info(framebuffer, &info) != RAD_STATUS_OK) return;
+    const uint32_t scale = terminal_scale_for(info);
+    static int scale_marker_sent = 0;
+    if (!scale_marker_sent && scale >= 2u) {
+        rad_debug_marker("RADIX_TERMINAL_SCALE_OK");
+        scale_marker_sent = 1;
+    }
+    if (!info.pixels || info.pixel_format != RAD_PIXEL_FORMAT_XRGB8888) {
+        rad_framebuffer_clear(framebuffer, g_terminal_theme.background);
+        rad_framebuffer_draw_text(framebuffer, 1, 1, "RADix x86_64 Base Terminal", g_terminal_theme.foreground, g_terminal_theme.background);
+        rad_framebuffer_draw_text(framebuffer, 1, 3, "Fallback framebuffer text renderer", g_terminal_theme.bright[3], g_terminal_theme.background);
+        rad_framebuffer_rect_t rect{0, 0, info.width, info.height};
+        rad_framebuffer_flush(framebuffer, &rect);
+        g_terminal_dirty = 0;
+        return;
+    }
+
+    terminal_model_init();
+    const uint32_t cell_width = 8u * scale;
+    const uint32_t cell_height = 16u * scale;
+    const uint32_t visible_cols = info.width / cell_width < TerminalMaxCols ? info.width / cell_width : TerminalMaxCols;
+    const uint32_t visible_rows = info.height / cell_height < TerminalMaxRows ? info.height / cell_height : TerminalMaxRows;
+    const uint32_t start_row = g_terminal_render_state.cursor_y + 1u > visible_rows
+        ? g_terminal_render_state.cursor_y + 1u - visible_rows
+        : 0u;
+    for (uint32_t y = 0; y < visible_rows; ++y) {
+        for (uint32_t x = 0; x < visible_cols; ++x) {
+            const TerminalCell& cell = g_terminal_render_state.cells[start_row + y][x];
+            char text[2]{cell.ch ? cell.ch : ' ', '\0'};
+            terminal_draw_text(info, x, y, text, cell.fg, cell.bg, scale);
+        }
+        if (visible_cols * cell_width < info.width) {
+            terminal_fill_rect(info, visible_cols * cell_width, y * cell_height,
+                info.width - visible_cols * cell_width, cell_height, g_terminal_theme.background);
+        }
+    }
+    if (visible_rows * cell_height < info.height) {
+        terminal_fill_rect(info, 0, visible_rows * cell_height, info.width,
+            info.height - visible_rows * cell_height, g_terminal_theme.background);
+    }
+    if (g_terminal_render_state.cursor_y >= start_row && g_terminal_render_state.cursor_y < start_row + visible_rows
+        && g_terminal_render_state.cursor_x < visible_cols) {
+        terminal_fill_rect(info, g_terminal_render_state.cursor_x * cell_width,
+            (g_terminal_render_state.cursor_y - start_row) * cell_height + cell_height - 1u,
+            cell_width, 1u, g_terminal_theme.cursor);
+    }
+    rad_framebuffer_rect_t rect{0, 0, info.width, info.height};
+    rad_framebuffer_flush(framebuffer, &rect);
+    g_terminal_dirty = 0;
+}
+
+[[maybe_unused]] void render_terminal_legacy(rad_framebuffer_t framebuffer) {
     if (!g_terminal_dirty) return;
     rad_framebuffer_info_t info{};
     if (rad_framebuffer_get_info(framebuffer, &info) != RAD_STATUS_OK) return;
@@ -1087,7 +1401,7 @@ void pump_serial_to_pty(rad_device_t serial, rad_pty_t pty, rad_tty_t slave) {
     while (rad_device_read(serial, &ch, 1, &done) == RAD_STATUS_OK && done == 1) {
         size_t ignored = 0;
         rad_pty_write_master(pty, &ch, 1, &ignored);
-        rad_terminal_poll_tty(slave);
+        if (!g_user_terminal_active) rad_terminal_poll_tty(slave);
         pty_drain(pty);
     }
 }
@@ -1096,15 +1410,261 @@ void send_terminal_bytes(rad_pty_t pty, rad_tty_t slave, const char *bytes, size
     if (!bytes || !size) return;
     size_t ignored = 0;
     rad_pty_write_master(pty, bytes, size, &ignored);
-    rad_terminal_poll_tty(slave);
+    if (!g_user_terminal_active) rad_terminal_poll_tty(slave);
     pty_drain(pty);
 }
+
+#if defined(RADIX_X86_TERMINAL_AUTOTEST_NANO)
+struct NanoAutotestState {
+    rad_pty_t pty;
+    uint32_t step;
+    uint32_t settle_frames;
+    uint32_t wait_frames;
+    uint64_t wait_start_ms;
+    uint64_t settle_until_ms;
+    bool active;
+    bool poll_seen;
+    bool dumped_transcript;
+};
+
+static NanoAutotestState g_nano_autotest{};
+
+void nano_autotest_dump_transcript_tail(const char *marker);
+
+void nano_autotest_write(rad_pty_t pty, const char *bytes, size_t size) {
+    if (!pty || !bytes || !size) return;
+    size_t ignored = 0;
+    rad_pty_write_master(pty, bytes, size, &ignored);
+}
+
+void nano_autotest_log(const char *marker) {
+    if (!marker) return;
+    rad_debug_marker(marker);
+    x86_serial_write(marker);
+    x86_serial_write("\n");
+}
+
+bool nano_autotest_file_matches(void) {
+    rad_file_t file = nullptr;
+    const rad_status_t opened = rad_vfs_open("/tmp/nano-live.txt", RAD_VFS_READ, &file);
+    if (opened != RAD_STATUS_OK) {
+        return false;
+    }
+    char buffer[64]{};
+    size_t bytes = 0;
+    const rad_status_t read = rad_vfs_read(file, buffer, sizeof(buffer) - 1u, &bytes);
+    rad_vfs_close(file);
+    return read == RAD_STATUS_OK && bytes >= 28u && memcmp(buffer, "RADix nano interactive smoke", 28u) == 0;
+}
+
+void nano_autotest_fail(const char *marker) {
+    g_nano_autotest.active = false;
+    nano_autotest_dump_transcript_tail(marker);
+    nano_autotest_log("RADIX_NANO_FILE_VERIFY_FAIL");
+}
+
+void nano_autotest_begin(rad_pty_t pty) {
+    g_nano_autotest.pty = pty;
+    g_nano_autotest.step = 0;
+    g_nano_autotest.settle_frames = 0;
+    g_nano_autotest.wait_frames = 0;
+    g_nano_autotest.wait_start_ms = 0;
+    g_nano_autotest.settle_until_ms = 0;
+    g_nano_autotest.active = true;
+    g_nano_autotest.poll_seen = false;
+    g_nano_autotest.dumped_transcript = false;
+    nano_autotest_log("RADIX_NANO_AUTOTEST_SPAWN_OK");
+}
+
+bool transcript_contains(const char *needle) {
+    return needle && strstr(g_transcript, needle) != nullptr;
+}
+
+bool transcript_contains_either(const char *a, const char *b) {
+    return transcript_contains(a) || transcript_contains(b);
+}
+
+void nano_autotest_dump_transcript_tail(const char *marker) {
+    if (marker) {
+        rad_debug_marker(marker);
+        x86_serial_write(marker);
+        x86_serial_write("\n");
+    }
+    x86_serial_write("RADIX_NANO_TRANSCRIPT_TAIL_BEGIN\n");
+    const size_t keep = g_transcript_size > 512u ? 512u : g_transcript_size;
+    const char *tail = g_transcript + (g_transcript_size - keep);
+    char chunk[65]{};
+    size_t chunk_size = 0;
+    for (size_t i = 0; i < keep; ++i) {
+        const char ch = tail[i];
+        chunk[chunk_size++] = (ch >= 32 && ch < 127) || ch == '\n' || ch == '\r' || ch == '\t' ? ch : '.';
+        if (chunk_size + 1u == sizeof(chunk)) {
+            chunk[chunk_size] = '\0';
+            x86_serial_write(chunk);
+            chunk_size = 0;
+        }
+    }
+    if (chunk_size) {
+        chunk[chunk_size] = '\0';
+        x86_serial_write(chunk);
+    }
+    x86_serial_write("\nRADIX_NANO_TRANSCRIPT_TAIL_END\n");
+}
+
+bool nano_autotest_wait_for_text(const char *needle, uint32_t max_frames, const char *timeout_marker) {
+    if (transcript_contains(needle)) {
+        g_nano_autotest.wait_frames = 0;
+        g_nano_autotest.wait_start_ms = 0;
+        g_nano_autotest.dumped_transcript = false;
+        return true;
+    }
+    const uint64_t now = rad_time_millis();
+    if (!g_nano_autotest.wait_start_ms) g_nano_autotest.wait_start_ms = now ? now : 1u;
+    rad_task_sleep_ms(1);
+    ++g_nano_autotest.wait_frames;
+    const uint64_t timeout_ms = static_cast<uint64_t>(max_frames) * 16u;
+    if (now - g_nano_autotest.wait_start_ms >= timeout_ms || g_nano_autotest.wait_frames >= timeout_ms) {
+        nano_autotest_fail(timeout_marker);
+    }
+    return false;
+}
+
+bool nano_autotest_wait_for_nano(uint32_t max_frames) {
+    if (transcript_contains_either("GNU nano", "nano-live.txt")) {
+        g_nano_autotest.wait_frames = 0;
+        g_nano_autotest.wait_start_ms = 0;
+        g_nano_autotest.dumped_transcript = false;
+        return true;
+    }
+    const uint64_t now = rad_time_millis();
+    if (!g_nano_autotest.wait_start_ms) g_nano_autotest.wait_start_ms = now ? now : 1u;
+    rad_task_sleep_ms(1);
+    ++g_nano_autotest.wait_frames;
+    const uint64_t timeout_ms = static_cast<uint64_t>(max_frames) * 16u;
+    if (now - g_nano_autotest.wait_start_ms >= timeout_ms || g_nano_autotest.wait_frames >= timeout_ms) {
+        nano_autotest_fail("RADIX_NANO_SCREEN_TIMEOUT");
+    }
+    return false;
+}
+
+bool nano_autotest_wait_frames(uint32_t frames) {
+    const uint64_t now = rad_time_millis();
+    if (!g_nano_autotest.settle_until_ms) {
+        g_nano_autotest.settle_until_ms = now + static_cast<uint64_t>(frames) * 16u;
+        g_nano_autotest.settle_frames = 0;
+    }
+    rad_task_sleep_ms(1);
+    ++g_nano_autotest.settle_frames;
+    const uint32_t settle_ms = frames * 16u;
+    if (now < g_nano_autotest.settle_until_ms && g_nano_autotest.settle_frames < settle_ms) {
+        return false;
+    }
+    g_nano_autotest.settle_frames = 0;
+    g_nano_autotest.settle_until_ms = 0;
+    return true;
+}
+
+void nano_autotest_poll(void) {
+    if (!g_nano_autotest.active || !g_nano_autotest.pty) return;
+    if (!g_nano_autotest.poll_seen) {
+        g_nano_autotest.poll_seen = true;
+        nano_autotest_log("RADIX_NANO_AUTOTEST_POLL_OK");
+    }
+    switch (g_nano_autotest.step++) {
+    case 0:
+        if (!nano_autotest_wait_for_text("login:", 1200u, "RADIX_NANO_LOGIN_PROMPT_TIMEOUT")) {
+            --g_nano_autotest.step;
+            return;
+        }
+        nano_autotest_write(g_nano_autotest.pty, "root\n", 5);
+        nano_autotest_log("RADIX_NANO_AUTOTEST_LOGIN_USER_OK");
+        break;
+    case 1:
+        if (!nano_autotest_wait_for_text("Password:", 1200u, "RADIX_NANO_PASSWORD_PROMPT_TIMEOUT")) {
+            --g_nano_autotest.step;
+            return;
+        }
+        nano_autotest_write(g_nano_autotest.pty, "radix\n", 6);
+        nano_autotest_log("RADIX_NANO_AUTOTEST_LOGIN_PASSWORD_OK");
+        break;
+    case 2:
+        nano_autotest_write(g_nano_autotest.pty, "echo rash-command-ok\n", 21);
+        nano_autotest_log("RADIX_RASH_COMMAND_SEND_OK");
+        break;
+    case 3:
+        if (!nano_autotest_wait_for_text("rash-command-ok", 1200u, "RADIX_RASH_COMMAND_TIMEOUT")) {
+            --g_nano_autotest.step;
+            return;
+        }
+        nano_autotest_log("RADIX_RASH_COMMAND_ECHO_OK");
+        nano_autotest_write(g_nano_autotest.pty, "nano /tmp/nano-live.txt\n", 24);
+        nano_autotest_log("RADIX_NANO_AUTOTEST_COMMAND_OK");
+        break;
+    case 4:
+        if (!nano_autotest_wait_for_nano(3600u)) {
+            --g_nano_autotest.step;
+            return;
+        }
+        nano_autotest_log("RADIX_NANO_INTERACTIVE_OPEN_OK");
+        nano_autotest_write(g_nano_autotest.pty, "RADix nano interactive smoke\n", 29);
+        break;
+    case 5: {
+        if (!nano_autotest_wait_frames(60u)) {
+            --g_nano_autotest.step;
+            return;
+        }
+        nano_autotest_log("RADIX_NANO_INPUT_OK");
+        const char save[] = {0x0f};
+        nano_autotest_write(g_nano_autotest.pty, save, sizeof(save));
+        break;
+    }
+    case 6:
+        if (!nano_autotest_wait_frames(60u)) {
+            --g_nano_autotest.step;
+            return;
+        }
+        nano_autotest_write(g_nano_autotest.pty, "\n", 1);
+        break;
+    case 7: {
+        if (!nano_autotest_wait_frames(180u)) {
+            --g_nano_autotest.step;
+            return;
+        }
+        nano_autotest_log("RADIX_NANO_SAVE_OK");
+        const char exit[] = {0x18};
+        nano_autotest_write(g_nano_autotest.pty, exit, sizeof(exit));
+        break;
+    }
+    default:
+        if (nano_autotest_file_matches()) {
+            g_nano_autotest.active = false;
+            nano_autotest_log("RADIX_NANO_EXIT_OK");
+            nano_autotest_log("RADIX_NANO_FILE_VERIFY_OK");
+            return;
+        }
+        if (!nano_autotest_wait_frames(6000u)) {
+            --g_nano_autotest.step;
+            return;
+        }
+        g_nano_autotest.active = false;
+        nano_autotest_dump_transcript_tail("RADIX_NANO_FILE_VERIFY_TIMEOUT");
+        nano_autotest_log("RADIX_NANO_FILE_VERIFY_FAIL");
+        break;
+    }
+}
+#endif
+
+#if defined(RADIX_X86_TERMINAL_AUTOTEST_NANO)
+void nano_loop_marker(const char *marker) {
+    x86_serial_write(marker);
+    x86_serial_write("\n");
+}
+#endif
 
 void input_event_to_pty(const rad_input_event_t *event, rad_pty_t pty, rad_tty_t slave) {
     if (!event || event->type != RAD_INPUT_EVENT_KEY || !event->pressed) return;
     if (!g_keyboard_input_seen) {
         g_keyboard_input_seen = 1;
-        x86_serial_write("keyboard input event\n");
     }
 
     if (event->codepoint) {
@@ -1180,9 +1740,7 @@ void pump_pointer_input(rad_device_t input) {
         if ((event.type == RAD_INPUT_EVENT_POINTER_MOTION || event.type == RAD_INPUT_EVENT_POINTER_BUTTON)
             && !g_pointer_input_seen) {
             g_pointer_input_seen = 1;
-            x86_serial_write("pointer input event\n");
             rad_debug_marker("RADIX_INPUT_POINTER_EVENT_OK");
-            append_text("RADIX_INPUT_POINTER_EVENT_OK\n");
         }
     }
 }
@@ -1190,7 +1748,11 @@ void pump_pointer_input(rad_device_t input) {
 
 extern "C" void kernel_main64(uint32_t magic, uint32_t info_addr) {
     x86_serial_init();
+#if defined(RADIX_X86_UI_PROFILE_WM)
     x86_serial_write("RAD x86_64 GRUB Slint handoff\n");
+#else
+    x86_serial_write("RAD x86_64 GRUB terminal handoff\n");
+#endif
     x86_serial_write("magic=");
     serial_hex64(magic);
     x86_serial_write(" info=");
@@ -1217,7 +1779,11 @@ extern "C" void kernel_main64(uint32_t magic, uint32_t info_addr) {
     radboot_prepare_default(&boot, "x86_64_grub", "qemu-pc", "/dev/console", "none");
     add_memory_regions(&boot, info_addr);
     radboot_add_arg(&boot, "bootloader", "grub-multiboot2");
+#if defined(RADIX_X86_UI_PROFILE_WM)
     radboot_add_arg(&boot, "ui", "slint-freestanding");
+#else
+    radboot_add_arg(&boot, "ui", "framebuffer-terminal");
+#endif
 
     x86_vm_summary_t vm_summary{};
     x86_vm_init(&boot, &vm_summary);
@@ -1277,7 +1843,7 @@ extern "C" void kernel_main64(uint32_t magic, uint32_t info_addr) {
     rad_pty_slave_name(pty, slave_name, sizeof(slave_name));
     rad_tty_t slave = nullptr;
     rad_tty_open(slave_name, &slave);
-    rad_tty_window_size_t tty_size{32, 100};
+    rad_tty_window_size_t tty_size{32, 100, 800, 512};
     rad_pty_resize(pty, &tty_size);
     x86_serial_write("pty ready\n");
 
@@ -1357,6 +1923,18 @@ extern "C" void kernel_main64(uint32_t magic, uint32_t info_addr) {
     pty_command(pty, slave, "ps");
     x86_serial_write("cmd sh /bin/test.sh\n");
     pty_command(pty, slave, "sh /bin/test.sh");
+    x86_serial_write("cmd which sh\n");
+    pty_command(pty, slave, "which sh");
+    x86_serial_write("cmd stty -a\n");
+    pty_command(pty, slave, "stty -a");
+    x86_serial_write("cmd tput cols\n");
+    pty_command(pty, slave, "tput cols");
+    x86_serial_write("cmd tput cup 0 0\n");
+    pty_command(pty, slave, "tput cup 0 0");
+    x86_serial_write("cmd test -e /usr/share/terminfo/r/radix\n");
+    pty_command(pty, slave, "test -e /usr/share/terminfo/r/radix");
+    x86_serial_write("cmd echo radix | wc\n");
+    pty_command(pty, slave, "echo radix | wc");
     x86_serial_write("cmd initctl restart userspace-shell\n");
     pty_command(pty, slave, "initctl restart userspace-shell");
     x86_serial_write("cmd logread init\n");
@@ -1367,42 +1945,143 @@ extern "C" void kernel_main64(uint32_t magic, uint32_t info_addr) {
     pty_command(pty, slave, "logread kernel");
     x86_serial_write("cmd dmesg\n");
     pty_command(pty, slave, "dmesg");
+    int32_t login_pid = 0;
+    rad_task_t login_task = nullptr;
+    g_transcript_size = 0;
+    g_transcript[0] = '\0';
+    terminal_model_reset();
+    if (slave) {
+        rad_tty_set_mode(slave, RAD_TTY_MODE_CANONICAL | RAD_TTY_MODE_ECHO | RAD_TTY_MODE_CRLF);
+        rad_tty_flush(slave, RAD_TTY_FLUSH_INPUT | RAD_TTY_FLUSH_OUTPUT);
+    }
+    if (framebuffer) render_terminal(framebuffer);
+    const rad_status_t login_status = x86_user_spawn_process_with_stdio("/bin/login", rad_process_current_pid(), slave_name, &login_pid, &login_task);
+    if (login_status == RAD_STATUS_OK) {
+        rad_debug_marker("RADIX_LOGIN_SPAWN_OK");
+        x86_serial_write("RADIX_LOGIN_SPAWN_OK\n");
+        g_user_terminal_active = 1;
+        pty_drain(pty);
+#if defined(RADIX_X86_TERMINAL_AUTOTEST_NANO)
+        nano_autotest_begin(pty);
+#endif
+    } else {
+        rad_debug_marker("RADIX_LOGIN_SPAWN_FAIL");
+        x86_serial_write("RADIX_LOGIN_SPAWN_FAIL\n");
+    }
     if (framebuffer) render_terminal(framebuffer);
     x86_serial_write("RAD x86_64 base terminal ready\n");
+#if defined(RADIX_X86_UI_PROFILE_WM)
+    const rad_status_t slint_status = radix_slint_shell_start(framebuffer, g_transcript);
+    if (slint_status == RAD_STATUS_OK) {
+        append_text("RADIX_X86_UI_PROFILE_WM_OK\n");
+        rad_debug_marker("RADIX_X86_UI_PROFILE_WM_OK");
+        x86_serial_write("RADIX_X86_UI_PROFILE_WM_OK\n");
+    } else {
+        append_text("RADIX_X86_UI_PROFILE_WM_FAIL\n");
+        rad_debug_marker("RADIX_X86_UI_PROFILE_WM_FAIL");
+        x86_serial_write("RADIX_X86_UI_PROFILE_WM_FAIL\n");
+    }
+#else
+    rad_debug_marker("RADIX_X86_UI_PROFILE_TERMINAL_OK");
+    x86_serial_write("RADIX_X86_UI_PROFILE_TERMINAL_OK\n");
+#endif
 
     rad_device_t serial = nullptr;
     rad_device_open("/dev/ttyS0", &serial);
     rad_device_t input = nullptr;
     if (rad_input_open("/dev/input/event0", &input) == RAD_STATUS_OK) {
         append_text("\nkeyboard: /dev/input/event0 ready\n");
+#if defined(RADIX_X86_UI_PROFILE_WM)
         if (radix_slint_shell_ready()) radix_slint_shell_set_terminal_text(g_transcript);
         else if (framebuffer) render_terminal(framebuffer);
+#else
+        if (framebuffer) render_terminal(framebuffer);
+#endif
     } else {
         append_text("\nkeyboard: /dev/input/event0 unavailable\n");
+#if defined(RADIX_X86_UI_PROFILE_WM)
         if (radix_slint_shell_ready()) radix_slint_shell_set_terminal_text(g_transcript);
         else if (framebuffer) render_terminal(framebuffer);
+#else
+        if (framebuffer) render_terminal(framebuffer);
+#endif
     }
     rad_device_t pointer = nullptr;
     if (rad_input_open("/dev/input/event1", &pointer) == RAD_STATUS_OK) {
         append_text("pointer: /dev/input/event1 ready\n");
+#if defined(RADIX_X86_UI_PROFILE_WM)
         if (radix_slint_shell_ready()) radix_slint_shell_set_terminal_text(g_transcript);
         else if (framebuffer) render_terminal(framebuffer);
+#else
+        if (framebuffer) render_terminal(framebuffer);
+#endif
     } else {
         append_text("pointer: /dev/input/event1 unavailable\n");
+#if defined(RADIX_X86_UI_PROFILE_WM)
         if (radix_slint_shell_ready()) radix_slint_shell_set_terminal_text(g_transcript);
         else if (framebuffer) render_terminal(framebuffer);
+#else
+        if (framebuffer) render_terminal(framebuffer);
+#endif
     }
     for (;;) {
+#if defined(RADIX_X86_TERMINAL_AUTOTEST_NANO)
+        static bool loop_begin_seen = false;
+        if (!loop_begin_seen) { loop_begin_seen = true; nano_loop_marker("RADIX_NANO_LOOP_BEGIN"); }
+#endif
         if (serial) pump_serial_to_pty(serial, pty, slave);
+#if defined(RADIX_X86_TERMINAL_AUTOTEST_NANO)
+        static bool after_serial_seen = false;
+        if (!after_serial_seen) { after_serial_seen = true; nano_loop_marker("RADIX_NANO_AFTER_SERIAL"); }
+        nano_autotest_poll();
+        static bool after_autotest_seen = false;
+        if (!after_autotest_seen) { after_autotest_seen = true; nano_loop_marker("RADIX_NANO_AFTER_AUTOTEST"); }
+#endif
+#if defined(RADIX_X86_UI_PROFILE_WM)
         if (radix_slint_shell_ready()) {
             radix_slint_shell_poll();
         } else if (framebuffer) {
             if (input) pump_input_to_pty(input, pty, slave);
             if (pointer) pump_pointer_input(pointer);
+        }
+#else
+        if (framebuffer) {
+            if (input) pump_input_to_pty(input, pty, slave);
+            if (pointer) pump_pointer_input(pointer);
+        }
+#endif
+#if defined(RADIX_X86_TERMINAL_AUTOTEST_NANO)
+        static bool after_input_seen = false;
+        if (!after_input_seen) { after_input_seen = true; nano_loop_marker("RADIX_NANO_AFTER_INPUT"); }
+#endif
+        rad_kernel_poll();
+#if defined(RADIX_X86_TERMINAL_AUTOTEST_NANO)
+        static bool after_poll_seen = false;
+        if (!after_poll_seen) { after_poll_seen = true; nano_loop_marker("RADIX_NANO_AFTER_KERNEL_POLL"); }
+#endif
+        pty_drain(pty);
+#if defined(RADIX_X86_TERMINAL_AUTOTEST_NANO)
+        static bool after_drain_seen = false;
+        if (!after_drain_seen) { after_drain_seen = true; nano_loop_marker("RADIX_NANO_AFTER_PTY_DRAIN"); }
+#endif
+#if defined(RADIX_X86_UI_PROFILE_WM)
+        if (radix_slint_shell_ready()) {
+            if (g_terminal_dirty) radix_slint_shell_set_terminal_text(g_transcript);
+        } else if (framebuffer) {
             render_terminal(framebuffer);
         }
-        rad_kernel_poll();
+#else
+        if (framebuffer) render_terminal(framebuffer);
+#endif
+#if defined(RADIX_X86_TERMINAL_AUTOTEST_NANO)
+        static bool after_render_seen = false;
+        if (!after_render_seen) { after_render_seen = true; nano_loop_marker("RADIX_NANO_AFTER_RENDER"); }
+#endif
         if (x86_ui_idle_frame) x86_ui_idle_frame();
-        else rad_sleep_ms(16);
+        else rad_task_sleep_ms(16);
+#if defined(RADIX_X86_TERMINAL_AUTOTEST_NANO)
+        static bool after_idle_seen = false;
+        if (!after_idle_seen) { after_idle_seen = true; nano_loop_marker("RADIX_NANO_AFTER_IDLE"); }
+#endif
     }
 }

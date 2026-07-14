@@ -3,10 +3,21 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/../.." && pwd)"
-build_dir="${RADLIB_X86_64_GRUB_SLINT_BUILD_DIR:-${repo_root}/build/embedded/x86_64_grub_slint}"
+ui_profile="${RADIX_X86_UI_PROFILE:-wm}"
+case "${ui_profile}" in
+    wm|terminal) ;;
+    *)
+        echo "RADIX_X86_UI_PROFILE must be wm or terminal" >&2
+        exit 2
+        ;;
+esac
+default_build_dir="${repo_root}/build/embedded/x86_64_grub_${ui_profile}"
+build_dir="${RADLIB_X86_64_GRUB_SLINT_BUILD_DIR:-${default_build_dir}}"
 display="${RADLIB_X86_QEMU_DISPLAY:-gtk}"
 build=1
 virtio_disk="${RADLIB_X86_VIRTIO_DISK:-}"
+virtio_fat="${RADLIB_X86_VIRTIO_FAT:-}"
+kernel_name="radixkernel-x86-64-grub-${ui_profile}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -34,17 +45,23 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ "${build}" == "1" ]]; then
-    cmake -S "${repo_root}/tools/embedded/x86_64_grub_slint" -B "${build_dir}"
+    cmake -S "${repo_root}/tools/embedded/x86_64_grub_slint" -B "${build_dir}" \
+        -DRADIX_X86_UI_PROFILE="${ui_profile}"
     cmake --build "${build_dir}" --target radixkernel_x86_64_grub_slint_iso -j"${RADLIB_BUILD_JOBS:-2}"
 fi
 
-if [[ -z "${virtio_disk}" && -f "${build_dir}/radix-rootfs.ext2" ]]; then
-    virtio_disk="${build_dir}/radix-rootfs.ext2"
+if [[ -z "${virtio_disk}" && -f "${build_dir}/radix-rootfs.ext4" ]]; then
+    virtio_disk="${build_dir}/radix-rootfs.ext4"
+fi
+if [[ -z "${virtio_fat}" && -f "${build_dir}/radix-fat32.img" ]]; then
+    virtio_fat="${build_dir}/radix-fat32.img"
 fi
 
 qemu_args=(
     -m "${RADLIB_X86_QEMU_MEMORY:-512M}"
-    -cdrom "${build_dir}/radixkernel-x86-64-grub-slint.iso"
+    -smp "${RADLIB_X86_QEMU_SMP:-4}"
+    -vga std
+    -cdrom "${build_dir}/${kernel_name}.iso"
     -serial stdio
     -display "${display}"
     -no-reboot
@@ -54,6 +71,12 @@ if [[ -n "${virtio_disk}" ]]; then
     qemu_args+=(
         -drive "if=none,id=radixdisk,format=raw,file=${virtio_disk}"
         -device "virtio-blk-pci,drive=radixdisk,disable-modern=on"
+    )
+fi
+if [[ -n "${virtio_fat}" ]]; then
+    qemu_args+=(
+        -drive "if=none,id=radixfat,format=raw,file=${virtio_fat}"
+        -device "virtio-blk-pci,drive=radixfat,disable-modern=on"
     )
 fi
 

@@ -388,8 +388,14 @@ void queue_cursor_damage(void) {
     if (!g_cursor_dirty || !g_desktop_surface_id) return;
     rad_compositor_rect_t previous = cursor_rect_at(g_drawn_cursor_x, g_drawn_cursor_y);
     rad_compositor_rect_t current = cursor_rect_at(g_cursor_x, g_cursor_y);
-    rad_compositor_queue_damage(&g_compositor, g_desktop_surface_id, &previous, RAD_COMPOSITOR_DAMAGE_EXPOSED);
-    rad_compositor_queue_damage(&g_compositor, g_desktop_surface_id, &current, RAD_COMPOSITOR_DAMAGE_EXPOSED);
+    if (rad_compositor_queue_damage(&g_compositor, g_desktop_surface_id, &previous, RAD_COMPOSITOR_DAMAGE_EXPOSED) == RAD_STATUS_OK) {
+        marker_once(&g_compositor_damage_marker_sent, "RADIX_COMPOSITOR_DAMAGE_QUEUE_OK");
+        marker_once(&g_compositor_exposed_marker_sent, "RADIX_COMPOSITOR_EXPOSED_DAMAGE_OK");
+    }
+    if (rad_compositor_queue_damage(&g_compositor, g_desktop_surface_id, &current, RAD_COMPOSITOR_DAMAGE_EXPOSED) == RAD_STATUS_OK) {
+        marker_once(&g_compositor_damage_marker_sent, "RADIX_COMPOSITOR_DAMAGE_QUEUE_OK");
+        marker_once(&g_compositor_exposed_marker_sent, "RADIX_COMPOSITOR_EXPOSED_DAMAGE_OK");
+    }
 }
 
 void draw_cursor(uint32_t *pixels, uint32_t stride_pixels) {
@@ -778,7 +784,7 @@ public:
         for (;;) {
             tick();
             if (x86_ui_idle_frame) x86_ui_idle_frame();
-            else rad_sleep_ms(16);
+            else rad_task_sleep_ms(16);
         }
     }
 
@@ -787,7 +793,8 @@ public:
     }
 
     rad_status_t tick() {
-        slint::platform::update_timers_and_animations();
+        // The freestanding x86 shell is currently static; avoid Slint's host
+        // timer pump until the kernel owns a full timer integration path.
         if (x86_ps2_poll_devices) x86_ps2_poll_devices();
         if (x86_virtio_input_poll) x86_virtio_input_poll();
         poll_input_device(keyboard_);
@@ -1029,10 +1036,6 @@ void launch_terminal(const char *terminal_text) {
     rad_status_t status = rad_pty_open_pair("slint-terminal", &g_terminal_pty);
     if (status == RAD_STATUS_OK) {
         status = rad_pty_slave_name(g_terminal_pty, slave_name, sizeof(slave_name));
-    }
-    if (status == RAD_STATUS_OK) {
-        size_t written = 0;
-        rad_pty_write_master(g_terminal_pty, "x\n", 2, &written);
     }
     if (status == RAD_STATUS_OK && x86_user_spawn_process_with_stdio) {
         status = x86_user_spawn_process_with_stdio("/bin/radsh", rad_process_current_pid(), slave_name, &g_terminal_pid, &g_terminal_task);

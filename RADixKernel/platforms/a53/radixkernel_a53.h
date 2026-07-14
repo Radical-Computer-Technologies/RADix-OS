@@ -47,7 +47,7 @@ typedef struct rad_a53_vm_summary {
 /** @brief A53 process address-space root and owned physical pages. */
 typedef struct rad_a53_address_space {
     uintptr_t ttbr0; ///< TTBR0-compatible translation table root for user mappings.
-    uintptr_t owned_pages[128]; ///< Physical pages owned or retained by this address space.
+    uintptr_t owned_pages[8192]; ///< Physical pages owned or retained by this address space.
     size_t owned_page_count; ///< Number of valid entries in owned_pages.
     uintptr_t next_mmap; ///< Next user virtual address candidate for mmap-style allocations.
 } rad_a53_address_space_t;
