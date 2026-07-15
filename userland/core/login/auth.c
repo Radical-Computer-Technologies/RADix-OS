@@ -1,4 +1,4 @@
-#include "user_auth.h"
+#include "auth.h"
 
 typedef struct {
     uint32_t state[8];

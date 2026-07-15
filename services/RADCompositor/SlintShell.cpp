@@ -1,4 +1,4 @@
-#include "slint_shell.h"
+#include "SlintShell.h"
 
 #include <radixkernel/rad_display.h>
 #include <radixkernel/rad_input.h>

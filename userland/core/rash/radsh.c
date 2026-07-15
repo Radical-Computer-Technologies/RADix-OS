@@ -1,7 +1,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "user_auth.h"
+#include "auth.h"
 #include "rkconfig.h"
 
 enum {

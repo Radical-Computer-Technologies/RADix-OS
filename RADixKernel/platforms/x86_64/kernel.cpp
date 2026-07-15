@@ -10,7 +10,7 @@
 #include "x86_vm.h"
 #include "rkconfig.h"
 #if defined(RADIX_X86_UI_PROFILE_WM)
-#include "slint_shell.h"
+#include "SlintShell.h"
 #endif
 
 #include <stddef.h>
