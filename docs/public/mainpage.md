@@ -1,11 +1,11 @@
 # RADix-OS Kernel API
 
 RADix-OS is a POSIX-inspired operating system kernel aimed at embedded boards,
-desktop VM testing, and future SoC targets. The Crimson 0.1.0 line keeps an
+desktop VM testing, and future SoC targets. The Crimson 0.1.3 line keeps an
 RTOS-influenced bias toward explicit subsystems while exposing familiar process,
 file, device, terminal, framebuffer, filesystem, and driver APIs.
 
-This hub documents the experimental Crimson 0.1.0 kernel API.
+This hub documents the experimental Crimson 0.1.3 kernel API.
 
 ## Start Here
 
@@ -39,7 +39,7 @@ This hub documents the experimental Crimson 0.1.0 kernel API.
 
 ## Filesystem Profile
 
-The x86_64 VM target currently boots from ext4. Crimson 0.1.0 supports a clean
+The x86_64 VM target currently boots from ext4. Crimson 0.1.3 supports a clean
 no-journal read/write ext4 profile with extent-backed files, allocation, create,
 mkdir, rename, truncate, symlink/readlink, unlink, rmdir, chmod, and fsync.
 Journal replay and journaled metadata commits are intentionally outside the

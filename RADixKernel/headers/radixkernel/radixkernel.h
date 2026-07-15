@@ -1304,8 +1304,11 @@ typedef struct rad_tty_window_size {
     uint16_t y_pixels; ///< Public structure field.
 } rad_tty_window_size_t; ///< Public typedef alias.
 
+/** @brief Number of POSIX-shaped terminal control character slots. */
 #define RAD_TTY_NCCS 32u
+/** @brief Flush pending input bytes from a RADix TTY or PTY endpoint. */
 #define RAD_TTY_FLUSH_INPUT 1u
+/** @brief Flush pending output bytes from a RADix TTY or PTY endpoint. */
 #define RAD_TTY_FLUSH_OUTPUT 2u
 
 /** @brief POSIX-shaped terminal attributes stored by RADix TTY devices. */
