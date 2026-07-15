@@ -186,6 +186,9 @@ set(RADIX_UPSTREAM_NANO_SOURCE "$ENV{RADIX_UPSTREAM_NANO_SOURCE}" CACHE PATH "Pa
 set(RADIX_UPSTREAM_VIM_SOURCE "$ENV{RADIX_UPSTREAM_VIM_SOURCE}" CACHE PATH "Path to extracted upstream Vim source")
 
 set(RADIX_OS_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../.." CACHE PATH "Path to RADix-OS")
+set(RADIX_SERVICE_MANAGER_SOURCE_DIR "${RADIX_OS_ROOT}/services/RADServiceManager")
+set(RADIX_LIBRADIXC_SOURCE_DIR "${RADIX_OS_ROOT}/libs/libradixc")
+set(RADIX_LIBRADIXC_SOURCE "${RADIX_LIBRADIXC_SOURCE_DIR}/radix_libc.c")
 if(NOT RADIX_UPSTREAM_NCURSES_SOURCE)
     set(RADIX_UPSTREAM_NCURSES_SOURCE "${RADIX_OS_ROOT}/.radbuild/ports/src/ncurses-6.6")
 endif()
@@ -455,7 +458,6 @@ add_custom_command(
     COMMAND ${CMAKE_COMMAND} -E touch "${RADIX_SYSROOT_STAMP}"
     DEPENDS
         ${RADIX_SYSROOT_HEADERS}
-        "${CMAKE_CURRENT_LIST_DIR}/sysroot/lib/radix_libc.c"
     VERBATIM
 )
 
@@ -464,13 +466,13 @@ add_custom_command(
     COMMAND "${X86_64_LINUX_GNU_GCC_EXECUTABLE}"
             -ffreestanding -fno-stack-protector -fno-pic -fno-pie -mno-red-zone -nostdinc
             -I "${CMAKE_CURRENT_LIST_DIR}/sysroot/include"
-            -c "${CMAKE_CURRENT_LIST_DIR}/sysroot/lib/radix_libc.c"
+            -c "${RADIX_LIBRADIXC_SOURCE}"
             -o "${RADIX_LIBC_OBJECT}"
     COMMAND "${CMAKE_AR}" crs "${RADIX_LIBC_ARCHIVE}" "${RADIX_LIBC_OBJECT}"
     COMMAND "${X86_64_LINUX_GNU_GCC_EXECUTABLE}"
             -ffreestanding -fPIC -fno-stack-protector -fcf-protection=none -mno-red-zone -nostdinc
             -I "${CMAKE_CURRENT_LIST_DIR}/sysroot/include"
-            -c "${CMAKE_CURRENT_LIST_DIR}/sysroot/lib/radix_libc.c"
+            -c "${RADIX_LIBRADIXC_SOURCE}"
             -o "${RADIX_LIBC_PIC_OBJECT}"
     COMMAND "${X86_64_LINUX_GNU_GCC_EXECUTABLE}" -nostdlib -shared
             -Wl,--hash-style=sysv
@@ -478,7 +480,7 @@ add_custom_command(
             -Wl,-soname,libradixc.rso
             -o "${RADIX_LIBC_RSO}"
             "${RADIX_LIBC_PIC_OBJECT}"
-    DEPENDS "${CMAKE_CURRENT_LIST_DIR}/sysroot/lib/radix_libc.c" ${RADIX_SYSROOT_HEADERS}
+    DEPENDS "${RADIX_LIBRADIXC_SOURCE}" ${RADIX_SYSROOT_HEADERS}
     VERBATIM
 )
 
@@ -721,9 +723,9 @@ add_custom_command(
             -Wl,-Ttext=0x40000000
             -Wl,--build-id=none
             -o "${RADIX_RADINIT_ELF}"
-            "${CMAKE_CURRENT_LIST_DIR}/services/radinit_entry.S"
-            "${CMAKE_CURRENT_LIST_DIR}/services/radinit.c"
-    DEPENDS "${CMAKE_CURRENT_LIST_DIR}/services/radinit_entry.S" "${CMAKE_CURRENT_LIST_DIR}/services/radinit.c"
+            "${RADIX_SERVICE_MANAGER_SOURCE_DIR}/radinit_entry.S"
+            "${RADIX_SERVICE_MANAGER_SOURCE_DIR}/radinit.c"
+    DEPENDS "${RADIX_SERVICE_MANAGER_SOURCE_DIR}/radinit_entry.S" "${RADIX_SERVICE_MANAGER_SOURCE_DIR}/radinit.c"
     VERBATIM
 )
 
