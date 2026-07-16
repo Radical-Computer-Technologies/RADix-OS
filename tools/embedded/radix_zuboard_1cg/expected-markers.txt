@@ -1,0 +1,19 @@
+# Ordered serial markers gating the ZuBoard QEMU smoke.
+# Blank lines and '#' comments are ignored. Each marker must appear in the
+# serial log at or after the previous marker's position.
+# Append markers below as new milestones are verified
+# (see docs/public/zuboard-1cg-handoff.md).
+RADIX_ZUBOARD_SD_OK
+RADIX_ZUBOARD_MMCBLK0_OK
+RADIX_ZUBOARD_PARTITION_BOOT_OK
+RADIX_ZUBOARD_PARTITION_ROOT_OK
+RADIX_AARCH64_MMU_ON_OK
+RADIX_AARCH64_EXCEPTION_VECTORS_OK
+RADIX_EXT4_MOUNT_OK
+RADIX_ZUBOARD_EXT4_ROOT_OK
+RADIX_ROOTFS_INIT_FOUND
+RADIX_AARCH64_USER_PROCESS_SPAWN_OK
+RADIX_LOGIN_SPAWN_OK
+RADIX_ZUBOARD_SERIAL_LOGIN_READY
+RADIX_ZUBOARD_SERIAL_READY
+# When EL0 user entry lands, append: RADIX_AARCH64_USERMODE_ENTER_OK

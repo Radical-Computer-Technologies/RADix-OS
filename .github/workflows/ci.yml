@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "crimson-*"]
+  pull_request:
+    branches: [main, "crimson-*"]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RADBUILD_REF: main # single knob to pin RadBuild if its main breaks us
+
+jobs:
+  host-kernel-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build-host -DRADIX_OS_BUILD_TESTS=ON
+      - name: Build
+        run: cmake --build build-host -j"$(nproc)"
+      - name: Test
+        run: ctest --test-dir build-host --output-on-failure
+
+  x86-64-terminal-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # RadBuild is private: the checkout token is absent on fork PRs.
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: RADix-OS
+      - uses: actions/checkout@v4
+        with:
+          repository: Radical-Computer-Technologies/RadBuild
+          token: ${{ secrets.RADBUILD_CHECKOUT_TOKEN }}
+          ref: ${{ env.RADBUILD_REF }}
+          path: RadBuild
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake grub-pc-bin xorriso mtools \
+            e2fsprogs dosfstools ncurses-bin socat qemu-system-x86
+      - name: Build and smoke via RadBuild
+        run: |
+          python3 RadBuild/radbuild/.tools/radbuild.py build os \
+            --settings RADix-OS/settings.ci.json \
+            --system radix-x86-64-grub-terminal-ci \
+            --json-events
+      - name: Upload smoke logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: x86-terminal-smoke-logs
+          path: RADix-OS/.radmeta/ci/terminal/logs/
+          if-no-files-found: ignore
+
+  zuboard-qemu-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    # RadBuild is private: the checkout token is absent on fork PRs.
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: RADix-OS
+      - uses: actions/checkout@v4
+        with:
+          repository: Radical-Computer-Technologies/RadBuild
+          token: ${{ secrets.RADBUILD_CHECKOUT_TOKEN }}
+          ref: ${{ env.RADBUILD_REF }}
+          path: RadBuild
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-arm mtools e2fsprogs fdisk
+      - name: Cache Arm GNU toolchain
+        uses: actions/cache@v4
+        with:
+          path: RADLib/.radbuild/toolchains
+          key: arm-gnu-toolchain-15.2.rel1-x86_64-aarch64-none-elf-v1
+      - name: Install Arm GNU toolchain # no-op on cache hit (script skips if present)
+        run: |
+          RADLIB_ROOT="$GITHUB_WORKSPACE/RADLib" \
+            RADix-OS/tools/embedded/setup_circle_toolchains.sh --arch aarch64
+      - name: Build image and run QEMU marker smoke via RadBuild
+        run: |
+          python3 RadBuild/radbuild/.tools/radbuild.py build os \
+            --settings RADix-OS/settings.ci.json \
+            --system radix-zuboard-1cg-qemu-ci \
+            --json-events
+      - name: Assert QEMU SD image exists # belt-and-braces vs silent image skips
+        run: test -s RADix-OS/artifacts/radix/zuboard-1cg-qemu/radix-zuboard-1cg-qemu.img
+      - name: Upload serial and build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zuboard-qemu-logs
+          path: RADix-OS/.radmeta/ci/zuboard-qemu/logs/
+          if-no-files-found: ignore

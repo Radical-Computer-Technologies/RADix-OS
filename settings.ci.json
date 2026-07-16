@@ -1,0 +1,124 @@
+{
+  "radbuild_schema": "2.0",
+  "radbuild_version": "0.2.1",
+  "project_name": "RADix-OS CI",
+  "systems": [
+    {
+      "id": "radix-x86-64-grub-terminal-ci",
+      "type": "os.radix",
+      "name": "CI x86_64 GRUB terminal smoke",
+      "provider": "radix-os",
+      "depends_on": [],
+      "toolchain": {
+        "architecture": "x86_64",
+        "boot": "grub-multiboot2",
+        "ui": "framebuffer-terminal"
+      },
+      "config": {
+        "target": "x86_64-grub-terminal",
+        "ui_profile": "terminal",
+        "source": {
+          "type": "local",
+          "path": "."
+        },
+        "feature_chunks": [
+          "kernel.core",
+          "kernel.x86_64",
+          "drivers.framebuffer",
+          "drivers.input.ps2",
+          "drivers.block.virtio",
+          "drivers.net.virtio",
+          "fs.ext4",
+          "fs.fat",
+          "services.radinit",
+          "services.base-terminal",
+          "userspace.rash",
+          "terminal.posix-compat",
+          "terminal.ncurses"
+        ],
+        "rkconfig": {
+          "hostname": "radix",
+          "root_password": "radix",
+          "rootfs_size_mb": 256,
+          "terminal_scale": "auto",
+          "terminal_font": "radix-default",
+          "terminal_theme": "radix-dark",
+          "terminal_autocomplete": true,
+          "terminal_posix_compat": true,
+          "terminal_ncurses": true,
+          "terminal_nano": true,
+          "terminal_nano_variant": "both",
+          "terminal_vim": true,
+          "terminal_vim_variant": "tiny"
+        },
+        "sdk": {
+          "enabled": false
+        },
+        "build_dir": "build/embedded/x86_64_grub_terminal",
+        "smoke_script": "tools/embedded/x86_64_grub_slint_smoke.sh",
+        "artifact_dir": "artifacts/radix/x86_64-grub-terminal",
+        "log_dir": ".radmeta/ci/terminal/logs",
+        "artifact_names": {
+          "kernel": "radixkernel-x86-64-grub-terminal",
+          "iso": "radixkernel-x86-64-grub-terminal.iso",
+          "rootfs": "radix-rootfs.ext4",
+          "fat32": "radix-fat32.img",
+          "serial_log": "x86-64-grub-terminal-smoke.log"
+        },
+        "qemu_timeout": "90s",
+        "qemu_smp": [2],
+        "jobs": 2
+      }
+    },
+    {
+      "id": "radix-zuboard-1cg-qemu-ci",
+      "type": "os.radix",
+      "name": "CI ZuBoard 1CG QEMU serial smoke",
+      "provider": "radix-os",
+      "depends_on": [],
+      "toolchain": {
+        "architecture": "aarch64",
+        "boot": "qemu-loader",
+        "ui": "serial"
+      },
+      "config": {
+        "target": "zuboard-1cg-qemu",
+        "source": {
+          "type": "local",
+          "path": "."
+        },
+        "hardware_source": "part_only",
+        "qemu": true,
+        "qemu_sdhci_base": "0xff160000u",
+        "qemu_image_size_mb": 512,
+        "qemu_smoke": true,
+        "qemu_smoke_script": "tools/embedded/radix_zuboard_1cg/qemu_marker_smoke.sh",
+        "qemu_smoke_timeout_seconds": 60,
+        "run_vivado": false,
+        "run_firmware_tools": false,
+        "run_uboot_build": false,
+        "feature_chunks": [
+          "kernel.core",
+          "kernel.a53",
+          "platform.zynqmp",
+          "drivers.serial.ps-uart",
+          "drivers.block.zynqmp-sdhci",
+          "fs.ext4",
+          "services.radinit",
+          "userspace.rash",
+          "terminal.posix-compat"
+        ],
+        "rootfs_size_mb": 256,
+        "sd_image_boot_mb": 64,
+        "build_dir": "tools/embedded/radix_zuboard_1cg",
+        "artifact_dir": "artifacts/radix/zuboard-1cg-qemu",
+        "log_dir": ".radmeta/ci/zuboard-qemu/logs",
+        "jobs": 2
+      }
+    }
+  ],
+  "connections": [],
+  "artifacts": [],
+  "deploy": [],
+  "packages": {}
+}
