@@ -208,15 +208,29 @@ void install_kernel_identity_tables(uint64_t *root) {
     }
 }
 
-uint64_t user_page_descriptor(uintptr_t physical_address, int writable) {
+constexpr uint32_t UserMapRead = 1u;
+constexpr uint32_t UserMapWrite = 2u;
+constexpr uint32_t UserMapExec = 4u;
+
+uint64_t user_page_descriptor_prot(uintptr_t physical_address, uint32_t prot) {
+    // User pages are never executable from EL1 (PXN); execute permission at
+    // EL0 (UXN clear) and write permission follow the requested protection.
     return (static_cast<uint64_t>(physical_address) & PteAddressMask)
         | PteValid
         | PteTable
         | PteAttrNormal
         | PteUser
-        | (writable ? 0ull : PteReadonly)
+        | ((prot & UserMapWrite) ? 0ull : PteReadonly)
+        | ((prot & UserMapExec) ? 0ull : PteUxN)
+        | PtePxN
         | PteInnerShareable
         | PteAccessFlag;
+}
+
+uint64_t user_page_descriptor(uintptr_t physical_address, int writable) {
+    // Legacy helper: RWX when writable (self-tests execute from such pages).
+    return user_page_descriptor_prot(physical_address,
+        UserMapRead | UserMapExec | (writable ? UserMapWrite : 0u));
 }
 
 uint64_t *table_ptr(uintptr_t physical_address) {
@@ -413,6 +427,27 @@ void sync_instruction_cache(void) {
 #endif
 }
 
+// Clean the D-cache to the point of unification for a range the kernel just
+// wrote and user code will execute. QEMU TCG has no cache model, but on real
+// A53 silicon instruction fetch sees stale lines without this -- reproducing
+// the classic "UDF at _start" trap that motivated the layout fix.
+void clean_dcache_range(uintptr_t address, size_t size) {
+#if defined(__aarch64__)
+    if (!size) return;
+    uint64_t ctr = 0;
+    asm volatile("mrs %0, ctr_el0" : "=r"(ctr));
+    const uintptr_t line = 4u << ((ctr >> 16u) & 0xfu);
+    const uintptr_t end = address + size;
+    for (uintptr_t addr = address & ~(line - 1u); addr < end; addr += line) {
+        asm volatile("dc cvau, %0" :: "r"(addr) : "memory");
+    }
+    asm volatile("dsb ish" ::: "memory");
+#else
+    (void)address;
+    (void)size;
+#endif
+}
+
 int enable_mmu_if_needed(uintptr_t table) {
 #if defined(__aarch64__)
     uint64_t sctlr = 0;
@@ -594,13 +629,26 @@ int setup_initial_user_stack(A53UserProcess *process) {
     return 1;
 }
 
+rad_status_t map_user_page_prot(rad_a53_address_space_t *space, uintptr_t virtual_address, uintptr_t physical_address, uint32_t prot) {
+    if (!space || (virtual_address & PageMask) != 0u || (physical_address & PageMask) != 0u) return RAD_STATUS_INVALID_ARGUMENT;
+    if (virtual_address < UserBase || virtual_address >= UserLimit) return RAD_STATUS_INVALID_ARGUMENT;
+    uint64_t *l3 = ensure_user_l3(space, virtual_address);
+    if (!l3) return RAD_STATUS_NO_MEMORY;
+    // Refuse silent remaps: overwriting a valid leaf discards a live mapping
+    // (this is exactly how the stack window once zeroed freshly loaded ELF text).
+    if (l3[l3_index(virtual_address)] & PteValid) return RAD_STATUS_INVALID_ARGUMENT;
+    l3[l3_index(virtual_address)] = user_page_descriptor_prot(physical_address, prot);
+    if (!record_owned_page(space, physical_address)) return RAD_STATUS_NO_MEMORY;
+    return RAD_STATUS_OK;
+}
+
 int map_user_stack(rad_a53_address_space_t *space) {
     const uintptr_t stack_bottom = UserStackTop - UserStackSize;
     for (uintptr_t va = stack_bottom; va < UserStackTop; va += PageSize) {
         const uintptr_t physical = rad_a53_vm_alloc_page();
         if (!physical) return 0;
         memset(reinterpret_cast<void *>(physical), 0, PageSize);
-        if (rad_a53_map_user_page(space, va, physical, 1) != RAD_STATUS_OK) {
+        if (map_user_page_prot(space, va, physical, UserMapRead | UserMapWrite) != RAD_STATUS_OK) {
             rad_a53_vm_free_page(physical);
             return 0;
         }
@@ -622,6 +670,11 @@ int load_user_elf(rad_a53_address_space_t *space, const uint8_t *image, size_t s
         const uintptr_t segment_start = static_cast<uintptr_t>(ph->vaddr);
         const uintptr_t file_end = static_cast<uintptr_t>(ph->vaddr + ph->filesz);
         const uintptr_t memory_end = static_cast<uintptr_t>(ph->vaddr + ph->memsz);
+        // Honor the segment permissions: text stays read-only + executable,
+        // data/bss writable + never executable (PF_X=1, PF_W=2, PF_R=4).
+        uint32_t prot = UserMapRead;
+        if (ph->flags & 0x2u) prot |= UserMapWrite;
+        if (ph->flags & 0x1u) prot |= UserMapExec;
         for (uintptr_t va = align_down(segment_start); va < memory_end; va += PageSize) {
             const uintptr_t physical = rad_a53_vm_alloc_page();
             if (!physical) return 0;
@@ -632,7 +685,10 @@ int load_user_elf(rad_a53_address_space_t *space, const uint8_t *image, size_t s
                 const uintptr_t src_offset = static_cast<uintptr_t>(ph->offset) + (copy_start - segment_start);
                 memcpy(reinterpret_cast<void *>(physical + (copy_start - va)), image + src_offset, static_cast<size_t>(copy_end - copy_start));
             }
-            if (rad_a53_map_user_page(space, va, physical, 1) != RAD_STATUS_OK) {
+            // Kernel wrote through the identity map (PA == VA at EL1); clean
+            // to PoU so EL0 instruction fetch sees the fresh bytes on silicon.
+            clean_dcache_range(physical, PageSize);
+            if (map_user_page_prot(space, va, physical, prot) != RAD_STATUS_OK) {
                 rad_a53_vm_free_page(physical);
                 return 0;
             }
@@ -1035,16 +1091,8 @@ extern "C" void rad_a53_activate_kernel_address_space(void) {
 }
 
 extern "C" rad_status_t rad_a53_map_user_page(rad_a53_address_space_t *space, uintptr_t virtual_address, uintptr_t physical_address, int writable) {
-    if (!space || (virtual_address & PageMask) != 0u || (physical_address & PageMask) != 0u) return RAD_STATUS_INVALID_ARGUMENT;
-    if (virtual_address < UserBase || virtual_address >= UserLimit) return RAD_STATUS_INVALID_ARGUMENT;
-    uint64_t *l3 = ensure_user_l3(space, virtual_address);
-    if (!l3) return RAD_STATUS_NO_MEMORY;
-    // Refuse silent remaps: overwriting a valid leaf discards a live mapping
-    // (this is exactly how the stack window once zeroed freshly loaded ELF text).
-    if (l3[l3_index(virtual_address)] & PteValid) return RAD_STATUS_INVALID_ARGUMENT;
-    l3[l3_index(virtual_address)] = user_page_descriptor(physical_address, writable);
-    if (!record_owned_page(space, physical_address)) return RAD_STATUS_NO_MEMORY;
-    return RAD_STATUS_OK;
+    return map_user_page_prot(space, virtual_address, physical_address,
+        UserMapRead | UserMapExec | (writable ? UserMapWrite : 0u));
 }
 
 extern "C" rad_status_t rad_a53_clone_cow(rad_a53_address_space_t *child, rad_a53_address_space_t *parent) {
@@ -1095,6 +1143,7 @@ extern "C" int rad_a53_handle_data_abort(uintptr_t fault_address, uint64_t esr_e
     const uintptr_t new_physical = rad_a53_vm_alloc_page();
     if (!new_physical) return 0;
     memcpy(reinterpret_cast<void *>(new_physical), reinterpret_cast<const void *>(old_physical), PageSize);
+    clean_dcache_range(new_physical, PageSize);
     if (!replace_owned_page(g_a53.active_space, old_physical, new_physical)) {
         rad_a53_vm_free_page(new_physical);
         return 0;
