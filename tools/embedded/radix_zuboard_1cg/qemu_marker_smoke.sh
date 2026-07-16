@@ -36,7 +36,7 @@ offset=0
 while IFS= read -r marker; do
     case "$marker" in ''|'#'*) continue ;; esac
     hit="$(tail -c +$((offset + 1)) "$LOG_FILE" \
-        | grep -F -a -b -m1 -o -- "$marker" | head -n1 | cut -d: -f1)"
+        | grep -F -a -b -m1 -o -- "$marker" | head -n1 | cut -d: -f1 || true)"
     if [ -z "$hit" ]; then
         echo "MISSING/OUT-OF-ORDER: $marker" >&2
         fail=1
