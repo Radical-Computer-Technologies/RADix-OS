@@ -88,11 +88,20 @@ radix_a53_install_exception_vectors:
     isb
     ret
 
+// A53UserContext layout (static_asserts in radixkernel_a53.cpp):
+//   +0 kernel_sp, +8 exit_reason, +16 trap frame (288 bytes), +304 ksave[12]
 .global rad_a53_enter_user_context
 .type rad_a53_enter_user_context, %function
 rad_a53_enter_user_context:
     mov x10, sp
     str x10, [x0, #0]
+    add x9, x0, #304
+    stp x19, x20, [x9, #0]
+    stp x21, x22, [x9, #16]
+    stp x23, x24, [x9, #32]
+    stp x25, x26, [x9, #48]
+    stp x27, x28, [x9, #64]
+    stp x29, x30, [x9, #80]
     mrs x12, CurrentEL
     lsr x12, x12, #2
     cmp x12, #2
@@ -219,10 +228,20 @@ radix_a53_sync_common:
 41:
     mov x0, sp
     bl rad_a53_exception_dispatch
-    ldr x1, =0x5241444152455849
-    cmp x0, x1
-    b.ne radix_a53_restore_user
-    add sp, sp, #288
+    // Contract: 0 = resume the interrupted user context from this stack frame,
+    // otherwise x0 = A53UserContext* -> unwind to the kernel caller of
+    // rad_a53_enter_user_context (restore its callee-saved regs and stack).
+    cbz x0, radix_a53_restore_user
+    ldr x9, [x0, #0]
+    add x10, x0, #304
+    ldp x19, x20, [x10, #0]
+    ldp x21, x22, [x10, #16]
+    ldp x23, x24, [x10, #32]
+    ldp x25, x26, [x10, #48]
+    ldp x27, x28, [x10, #64]
+    ldp x29, x30, [x10, #80]
+    mov sp, x9
+    ldr x0, [x0, #8]
     ret
 
 radix_a53_irq_spin:

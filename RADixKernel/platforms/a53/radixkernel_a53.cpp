@@ -1,16 +1,23 @@
 #include "radixkernel_a53.h"
 
+#include <stddef.h>
 #include <string.h>
 
 namespace {
 constexpr uintptr_t UserBase = 0x80000000ull;
 constexpr uintptr_t UserLimit = 0x81000000ull;
-constexpr uintptr_t UserStackTop = 0x80800000ull;
-constexpr uintptr_t UserMmapBase = 0x80900000ull;
+// Layout: [UserBase, UserImageLimit) ELF text/data/bss, then the stack grows down
+// from UserStackTop inside (UserImageLimit, UserStackTop], then mmap. The stack
+// window must never overlap the image window: map_user_stack maps zeroed pages and
+// would otherwise replace just-loaded ELF pages.
+constexpr uintptr_t UserImageLimit = 0x80800000ull;
+constexpr uintptr_t UserStackTop = 0x80a00000ull;
+constexpr uintptr_t UserMmapBase = 0x80a00000ull;
 constexpr uintptr_t UserMmapLimit = 0x81000000ull;
 constexpr uint32_t PageSize = 4096u;
 constexpr uint64_t PageMask = PageSize - 1u;
-constexpr size_t UserStackSize = 0x800000u;
+constexpr size_t UserStackSize = 0x200000u;
+static_assert(UserStackTop - UserStackSize >= UserImageLimit, "user stack window overlaps ELF image window");
 constexpr size_t EntriesPerTable = 512u;
 #ifndef RADIX_A53_MAX_TRACKED_PAGES
 #if defined(__aarch64__)
@@ -25,7 +32,7 @@ constexpr size_t EntriesPerTable = 512u;
 #endif
 
 constexpr size_t MaxTrackedPages = RADIX_A53_MAX_TRACKED_PAGES;
-constexpr size_t MaxInitImage = 131072u;
+constexpr size_t MaxInitImage = 262144u;
 constexpr size_t MaxUserProcesses = RADIX_A53_MAX_USER_PROCESSES;
 constexpr size_t MaxUserArgs = 8u;
 constexpr size_t MaxUserEnvs = 4u;
@@ -34,26 +41,15 @@ constexpr uint64_t L1Span = 1ull << 30u;
 constexpr uint64_t L2Span = 1ull << 21u;
 constexpr uintptr_t DefaultUsableBase = 16ull * 1024ull * 1024ull;
 constexpr uintptr_t DefaultUsableLimit = DefaultUsableBase + MaxTrackedPages * PageSize;
+// Floor for the user page pool: keeps allocated pages above the kernel image
+// (including the ~80 MB of static task stacks in .bss). Overridden per board.
+#ifndef RADIX_A53_USABLE_FLOOR
+#define RADIX_A53_USABLE_FLOOR 0u
+#endif
+constexpr uintptr_t UsableFloor = RADIX_A53_USABLE_FLOOR;
 constexpr uint64_t UserExitMagic = 0x5241444152455849ull; // "RADAREXI"
 constexpr uint32_t ElfPtLoad = 1u;
 constexpr uint16_t ElfMachineAArch64 = 183u;
-constexpr uintptr_t LinuxSysGetpid = 172u;
-constexpr uintptr_t LinuxSysExit = 93u;
-constexpr uintptr_t LinuxSysExitGroup = 94u;
-constexpr uintptr_t LinuxSysWrite = 64u;
-constexpr uintptr_t LinuxSysRead = 63u;
-constexpr uintptr_t LinuxSysOpenat = 56u;
-constexpr uintptr_t LinuxSysClose = 57u;
-constexpr uintptr_t LinuxSysExecve = 221u;
-constexpr uintptr_t LinuxSysWait4 = 260u;
-constexpr uintptr_t LinuxSysGetcwd = 17u;
-constexpr uintptr_t LinuxSysFcntl = 25u;
-constexpr uintptr_t LinuxSysDup = 23u;
-constexpr uintptr_t LinuxSysDup3 = 24u;
-constexpr uintptr_t LinuxSysPipe2 = 59u;
-constexpr uintptr_t LinuxSysNewfstatat = 79u;
-constexpr uintptr_t LinuxSysFstat = 80u;
-constexpr uintptr_t LinuxSysNanosleep = 101u;
 
 constexpr uint8_t PageUntracked = 0u;
 constexpr uint8_t PageFree = 1u;
@@ -112,7 +108,17 @@ struct A53UserContext {
     uintptr_t kernel_sp;
     uint64_t exit_reason;
     rad_a53_trap_frame_t frame;
+    // Kernel callee-saved state (x19..x30) captured by rad_a53_enter_user_context
+    // and restored by the exit path in boot.S so the enter call can simply return.
+    uint64_t ksave[12];
+    int32_t pid;
 };
+// boot.S hardcodes these offsets (enter: ksave stores; exit: ksave restore).
+static_assert(offsetof(A53UserContext, kernel_sp) == 0, "boot.S offset");
+static_assert(offsetof(A53UserContext, exit_reason) == 8, "boot.S offset");
+static_assert(offsetof(A53UserContext, frame) == 16, "boot.S offset");
+static_assert(sizeof(rad_a53_trap_frame_t) == 288, "boot.S frame size");
+static_assert(offsetof(A53UserContext, ksave) == 304, "boot.S offset");
 
 struct A53UserProcess {
     int used;
@@ -609,7 +615,7 @@ int load_user_elf(rad_a53_address_space_t *space, const uint8_t *image, size_t s
         const auto *ph = reinterpret_cast<const Elf64ProgramHeader *>(image + header->phoff + i * header->phentsize);
         if (ph->type != ElfPtLoad) continue;
         if (ph->filesz > ph->memsz || ph->offset > size || ph->filesz > size - ph->offset) return 0;
-        if (ph->vaddr < UserBase || ph->vaddr > UserLimit || ph->memsz > UserLimit - ph->vaddr) return 0;
+        if (ph->vaddr < UserBase || ph->vaddr > UserImageLimit || ph->memsz > UserImageLimit - ph->vaddr) return 0;
         const uintptr_t segment_start = static_cast<uintptr_t>(ph->vaddr);
         const uintptr_t file_end = static_cast<uintptr_t>(ph->vaddr + ph->filesz);
         const uintptr_t memory_end = static_cast<uintptr_t>(ph->vaddr + ph->memsz);
@@ -767,47 +773,6 @@ rad_status_t copy_timeval_to_user(uintptr_t dst) {
     return rad_a53_copy_to_user(dst, &tv, sizeof(tv));
 }
 
-int translate_syscall(uintptr_t number, uintptr_t *translated, uintptr_t *arg0, uintptr_t *arg1, uintptr_t *arg2, uintptr_t *arg3) {
-    (void)arg3;
-    if (!translated) return 0;
-    *translated = number;
-    switch (number) {
-    case LinuxSysRead: *translated = RAD_SYSCALL_READ; return 1;
-    case LinuxSysWrite: *translated = RAD_SYSCALL_WRITE; return 1;
-    case LinuxSysClose: *translated = RAD_SYSCALL_CLOSE; return 1;
-    case LinuxSysGetpid: *translated = RAD_SYSCALL_GETPID; return 1;
-    case LinuxSysExit:
-    case LinuxSysExitGroup: *translated = RAD_SYSCALL_EXIT; return 1;
-    case LinuxSysExecve: *translated = RAD_SYSCALL_EXECVE; return 1;
-    case LinuxSysWait4: *translated = RAD_SYSCALL_WAITPID; return 1;
-    case LinuxSysGetcwd: *translated = RAD_SYSCALL_GETCWD; return 1;
-    case LinuxSysFcntl: *translated = RAD_SYSCALL_FCNTL; return 1;
-    case LinuxSysDup: *translated = RAD_SYSCALL_DUP; return 1;
-    case LinuxSysPipe2: *translated = RAD_SYSCALL_PIPE; return 1;
-    case LinuxSysFstat: *translated = RAD_SYSCALL_FSTAT; return 1;
-    case LinuxSysNanosleep: *translated = RAD_SYSCALL_NANOSLEEP; return 1;
-    case LinuxSysOpenat:
-        *translated = RAD_SYSCALL_OPEN;
-        if (arg0 && arg1 && arg2) {
-            *arg0 = *arg1;
-            *arg1 = *arg2;
-        }
-        return 1;
-    case LinuxSysNewfstatat:
-        *translated = RAD_SYSCALL_STAT;
-        if (arg0 && arg1 && arg2) {
-            *arg0 = *arg1;
-            *arg1 = *arg2;
-        }
-        return 1;
-    case LinuxSysDup3:
-        *translated = RAD_SYSCALL_DUP2;
-        return 1;
-    default:
-        return number <= RAD_SYSCALL_SHM_UNLINK;
-    }
-}
-
 void finish_user_process(A53UserProcess *process, int32_t exit_code) {
     if (!process) return;
     rad_a53_activate_kernel_address_space();
@@ -843,50 +808,20 @@ void user_process_task(void *context) {
         }
         sync_instruction_cache();
         rad_debug_marker("RADIX_AARCH64_USERMODE_ENTER_OK");
+        process->context.pid = process->pid;
         g_active_user_context = &process->context;
 #if defined(__aarch64__)
-        if (current_exception_level() == 1u) {
-            rad_a53_enter_user_context(&process->context);
-        } else if (strcmp(process->path, "/bin/init") == 0) {
-            rad_debug_marker("RADIX_AARCH64_SVC_DISPATCH_OK");
-            rad_debug_marker("RADIX_AARCH64_USER_INVALID_PTR_OK");
-            rad_debug_marker("RADIX_AARCH64_USER_SYSCALLS_OK");
-            rad_debug_marker("RADIX_AARCH64_USER_INIT_OK");
-            copy_string(process->exec_path, sizeof(process->exec_path), "/bin/radsh");
-            process->exec_pending = 1;
-        } else if (strcmp(process->path, "/bin/radsh") == 0) {
-            rad_debug_marker("RADIX_AARCH64_SVC_DISPATCH_OK");
-            rad_debug_marker("RADIX_AARCH64_USER_RADSH_BOOT_OK");
-            rad_debug_marker("RADIX_AARCH64_USER_PIPE_FORK_OK");
-            rad_debug_marker("RADIX_AARCH64_TRAP_FRAME_FORK_OK");
-            rad_debug_marker("RADIX_AARCH64_FORK_OK");
-            rad_debug_marker("RADIX_AARCH64_USER_FORK_OK");
-            rad_debug_marker("RADIX_AARCH64_USER_FORK_CHILD_OK");
-            rad_debug_marker("RADIX_AARCH64_COW_PAGE_FAULT_OK");
-            rad_debug_marker("RADIX_AARCH64_USER_FORK_WAIT_OK");
-            rad_debug_marker("RADIX_AARCH64_USER_FORK_FD_INHERIT_OK");
-            rad_debug_marker("RADIX_AARCH64_COW_PARENT_ISOLATED_OK");
-            rad_debug_marker("RADIX_AARCH64_USER_COW_PARENT_ISOLATED_OK");
-            rad_debug_marker("RADIX_AARCH64_USER_WAIT_WAKE_OK");
-            rad_debug_marker("RADIX_AARCH64_USER_ZOMBIE_REAP_OK");
-            copy_string(process->exec_path, sizeof(process->exec_path), "/bin/test.sh");
-            process->exec_pending = 1;
-        } else if (strcmp(process->path, "/bin/sh") == 0) {
-            rad_debug_marker("RADIX_AARCH64_SVC_DISPATCH_OK");
-            rad_debug_marker("RADIX_AARCH64_USER_ARGV_ENVP_OK");
-            rad_debug_marker("RADIX_AARCH64_USER_SH_SCRIPT_OK");
-            rad_debug_marker("RADIX_AARCH64_USER_RADSH_EXIT_OK");
-            process->exit_code = 0;
-            process->exiting = 1;
-        } else {
-            process->exit_code = RAD_STATUS_NOT_SUPPORTED;
-            process->exiting = 1;
-        }
+        // Runs the process at EL0 until it exits, execs, or faults; the
+        // exception path unwinds back here via the ksave state in the context.
+        rad_a53_enter_user_context(&process->context);
 #else
         process->exit_code = 0;
         process->exiting = 1;
 #endif
         g_active_user_context = nullptr;
+        // TTBR0 still points at the process space; switch away before any
+        // teardown below frees its tables.
+        rad_a53_activate_kernel_address_space();
 
         if (process->exec_pending && !process->exiting) {
             rad_a53_destroy_address_space(&process->address_space);
@@ -994,6 +929,9 @@ extern "C" rad_status_t rad_a53_vm_init(const rad_boot_info_t *boot, rad_a53_vm_
             }
         }
     }
+    // Keep the pool clear of the kernel image and its static task stacks.
+    if (usable_base < UsableFloor) usable_base = UsableFloor;
+    if (usable_base >= usable_limit) return RAD_STATUS_ERROR;
     reset_page_allocator(usable_base, usable_limit);
     build_kernel_tables();
     if (!enable_mmu_if_needed(reinterpret_cast<uintptr_t>(g_kernel_l1))) return RAD_STATUS_ERROR;
@@ -1085,6 +1023,9 @@ extern "C" rad_status_t rad_a53_map_user_page(rad_a53_address_space_t *space, ui
     if (virtual_address < UserBase || virtual_address >= UserLimit) return RAD_STATUS_INVALID_ARGUMENT;
     uint64_t *l3 = ensure_user_l3(space, virtual_address);
     if (!l3) return RAD_STATUS_NO_MEMORY;
+    // Refuse silent remaps: overwriting a valid leaf discards a live mapping
+    // (this is exactly how the stack window once zeroed freshly loaded ELF text).
+    if (l3[l3_index(virtual_address)] & PteValid) return RAD_STATUS_INVALID_ARGUMENT;
     l3[l3_index(virtual_address)] = user_page_descriptor(physical_address, writable);
     if (!record_owned_page(space, physical_address)) return RAD_STATUS_NO_MEMORY;
     return RAD_STATUS_OK;
@@ -1199,39 +1140,58 @@ extern "C" intptr_t rad_a53_syscall_dispatch(uintptr_t number, uintptr_t arg0, u
     (void)arg3;
     (void)arg4;
     (void)arg5;
-    uintptr_t syscall = number;
-    uintptr_t a0 = arg0;
-    uintptr_t a1 = arg1;
-    uintptr_t a2 = arg2;
-    uintptr_t a3 = arg3;
-    if (!translate_syscall(number, &syscall, &a0, &a1, &a2, &a3)) return RAD_STATUS_NOT_SUPPORTED;
+    // Userland (libradixc, embedded stubs) passes RADix syscall numbers in x8;
+    // dispatch them natively. Pointer arguments are always marshalled through
+    // kernel buffers -- the core dispatcher dereferences raw pointers, so only
+    // scalar-argument syscalls may fall through to it.
+    const uintptr_t syscall = number;
+    const uintptr_t a0 = arg0;
+    const uintptr_t a1 = arg1;
+    const uintptr_t a2 = arg2;
 
     auto *process = find_user_process(rad_process_current_pid());
     switch (syscall) {
     case RAD_SYSCALL_READ: {
         uint8_t chunk[128];
         const size_t requested = static_cast<size_t>(a2);
-        const size_t count = requested < sizeof(chunk) ? requested : sizeof(chunk);
-        intptr_t result = rad_fd_read(static_cast<int32_t>(a0), chunk, count);
-        if (result <= 0) return result;
-        if (rad_a53_copy_to_user(a1, chunk, static_cast<size_t>(result)) != RAD_STATUS_OK) return RAD_STATUS_INVALID_ARGUMENT;
-        return result;
+        size_t total = 0;
+        while (total < requested) {
+            const size_t remaining = requested - total;
+            const size_t count = remaining < sizeof(chunk) ? remaining : sizeof(chunk);
+            const intptr_t result = rad_fd_read(static_cast<int32_t>(a0), chunk, count);
+            if (result < 0) return total ? static_cast<intptr_t>(total) : result;
+            if (result == 0) break;
+            if (rad_a53_copy_to_user(a1 + total, chunk, static_cast<size_t>(result)) != RAD_STATUS_OK) return RAD_STATUS_INVALID_ARGUMENT;
+            total += static_cast<size_t>(result);
+            // Short reads on ttys mean "that is all for now" -- return the line.
+            if (static_cast<size_t>(result) < count) break;
+        }
+        return static_cast<intptr_t>(total);
     }
     case RAD_SYSCALL_WRITE: {
         uint8_t chunk[128];
         const size_t requested = static_cast<size_t>(a2);
         if (requested == 0) return 0;
-        const size_t count = requested < sizeof(chunk) ? requested : sizeof(chunk);
-        if (rad_a53_copy_from_user(chunk, a1, count) != RAD_STATUS_OK) return RAD_STATUS_INVALID_ARGUMENT;
-        emit_markers_from_user_write(reinterpret_cast<const char *>(chunk), count);
-        intptr_t result = rad_fd_write(static_cast<int32_t>(a0), chunk, count);
-        if (result == RAD_STATUS_NOT_FOUND && static_cast<int32_t>(a0) == 1) {
-            char text[129]{};
-            memcpy(text, chunk, count);
-            rad_printk("%s", text);
-            result = static_cast<intptr_t>(count);
+        size_t total = 0;
+        while (total < requested) {
+            const size_t remaining = requested - total;
+            const size_t count = remaining < sizeof(chunk) ? remaining : sizeof(chunk);
+            if (rad_a53_copy_from_user(chunk, a1 + total, count) != RAD_STATUS_OK) {
+                return total ? static_cast<intptr_t>(total) : RAD_STATUS_INVALID_ARGUMENT;
+            }
+            emit_markers_from_user_write(reinterpret_cast<const char *>(chunk), count);
+            intptr_t result = rad_fd_write(static_cast<int32_t>(a0), chunk, count);
+            if (result == RAD_STATUS_NOT_FOUND && static_cast<int32_t>(a0) == 1) {
+                char text[129]{};
+                memcpy(text, chunk, count);
+                rad_printk("%s", text);
+                result = static_cast<intptr_t>(count);
+            }
+            if (result < 0) return total ? static_cast<intptr_t>(total) : result;
+            total += static_cast<size_t>(result);
+            if (static_cast<size_t>(result) < count) break;
         }
-        return result;
+        return static_cast<intptr_t>(total);
     }
     case RAD_SYSCALL_OPEN: {
         char path[128]{};
@@ -1240,8 +1200,26 @@ extern "C" intptr_t rad_a53_syscall_dispatch(uintptr_t number, uintptr_t arg0, u
     }
     case RAD_SYSCALL_CLOSE:
         return rad_fd_close(static_cast<int32_t>(a0));
-    case RAD_SYSCALL_IOCTL:
-        return rad_fd_ioctl(static_cast<int32_t>(a0), static_cast<uint32_t>(a1), nullptr);
+    case RAD_SYSCALL_IOCTL: {
+        const uint32_t request = static_cast<uint32_t>(a1);
+        const uint32_t dir = RAD_IOCTL_DIR(request);
+        const size_t size = RAD_IOCTL_SIZE(request);
+        if (size > 256u) return RAD_STATUS_NOT_SUPPORTED;
+        uint8_t buffer[256]{};
+        void *argument = nullptr;
+        if (size) {
+            argument = buffer;
+            if ((dir == RAD_IOCTL_WRITE || dir == RAD_IOCTL_READWRITE)
+                && rad_a53_copy_from_user(buffer, a2, size) != RAD_STATUS_OK) {
+                return RAD_STATUS_INVALID_ARGUMENT;
+            }
+        }
+        const intptr_t status = rad_fd_ioctl(static_cast<int32_t>(a0), request, argument);
+        if (status == RAD_STATUS_OK && size && (dir == RAD_IOCTL_READ || dir == RAD_IOCTL_READWRITE)) {
+            if (rad_a53_copy_to_user(a2, buffer, size) != RAD_STATUS_OK) return RAD_STATUS_INVALID_ARGUMENT;
+        }
+        return status;
+    }
     case RAD_SYSCALL_LSEEK:
         return static_cast<intptr_t>(rad_fd_lseek(static_cast<int32_t>(a0), static_cast<int64_t>(a1), static_cast<rad_seek_origin_t>(a2)));
     case RAD_SYSCALL_STAT: {
@@ -1259,7 +1237,9 @@ extern "C" intptr_t rad_a53_syscall_dispatch(uintptr_t number, uintptr_t arg0, u
     case RAD_SYSCALL_GETTIMEOFDAY:
         return copy_timeval_to_user(a0);
     case RAD_SYSCALL_NANOSLEEP:
-        rad_sleep_us(static_cast<uint32_t>(a0 / 1000u));
+        // Yielding sleep: busy-waiting here would starve every other task on
+        // this single-core, cooperatively scheduled target.
+        rad_task_sleep_us(static_cast<uint32_t>(a0 / 1000u));
         return RAD_STATUS_OK;
     case RAD_SYSCALL_EXIT:
         if (process) {
@@ -1333,8 +1313,137 @@ extern "C" intptr_t rad_a53_syscall_dispatch(uintptr_t number, uintptr_t arg0, u
         const int32_t status = rad_fd_fstat(static_cast<int32_t>(a0), &stat);
         return status == RAD_STATUS_OK && ((stat.mode & 0170000u) == 0020000u) ? 1 : 0;
     }
+    case RAD_SYSCALL_GETDENTS: {
+        if (a2 == 0 || a2 > 16u) return RAD_STATUS_INVALID_ARGUMENT;
+        rad_dirent_user_t entries[16]{};
+        const intptr_t count = rad_fd_getdents(static_cast<int32_t>(a0), entries, static_cast<size_t>(a2));
+        if (count <= 0) return count;
+        const size_t bytes = static_cast<size_t>(count) * sizeof(rad_dirent_user_t);
+        return rad_a53_copy_to_user(a1, entries, bytes) == RAD_STATUS_OK ? count : RAD_STATUS_INVALID_ARGUMENT;
+    }
+    case RAD_SYSCALL_POLL: {
+        if (a1 == 0 || a1 > 16u) return RAD_STATUS_INVALID_ARGUMENT;
+        rad_pollfd_t fds[16]{};
+        const size_t bytes = static_cast<size_t>(a1) * sizeof(rad_pollfd_t);
+        if (rad_a53_copy_from_user(fds, a0, bytes) != RAD_STATUS_OK) return RAD_STATUS_INVALID_ARGUMENT;
+        const int32_t ready = rad_fd_poll(fds, static_cast<size_t>(a1), static_cast<int32_t>(a2));
+        if (rad_a53_copy_to_user(a0, fds, bytes) != RAD_STATUS_OK) return RAD_STATUS_INVALID_ARGUMENT;
+        return ready;
+    }
+    case RAD_SYSCALL_PIPE2: {
+        int32_t pipefd[2]{};
+        const int32_t status = rad_pipe_create(pipefd);
+        if (status != RAD_STATUS_OK) return status;
+        if (a1 & RAD_FD_CLOEXEC) {
+            rad_fd_fcntl(pipefd[0], RAD_FCNTL_SETFD, RAD_FD_CLOEXEC);
+            rad_fd_fcntl(pipefd[1], RAD_FCNTL_SETFD, RAD_FD_CLOEXEC);
+        }
+        if (a1 & RAD_FD_NONBLOCK) {
+            rad_fd_fcntl(pipefd[0], RAD_FCNTL_SETFL, RAD_FD_NONBLOCK);
+            rad_fd_fcntl(pipefd[1], RAD_FCNTL_SETFL, RAD_FD_NONBLOCK);
+        }
+        return rad_a53_copy_to_user(a0, pipefd, sizeof(pipefd));
+    }
+    case RAD_SYSCALL_REMOVE: {
+        char path[128]{};
+        const rad_status_t status = rad_a53_copy_string_from_user(path, sizeof(path), a0);
+        return status == RAD_STATUS_OK ? rad_vfs_remove(path) : status;
+    }
+    case RAD_SYSCALL_MKDIR: {
+        char path[128]{};
+        const rad_status_t status = rad_a53_copy_string_from_user(path, sizeof(path), a0);
+        return status == RAD_STATUS_OK ? rad_vfs_mkdir(path) : status;
+    }
+    case RAD_SYSCALL_RMDIR: {
+        char path[128]{};
+        const rad_status_t status = rad_a53_copy_string_from_user(path, sizeof(path), a0);
+        return status == RAD_STATUS_OK ? rad_vfs_rmdir(path) : status;
+    }
+    case RAD_SYSCALL_RENAME: {
+        char old_path[128]{};
+        char new_path[128]{};
+        rad_status_t status = rad_a53_copy_string_from_user(old_path, sizeof(old_path), a0);
+        if (status != RAD_STATUS_OK) return status;
+        status = rad_a53_copy_string_from_user(new_path, sizeof(new_path), a1);
+        return status == RAD_STATUS_OK ? rad_vfs_rename(old_path, new_path) : status;
+    }
+    case RAD_SYSCALL_TRUNCATE: {
+        char path[128]{};
+        const rad_status_t status = rad_a53_copy_string_from_user(path, sizeof(path), a0);
+        return status == RAD_STATUS_OK ? rad_vfs_truncate(path, a1) : status;
+    }
+    case RAD_SYSCALL_CHMOD: {
+        char path[128]{};
+        const rad_status_t status = rad_a53_copy_string_from_user(path, sizeof(path), a0);
+        return status == RAD_STATUS_OK ? rad_vfs_chmod(path, static_cast<uint32_t>(a1)) : status;
+    }
+    case RAD_SYSCALL_LINK: {
+        char old_path[128]{};
+        char new_path[128]{};
+        rad_status_t status = rad_a53_copy_string_from_user(old_path, sizeof(old_path), a0);
+        if (status != RAD_STATUS_OK) return status;
+        status = rad_a53_copy_string_from_user(new_path, sizeof(new_path), a1);
+        return status == RAD_STATUS_OK ? rad_vfs_link(old_path, new_path) : status;
+    }
+    case RAD_SYSCALL_SYMLINK: {
+        char target[128]{};
+        char link_path[128]{};
+        rad_status_t status = rad_a53_copy_string_from_user(target, sizeof(target), a0);
+        if (status != RAD_STATUS_OK) return status;
+        status = rad_a53_copy_string_from_user(link_path, sizeof(link_path), a1);
+        return status == RAD_STATUS_OK ? rad_vfs_symlink(target, link_path) : status;
+    }
+    case RAD_SYSCALL_READLINK: {
+        char path[128]{};
+        char target[128]{};
+        const rad_status_t status = rad_a53_copy_string_from_user(path, sizeof(path), a0);
+        if (status != RAD_STATUS_OK) return status;
+        const size_t capacity = a2 < sizeof(target) ? static_cast<size_t>(a2) : sizeof(target);
+        const rad_status_t link_status = rad_vfs_readlink(path, target, capacity);
+        if (link_status != RAD_STATUS_OK) return link_status;
+        const size_t length = strlen(target);
+        return rad_a53_copy_to_user(a1, target, length) == RAD_STATUS_OK ? static_cast<intptr_t>(length) : RAD_STATUS_INVALID_ARGUMENT;
+    }
+    case RAD_SYSCALL_UTIME: {
+        char path[128]{};
+        const rad_status_t status = rad_a53_copy_string_from_user(path, sizeof(path), a0);
+        if (status != RAD_STATUS_OK) return status;
+        rad_vfs_stat_t stat{};
+        return rad_vfs_stat(path, &stat);
+    }
+    case RAD_SYSCALL_LOG_READ: {
+        if (a1 > 16u) return RAD_STATUS_INVALID_ARGUMENT;
+        rad_log_entry_t entries[16]{};
+        const size_t count = rad_log_read(entries, static_cast<size_t>(a1), a2);
+        const size_t copy_count = count < a1 ? count : static_cast<size_t>(a1);
+        if (copy_count && rad_a53_copy_to_user(a0, entries, copy_count * sizeof(rad_log_entry_t)) != RAD_STATUS_OK) return RAD_STATUS_INVALID_ARGUMENT;
+        return static_cast<intptr_t>(count);
+    }
+    case RAD_SYSCALL_LOG_FLUSH: {
+        char path[128]{};
+        const rad_status_t status = rad_a53_copy_string_from_user(path, sizeof(path), a0);
+        return status == RAD_STATUS_OK ? rad_log_flush_to_path(path) : status;
+    }
+    // Scalar-argument syscalls are safe to hand to the core dispatcher.
+    case RAD_SYSCALL_KILL:
+    case RAD_SYSCALL_GETUID:
+    case RAD_SYSCALL_GETEUID:
+    case RAD_SYSCALL_GETGID:
+    case RAD_SYSCALL_GETEGID:
+    case RAD_SYSCALL_SETUID:
+    case RAD_SYSCALL_SETGID:
+    case RAD_SYSCALL_GETPGID:
+    case RAD_SYSCALL_SETPGID:
+    case RAD_SYSCALL_GETSID:
+    case RAD_SYSCALL_SETSID:
+    case RAD_SYSCALL_TCGETPGRP:
+    case RAD_SYSCALL_TCSETPGRP:
+    case RAD_SYSCALL_FCHDIR:
+    case RAD_SYSCALL_FTRUNCATE:
+    case RAD_SYSCALL_FSYNC:
+        return rad_syscall_dispatch(syscall, a0, a1, a2, arg3, arg4, arg5);
     default:
-        return rad_syscall_dispatch(syscall, a0, a1, a2, a3, arg4, arg5);
+        return RAD_STATUS_NOT_SUPPORTED;
     }
 }
 
@@ -1354,23 +1463,35 @@ extern "C" intptr_t rad_a53_syscall_dispatch_frame(rad_a53_trap_frame_t *frame) 
     return 0;
 }
 
+// Contract with boot.S: return 0 to resume the interrupted user context from the
+// exception stack frame; return the active A53UserContext pointer to unwind back
+// into the kernel caller of rad_a53_enter_user_context.
 extern "C" uintptr_t rad_a53_exception_dispatch(rad_a53_trap_frame_t *frame) {
-    if (!frame) return UserExitMagic;
+    const uintptr_t exit_to_kernel = reinterpret_cast<uintptr_t>(g_active_user_context);
+    if (!frame) return exit_to_kernel;
     constexpr uint64_t EcShift = 26u;
     constexpr uint64_t EcMask = 0x3fu;
     constexpr uint64_t EcSvc64 = 0x15u;
     constexpr uint64_t EcDataAbortLowerEl = 0x24u;
     const uint64_t ec = (frame->esr_el1 >> EcShift) & EcMask;
-    if (ec == EcSvc64) return static_cast<uintptr_t>(rad_a53_syscall_dispatch_frame(frame));
+    if (ec == EcSvc64) {
+        return rad_a53_syscall_dispatch_frame(frame) == 0 ? 0u : exit_to_kernel;
+    }
     if (ec == EcDataAbortLowerEl && rad_a53_handle_data_abort(frame->far_el1, frame->esr_el1)) return 0;
     if (!g_active_user_context) {
+        // Exception taken from EL1 with no user context: the kernel itself
+        // faulted. There is nowhere sane to unwind to -- report and halt.
         rad_kprintk(RKERN_ERR,
             "RADIX_AARCH64_KERNEL_EXCEPTION el=%u esr=0x%llx far=0x%llx elr=0x%llx\n",
             current_exception_level(),
             static_cast<unsigned long long>(frame->esr_el1),
             static_cast<unsigned long long>(frame->far_el1),
             static_cast<unsigned long long>(frame->elr_el1));
-        return UserExitMagic;
+#if defined(__aarch64__)
+        for (;;) asm volatile("wfe");
+#else
+        return 0;
+#endif
     }
     auto *process = find_user_process(rad_process_current_pid());
     if (process) {
@@ -1384,7 +1505,7 @@ extern "C" uintptr_t rad_a53_exception_dispatch(rad_a53_trap_frame_t *frame) {
         static_cast<unsigned long long>(frame->far_el1),
         static_cast<unsigned long long>(frame->elr_el1));
     rad_debug_marker("RADIX_AARCH64_USER_EXCEPTION_EXIT_OK");
-    return UserExitMagic;
+    return exit_to_kernel;
 }
 
 extern "C" rad_status_t rad_a53_platform_init(void) {
@@ -1393,6 +1514,11 @@ extern "C" rad_status_t rad_a53_platform_init(void) {
     if (g_a53.caps.boot_normalized) rad_debug_marker("RADIX_A53_BOOT_NORMALIZED_OK");
     if (g_a53.caps.secondary_cores_parked) rad_debug_marker("RADIX_A53_SECONDARIES_PARKED_OK");
     if (radix_a53_install_exception_vectors) radix_a53_install_exception_vectors();
+#if defined(__aarch64__)
+    // Enable EL0/EL1 FP/SIMD access; userland is built -mgeneral-regs-only today,
+    // but any future binary touching V registers must not trap with EC=0x07.
+    asm volatile("mrs x0, cpacr_el1\n\torr x0, x0, #(3 << 20)\n\tmsr cpacr_el1, x0\n\tisb" ::: "x0");
+#endif
     if (rad_a53_vm_init(nullptr, nullptr) != RAD_STATUS_OK) return RAD_STATUS_ERROR;
     g_a53.caps.exception_vectors_ready = 1u;
     g_a53.caps.svc_ready = 1u;

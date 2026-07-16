@@ -1228,6 +1228,9 @@ long strtol(const char *nptr, char **endptr, int base) {
 }
 
 unsigned long strtoul(const char *nptr, char **endptr, int base) { return (unsigned long)strtol(nptr, endptr, base); }
+/* RADIX_LIBC_NO_FLOAT: strip all floating-point entry points so freestanding
+ * targets can build the libc with -mgeneral-regs-only (no FP/SIMD registers). */
+#ifndef RADIX_LIBC_NO_FLOAT
 double strtod(const char *nptr, char **endptr) {
     if (!nptr) {
         if (endptr) *endptr = 0;
@@ -1275,9 +1278,12 @@ double strtod(const char *nptr, char **endptr) {
     if (endptr) *endptr = (char*)(any ? p : nptr);
     return sign < 0 ? -value : value;
 }
+#endif /* !RADIX_LIBC_NO_FLOAT */
 int atoi(const char *nptr) { return (int)strtol(nptr, 0, 10); }
 long atol(const char *nptr) { return strtol(nptr, 0, 10); }
+#ifndef RADIX_LIBC_NO_FLOAT
 double atof(const char *nptr) { return strtod(nptr, 0); }
+#endif
 int abs(int n) { return n < 0 ? -n : n; }
 long labs(long n) { return n < 0 ? -n : n; }
 intmax_t strtoimax(const char *nptr, char **endptr, int base) { return (intmax_t)strtol(nptr, endptr, base); }
@@ -1883,6 +1889,7 @@ int strncasecmp(const char *s1, const char *s2, size_t n) {
     return 0;
 }
 
+#ifndef RADIX_LIBC_NO_FLOAT
 double floor(double x) { long i = (long)x; return (double)(i > x ? i - 1 : i); }
 double ceil(double x) { long i = (long)x; return (double)(i < x ? i + 1 : i); }
 double fabs(double x) { return x < 0 ? -x : x; }
@@ -1911,6 +1918,7 @@ double log10(double x) {
 int isinf(double x) { return x == __builtin_huge_val() || x == -__builtin_huge_val(); }
 int isnan(double x) { return x != x; }
 int signbit(double x) { return x < 0.0; }
+#endif /* !RADIX_LIBC_NO_FLOAT */
 
 size_t mbrtowc(wchar_t *pwc, const char *s, size_t n, mbstate_t *ps) {
     (void)ps;
