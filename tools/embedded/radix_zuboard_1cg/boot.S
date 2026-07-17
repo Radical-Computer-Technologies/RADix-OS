@@ -38,25 +38,25 @@ _start:
 .global radix_a53_exception_vectors
 .type radix_a53_exception_vectors, %function
 radix_a53_exception_vectors:
-    b radix_a53_sync_common
+    b radix_a53_sync_common      // 0x000 curEL SP0 sync
     .align 7
-    b radix_a53_irq_spin
+    b radix_a53_irq_spin         // 0x080 curEL SP0 irq (unused: kernel runs SPx)
     .align 7
-    b radix_a53_irq_spin
+    b radix_a53_irq_spin         // 0x100 curEL SP0 fiq
     .align 7
-    b radix_a53_irq_spin
+    b radix_a53_irq_spin         // 0x180 curEL SP0 serror
     .align 7
-    b radix_a53_sync_common
+    b radix_a53_sync_common      // 0x200 curEL SPx sync
     .align 7
-    b radix_a53_irq_spin
+    b radix_a53_irq_common       // 0x280 curEL SPx irq (kernel/task interrupted)
     .align 7
-    b radix_a53_irq_spin
+    b radix_a53_irq_spin         // 0x300 curEL SPx fiq
     .align 7
-    b radix_a53_irq_spin
+    b radix_a53_irq_spin         // 0x380 curEL SPx serror
     .align 7
-    b radix_a53_sync_common
+    b radix_a53_sync_common      // 0x400 lowerEL AArch64 sync
     .align 7
-    b radix_a53_irq_spin
+    b radix_a53_irq_common       // 0x480 lowerEL AArch64 irq (EL0 interrupted)
     .align 7
     b radix_a53_irq_spin
     .align 7
@@ -243,6 +243,40 @@ radix_a53_sync_common:
     mov sp, x9
     ldr x0, [x0, #8]
     ret
+
+// IRQ entry: same 288-byte frame as the sync path, then GIC dispatch in C.
+// Always resumes the interrupted context; preemption happens inside the C
+// dispatcher via rad_task_yield -- this frame stays parked on the interrupted
+// task's stack and unwinds when the task is re-dispatched (x86 pattern).
+radix_a53_irq_common:
+    sub sp, sp, #288
+    stp x0, x1, [sp, #0]
+    stp x2, x3, [sp, #16]
+    stp x4, x5, [sp, #32]
+    stp x6, x7, [sp, #48]
+    stp x8, x9, [sp, #64]
+    stp x10, x11, [sp, #80]
+    stp x12, x13, [sp, #96]
+    stp x14, x15, [sp, #112]
+    stp x16, x17, [sp, #128]
+    stp x18, x19, [sp, #144]
+    stp x20, x21, [sp, #160]
+    stp x22, x23, [sp, #176]
+    stp x24, x25, [sp, #192]
+    stp x26, x27, [sp, #208]
+    stp x28, x29, [sp, #224]
+    str x30, [sp, #240]
+    mrs x0, sp_el0
+    str x0, [sp, #248]
+    mrs x0, elr_el1
+    str x0, [sp, #256]
+    mrs x0, spsr_el1
+    str x0, [sp, #264]
+    str xzr, [sp, #272]
+    str xzr, [sp, #280]
+    mov x0, sp
+    bl rad_zynqmp_irq_dispatch_frame
+    b radix_a53_restore_user
 
 radix_a53_irq_spin:
     wfe

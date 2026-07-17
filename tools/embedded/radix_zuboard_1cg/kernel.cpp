@@ -9,6 +9,8 @@ extern "C" char __image_end;
 extern "C" uintptr_t radix_zuboard_boot_argument;
 extern "C" void radix_zuboard_entry(rad_boot_handoff_t *incoming_handoff);
 extern "C" void rad_zynqmp_bind_handoff(const rad_boot_handoff_t *handoff);
+extern "C" rad_status_t rad_zynqmp_preempt_init(void);
+extern "C" uint64_t rad_hal_time_micros(void);
 extern "C" rad_status_t x86_ext4_mount_root(const char *block_device);
 extern "C" int x86_ext4_self_test(void);
 extern "C" rad_status_t rad_a53_user_spawn_process_with_stdio(const char *path, int32_t parent_pid, const char *stdio_path, int32_t *pid_out, rad_task_t *task_out);
@@ -209,6 +211,7 @@ extern "C" void radix_zuboard_entry(rad_boot_handoff_t *incoming_handoff) {
     rad_kernel_init(&config);
     rad_a53_note_boot_normalized(0u, static_cast<uintptr_t>(radix_zuboard_boot_argument), 1u);
     rad_a53_platform_init();
+    if (rad_zynqmp_preempt_init() != RAD_STATUS_OK) marker("RADIX_ZUBOARD_TIMER_IRQ_FAIL");
 
     marker("RADIX_ZYNQMP_ENTRY_OK");
     marker("RADIX_ZUBOARD_HANDOFF_OK");
@@ -249,6 +252,28 @@ extern "C" void radix_zuboard_entry(rad_boot_handoff_t *incoming_handoff) {
         if (rad_a53_process_self_test() == RAD_STATUS_OK) marker("RADIX_ZUBOARD_A53_PROCESS_PARITY_OK");
     }
     marker("RADIX_ZUBOARD_SERIAL_READY");
+
+    // Preemption witness: a time-based busy task long enough to span several
+    // 4 ms timer periods; if scheduler ticks advanced while it ran, the
+    // IRQ->tick->yield_from_irq path is live.
+    {
+        rad_scheduler_info_t before{};
+        rad_scheduler_info_get(&before);
+        rad_task_t witness = nullptr;
+        auto busy = [](void *) {
+            const uint64_t until = rad_hal_time_micros() + 20000u;
+            while (rad_hal_time_micros() < until) {
+            }
+        };
+        if (rad_task_create(&witness, "preempt-witness", busy, nullptr, 0) == RAD_STATUS_OK) {
+            rad_task_join(witness);
+            rad_scheduler_info_t after{};
+            rad_scheduler_info_get(&after);
+            if (after.preemption_enabled && after.scheduler_ticks > before.scheduler_ticks) {
+                marker("RADIX_ZUBOARD_PREEMPT_TICK_OK");
+            }
+        }
+    }
 
     while (!rad_kernel_is_shutdown_requested()) {
         rad_kernel_poll();

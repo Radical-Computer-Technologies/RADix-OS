@@ -454,14 +454,123 @@ extern "C" void rad_hal_cpu_halt_forever(void) {
     for (;;) asm volatile("wfi");
 }
 
+// --- GICv2 + EL1 physical generic timer (CNTP, PPI INTID 30) ---------------
+namespace {
+
+constexpr uint32_t GicIntidTimer = 30u;
+constexpr uint32_t GicIntidSpurious = 1020u;
+constexpr uint32_t TimerHz = 250u; // 4 ms tick: TCG-friendly
+
+uintptr_t gicd(uintptr_t offset) { return g_zynqmp.gic_distributor_base + offset; }
+uintptr_t gicc(uintptr_t offset) { return g_zynqmp.gic_cpu_base + offset; }
+
+uint64_t g_timer_interval_ticks = 0;
+volatile uint32_t g_timer_irq_seen = 0;
+volatile uint32_t g_ap_timer_irq_seen = 0;
+
+void zynqmp_timer_arm(void) {
+#if defined(__aarch64__)
+    if (!g_timer_interval_ticks) {
+        uint64_t frequency = 0;
+        asm volatile("mrs %0, cntfrq_el0" : "=r"(frequency));
+        g_timer_interval_ticks = frequency / TimerHz;
+    }
+    asm volatile("msr cntp_tval_el0, %0" :: "r"(g_timer_interval_ticks));
+    asm volatile("msr cntp_ctl_el0, %0" :: "r"(1ull)); // ENABLE=1, IMASK=0
+#endif
+}
+
+void zynqmp_timer_irq(uint32_t, void *) {
+    zynqmp_timer_arm(); // re-arm first: deasserts the level-triggered line
+    rad_timer_tick(1000000u / TimerHz);
+    if (!g_timer_irq_seen) {
+        g_timer_irq_seen = 1;
+        rad_debug_marker("RADIX_TIMER_IRQ_OK");
+    }
+    uint32_t core = 0;
+#if defined(__aarch64__)
+    uint64_t mpidr = 0;
+    asm volatile("mrs %0, mpidr_el1" : "=r"(mpidr));
+    core = static_cast<uint32_t>(mpidr & 0xffu);
+#endif
+    if (core > 0 && !g_ap_timer_irq_seen) {
+        g_ap_timer_irq_seen = 1;
+        rad_debug_marker("RADIX_AP_TIMER_IRQ_OK");
+    }
+}
+
+// Banked per-core CPU-interface init (PPIs/SGIs are per-core in the GIC).
+void zynqmp_gic_cpu_init(void) {
+    write32(gicc(0x04u), 0xf8u); // GICC_PMR: allow all configured priorities
+    write32(gicc(0x08u), 0x00u); // GICC_BPR
+    write32(gicc(0x00u), 0x01u); // GICC_CTLR: enable group 0/1 signalling
+}
+
+} // namespace
+
 extern "C" rad_status_t rad_hal_irq_enable(uint32_t irq) {
-    (void)irq;
-    return RAD_STATUS_NOT_SUPPORTED;
+    if (irq >= 1020u) return RAD_STATUS_INVALID_ARGUMENT;
+    // Banked for INTID < 32: must execute on the core that owns the PPI.
+    write32(gicd(0x100u + 4u * (irq / 32u)), 1u << (irq % 32u));
+    return RAD_STATUS_OK;
 }
 
 extern "C" rad_status_t rad_hal_irq_disable(uint32_t irq) {
-    (void)irq;
-    return RAD_STATUS_NOT_SUPPORTED;
+    if (irq >= 1020u) return RAD_STATUS_INVALID_ARGUMENT;
+    write32(gicd(0x180u + 4u * (irq / 32u)), 1u << (irq % 32u));
+    return RAD_STATUS_OK;
+}
+
+// Strong scheduler hooks: this target preempts (bcm283x must not claim this,
+// so these live in the zynqmp HAL rather than the shared a53 platform file).
+extern "C" int rad_arch_preemption_supported(void) {
+    return 1;
+}
+
+extern "C" const char *rad_arch_scheduler_name(void) {
+    return "a53-gicv2-preemptive";
+}
+
+extern "C" void rad_arch_scheduler_tick(uint32_t core) {
+    (void)core;
+    rad_scheduler_yield_from_irq();
+}
+
+// IRQ dispatch entered from boot.S's radix_a53_irq_common with the saved
+// exception frame; the frame itself is only needed by the asm resume path.
+extern "C" void rad_zynqmp_irq_dispatch_frame(void *frame) {
+    (void)frame;
+    for (;;) {
+        const uint32_t iar = read32(gicc(0x0cu));
+        const uint32_t intid = iar & 0x3ffu;
+        if (intid >= GicIntidSpurious) break;
+        rad_irq_dispatch(intid);
+        write32(gicc(0x10u), iar); // EOIR before any context switch away
+        if (intid == GicIntidTimer) {
+            rad_arch_scheduler_tick(rad_hal_current_core());
+        }
+    }
+}
+
+// Distributor + core-0 CPU interface + timer registration. Called by the
+// board entry after exception vectors and the MMU are live.
+extern "C" rad_status_t rad_zynqmp_preempt_init(void) {
+    write32(gicd(0x000u), 0u);           // GICD_CTLR off during setup
+    write32(gicd(0x180u), 0xffffffffu);  // mask banked SGI/PPI
+    write8(gicd(0x400u + GicIntidTimer), 0x80u); // IPRIORITYR byte for INTID 30
+    write32(gicd(0x000u), 1u);           // distributor on
+    zynqmp_gic_cpu_init();
+    const rad_status_t registered = rad_irq_register(GicIntidTimer, "cntp-timer", zynqmp_timer_irq, nullptr);
+    if (registered != RAD_STATUS_OK) return registered;
+    (void)rad_irq_enable(GicIntidTimer);
+    zynqmp_timer_arm();
+    rad_hal_interrupts_enable();
+    // Bounded wait for the first tick so RADIX_TIMER_IRQ_OK has a stable
+    // position in the serial log (three periods of margin).
+    const uint64_t deadline = rad_hal_time_micros() + 3u * (1000000u / TimerHz);
+    while (!g_timer_irq_seen && rad_hal_time_micros() < deadline) {
+    }
+    return g_timer_irq_seen ? RAD_STATUS_OK : RAD_STATUS_TIMEOUT;
 }
 
 extern "C" rad_status_t rad_hal_register_default_devices(void) {

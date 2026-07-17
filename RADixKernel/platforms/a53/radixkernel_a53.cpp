@@ -851,7 +851,9 @@ void user_process_task(void *context) {
             memset(&process->context, 0, sizeof(process->context));
             process->context.frame.elr_el1 = process->entry;
             process->context.frame.sp_el0 = process->initial_sp;
-            process->context.frame.spsr_el1 = 0x3c0u;
+            // EL0t with D/A/F masked and IRQs UNMASKED so the generic timer can
+            // interrupt user code (preemption); fork/exec inherit via frame copy.
+            process->context.frame.spsr_el1 = 0x340u;
         }
         process->resume_context = 0;
         process->exec_pending = 0;
@@ -1580,21 +1582,23 @@ asm(R"(
 .type rad_a53_task_context_switch, %function
 rad_a53_task_context_switch:
     mov x9, sp
+    mrs x10, daif
     stp x19, x20, [x0, #0]
     stp x21, x22, [x0, #16]
     stp x23, x24, [x0, #32]
     stp x25, x26, [x0, #48]
     stp x27, x28, [x0, #64]
     stp x29, x30, [x0, #80]
-    str x9,       [x0, #96]
+    stp x9, x10,  [x0, #96]
     ldp x19, x20, [x1, #0]
     ldp x21, x22, [x1, #16]
     ldp x23, x24, [x1, #32]
     ldp x25, x26, [x1, #48]
     ldp x27, x28, [x1, #64]
     ldp x29, x30, [x1, #80]
-    ldr x9,       [x1, #96]
+    ldp x9, x10,  [x1, #96]
     mov sp, x9
+    msr daif, x10
     ret
 )");
 
@@ -1609,6 +1613,14 @@ extern "C" void rad_arch_task_context_init(uintptr_t *context, void *stack_top, 
     for (size_t i = 0; i < 16u; ++i) context[i] = 0;
     context[11] = reinterpret_cast<uintptr_t>(entry);
     context[12] = align_down(reinterpret_cast<uintptr_t>(stack_top), 16u);
+#if defined(__aarch64__)
+    // Word [13] = DAIF, restored by the switch. A preempted kernel task never
+    // erets, so without this the first IRQ-driven switch would leave interrupts
+    // masked on that core forever. New tasks inherit the creating core's state.
+    uintptr_t daif = 0;
+    asm volatile("mrs %0, daif" : "=r"(daif));
+    context[13] = daif;
+#endif
 }
 
 extern "C" void rad_arch_task_context_switch(uintptr_t *old_context, uintptr_t *new_context) {
