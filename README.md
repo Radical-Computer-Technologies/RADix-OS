@@ -7,13 +7,57 @@ performance with a POSIX-like feature set.
 
 - `RADixKernel/` contains the portable kernel core, public
   `<radixkernel/...>` headers, host simulator backend, and embedded/platform
-  backends.
-- `tools/embedded/` contains the current bootable targets and smoke scripts,
-  including x86_64 GRUB terminal and RADCompositor/Slint VM profiles.
+  backends (x86_64, and the Cortex-A53 `a53/` tree with the ZynqMP/ZuBoard
+  SoC backend).
+- `tools/embedded/` contains the current bootable targets and smoke scripts:
+  the x86_64 GRUB terminal and RADCompositor/Slint VM profiles, and the
+  ZuBoard-1CG (ZynqMP A53) serial target under `radix_zuboard_1cg/`.
 - `tests/` contains host-side RADix kernel tests.
 
 RADLib is now an optional sibling dependency for RADLib/Slint UI integration.
 Kernel-only builds do not require RADLib.
+
+## Building with RadBuild
+
+RadBuild is the build driver for RADix-OS. Install the frozen release once and
+invoke the `radbuild` command directly — no Python checkout or interpreter
+handling required:
+
+```bash
+# From the published RadBuild release assets (Debian/apt-based hosts):
+sudo apt install ./radbuild_0.2.1_amd64.deb
+```
+
+This places `radbuild` on `PATH`. Each `settings*.json` at the repo root is an
+OS build configuration; RadBuild resolves it, builds the image, and runs the
+target's smoke:
+
+```bash
+radbuild build os --settings settings.json          --json-events   # default x86_64 terminal
+radbuild build os --settings settings.terminal.json --json-events   # x86_64 GRUB terminal
+radbuild build os --settings settings.wm.json       --json-events   # x86_64 RADCompositor/Slint WM
+radbuild build os --settings settings.ci.json --system radix-zuboard-1cg-qemu-ci --json-events  # ZuBoard-1CG A53 (QEMU)
+```
+
+RadBuild 0.2.1 treats each JSON as an OS build configuration. The terminal
+profile excludes Slint/RADCompositor chunks and runs the terminal VM smoke; the
+WM profile includes the Slint-backed RADCompositor shell, runs the hosted UI
+smoke, and packages the VM image without making the current Slint VM path a
+release gate. The ZuBoard profile cross-builds the A53 kernel + userland,
+assembles the SD image, and runs the QEMU marker smoke.
+Each profile has its own build directory, artifact directory, writable ext4/FAT
+images, serial logs, and `SHA256SUMS`.
+
+The profile ISOs are generated at:
+
+```text
+build/embedded/x86_64_grub_terminal/radixkernel-x86-64-grub-terminal.iso
+build/embedded/x86_64_grub_wm/radixkernel-x86-64-grub-wm.iso
+```
+
+> Development against an unreleased RadBuild can still run the source tree
+> directly (`python3 ../RadBuild/radbuild/.tools/radbuild.py ...`), but the
+> frozen `radbuild` command above is the supported entry point.
 
 ## Build Checks
 
@@ -37,27 +81,14 @@ x86_64 GRUB RADCompositor/Slint ISO smoke:
 RADIX_X86_UI_PROFILE=wm tools/embedded/x86_64_grub_slint_smoke.sh
 ```
 
-Canonical RadBuild OS builds:
+ZuBoard-1CG (ZynqMP A53) QEMU smokes — the marker gate boots to an interactive
+serial login, the login smoke drives that session, and the SMP smoke validates
+the second core under `-smp 2`:
 
 ```bash
-../RadBuild/radbuild/.tools/radbuild.py build os --settings settings.json --json-events
-../RadBuild/radbuild/.tools/radbuild.py build os --settings settings.terminal.json --json-events
-../RadBuild/radbuild/.tools/radbuild.py build os --settings settings.wm.json --json-events
-```
-
-RadBuild 0.2.1 treats each JSON as an OS build configuration. The terminal
-profile excludes Slint/RADCompositor chunks and runs the terminal VM smoke; the
-WM profile includes the Slint-backed RADCompositor shell, runs the hosted UI
-smoke, and packages the VM image without making the current Slint VM path a
-release gate.
-Each profile has its own build directory, artifact directory, writable ext4/FAT
-images, serial logs, and `SHA256SUMS`.
-
-The profile ISOs are generated at:
-
-```text
-build/embedded/x86_64_grub_terminal/radixkernel-x86-64-grub-terminal.iso
-build/embedded/x86_64_grub_wm/radixkernel-x86-64-grub-wm.iso
+tools/embedded/radix_zuboard_1cg/qemu_marker_smoke.sh   # ordered marker gate
+tools/embedded/radix_zuboard_1cg/qemu_login_smoke.sh    # interactive login/ls/cat/ps
+tools/embedded/radix_zuboard_1cg/qemu_smp_smoke.sh      # second A53 core (-smp 2)
 ```
 
 ## API Documentation
@@ -74,7 +105,8 @@ The public Crimson docs are published through RadicalPackages under
 
 ## Filesystems
 
-The x86_64 root filesystem now defaults to ext4. The current ext4 driver is a
-clean no-journal profile with extent-backed read/write, create, mkdir, rename,
-truncate, symlink/readlink, unlink, rmdir, chmod, and fsync support. Journal
-replay and journaled metadata commits are intentionally deferred.
+The x86_64 and ZuBoard A53 root filesystems default to ext4. The current ext4
+driver is a clean no-journal profile with extent-backed read/write, create,
+mkdir, rename, truncate, symlink/readlink, unlink, rmdir, chmod, and fsync
+support, exercised on both targets. Journal replay and journaled metadata
+commits are intentionally deferred.
