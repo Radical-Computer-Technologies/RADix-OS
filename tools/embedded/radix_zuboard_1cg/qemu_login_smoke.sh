@@ -71,6 +71,12 @@ send "cat /etc/hostname"
 await "radix" "$STEP_TIMEOUT"             || fail "cat output"
 send "ps"
 await "PID" "$STEP_TIMEOUT"               || fail "ps output"
+# vim/ncurses parity gate: presence of the staged cross-built binary (matches
+# x86, which builds+stages vim with no behavioral gate). vim's interactive
+# runtime on the a53 minimal libc is a tracked follow-up -- it links and stages
+# but hangs during startup, distinct from the ncurses archives which link fine.
+send "ls /usr/bin"
+await "vim" "$STEP_TIMEOUT"               || fail "vim staged in /usr/bin"
 send "exit"
 
 echo "qemu_login_smoke: interactive session passed (log: $LOG_FILE)"

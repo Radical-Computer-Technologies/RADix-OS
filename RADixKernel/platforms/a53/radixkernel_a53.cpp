@@ -35,7 +35,9 @@ constexpr size_t EntriesPerTable = 512u;
 #endif
 
 constexpr size_t MaxTrackedPages = RADIX_A53_MAX_TRACKED_PAGES;
-constexpr size_t MaxInitImage = 262144u;
+// Sized for the largest staged userland ELF (vim-tiny is ~1.5 MB); the image
+// window (UserImageLimit - UserBase = 8 MB) is the mapping-side bound.
+constexpr size_t MaxInitImage = 4194304u;
 constexpr size_t MaxUserProcesses = RADIX_A53_MAX_USER_PROCESSES;
 constexpr size_t MaxUserArgs = 8u;
 constexpr size_t MaxUserEnvs = 4u;

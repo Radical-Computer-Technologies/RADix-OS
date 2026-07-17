@@ -53,9 +53,52 @@ USERLAND_LIBS := \
 	$(USER_BUILD_DIR)/libradixc.a \
 	$(USER_BUILD_DIR)/libradixc.rso
 
-all: radix-zuboard.elf radix-zuboard.img userland
+all: radix-zuboard.elf radix-zuboard.img userland ports
 
 userland: $(USERLAND_ELFS) $(USERLAND_LIBS)
+
+# Upstream ports (ncurses + vim-tiny) cross-built with the shared x86 port
+# scripts via their arch knobs. Stamp-cached: rebuilt only when the build
+# scripts change (the scripts themselves wipe their build dirs on each run).
+# The port scripts cd into their build directories, so every path handed to
+# them must be absolute.
+PORTS_OS_ROOT := $(abspath $(RADIX_OS_ROOT))
+PORTS_DIR := $(USER_BUILD_DIR)/ports
+PORTS_SCRIPTS_DIR := $(PORTS_OS_ROOT)/tools/embedded/x86_64_grub_slint/ports/upstream
+PORTS_ENV := RADIX_CC=$(abspath $(TOOLCHAIN_PREFIX)gcc) \
+	RADIX_PORT_STATIC_ARCH_FLAGS="-mcpu=cortex-a53 -mbranch-protection=none" \
+	RADIX_PORT_TTEXT=0x80000000 \
+	RADIX_PORT_HOST_TRIPLET=aarch64-none \
+	RADIX_PORT_CRT0_SOURCE=$(PORTS_OS_ROOT)/userland/runtime/aarch64_entry.S \
+	RADIX_BUILD_JOBS=$(RADIX_PORTS_JOBS)
+RADIX_PORTS_JOBS ?= 4
+PORTS_BUILD_ROOT := $(PORTS_OS_ROOT)/.radbuild/ports
+
+ports: $(PORTS_DIR)/.stamp
+
+$(PORTS_DIR)/.stamp: $(PORTS_SCRIPTS_DIR)/build_upstream_ncurses.sh $(PORTS_SCRIPTS_DIR)/build_upstream_vim_tiny.sh $(USER_BUILD_DIR)/libradixc.a | $(USER_BUILD_DIR)
+	mkdir -p $(PORTS_DIR)
+	TIC_EXECUTABLE=$$(command -v tic) $(PORTS_ENV) \
+		RADIX_LIBC_ARCHIVE=$(CURDIR)/$(USER_BUILD_DIR)/libradixc.a \
+		$(PORTS_SCRIPTS_DIR)/build_upstream_ncurses.sh \
+		$(PORTS_BUILD_ROOT)/src/ncurses-6.6 \
+		$(PORTS_BUILD_ROOT)/build/ncurses-aarch64 \
+		$(PORTS_BUILD_ROOT)/install/ncurses-aarch64 \
+		$(PORTS_OS_ROOT)/libs/libradixc
+	$(PORTS_ENV) \
+		RADIX_SYSROOT_DIR=$(PORTS_OS_ROOT)/libs/libradixc \
+		RADIX_NCURSES_INCLUDE_DIR=$(PORTS_BUILD_ROOT)/install/ncurses-aarch64/usr/include \
+		RADIX_LIBC_ARCHIVE=$(CURDIR)/$(USER_BUILD_DIR)/libradixc.a \
+		RADIX_NCURSESW_ARCHIVE=$(PORTS_BUILD_ROOT)/install/ncurses-aarch64/usr/lib/libncursesw.a \
+		RADIX_TINFO_ARCHIVE=$(PORTS_BUILD_ROOT)/install/ncurses-aarch64/usr/lib/libtinfo.a \
+		$(PORTS_SCRIPTS_DIR)/build_upstream_vim_tiny.sh \
+		$(PORTS_BUILD_ROOT)/src/vim \
+		$(PORTS_BUILD_ROOT)/build/vim-aarch64
+	cp $(PORTS_BUILD_ROOT)/install/ncurses-aarch64/usr/lib/libncursesw.a $(PORTS_DIR)/libncursesw.a
+	cp $(PORTS_BUILD_ROOT)/install/ncurses-aarch64/usr/lib/libtinfo.a $(PORTS_DIR)/libtinfo.a
+	cp $(PORTS_BUILD_ROOT)/build/vim-aarch64/src/vim $(PORTS_DIR)/vim
+	$(TOOLCHAIN_PREFIX)strip $(PORTS_DIR)/vim
+	touch $@
 
 radix-zuboard.elf: $(OBJS)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $(OBJS) -Wl,--start-group -lc -lm -lgcc -Wl,--end-group
