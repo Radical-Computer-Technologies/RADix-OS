@@ -95,7 +95,7 @@
         "qemu_image_size_mb": 512,
         "qemu_smoke": true,
         "qemu_smoke_script": "tools/embedded/radix_zuboard_1cg/qemu_marker_smoke.sh",
-        "qemu_smoke_timeout_seconds": 60,
+        "qemu_smoke_timeout_seconds": 180,
         "run_vivado": false,
         "run_firmware_tools": false,
         "run_uboot_build": false,

@@ -376,7 +376,19 @@ extern "C" void x86_exception_report(uint64_t vector, uint64_t error, uint64_t r
             static_cast<unsigned>((error >> 2) & 1u));
         x86_serial_write(buffer);
     } else {
-        x86_serial_write("\n");
+        // Diagnostic for non-page-fault traps (e.g. #GP): report the current
+        // kernel stack pointer and the TSS RSP0 the CPU would load on a
+        // ring3->ring0 interrupt, so a fault deep in an IRQ handler chain can be
+        // classified as stack overflow (rsp far below rsp0) vs. stack collision.
+        uint64_t cur_rsp = 0;
+        asm volatile("mov %%rsp, %0" : "=r"(cur_rsp));
+        const uint32_t core = x86_cpu_current_core();
+        const uint64_t rsp0 = core < MaxX86Cores ? g_tss[core].rsp0 : 0u;
+        snprintf(buffer, sizeof(buffer), " rsp=0x%llx tss_rsp0=0x%llx core=%u\n",
+            static_cast<unsigned long long>(cur_rsp),
+            static_cast<unsigned long long>(rsp0),
+            static_cast<unsigned>(core));
+        x86_serial_write(buffer);
     }
     rad_cpu_halt_forever();
 }
