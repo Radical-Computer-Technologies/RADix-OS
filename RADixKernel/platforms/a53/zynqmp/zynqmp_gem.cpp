@@ -26,6 +26,8 @@
 #include <stdint.h>
 #include <string.h>
 
+extern "C" void rad_hal_sleep_us(uint32_t microseconds);
+
 namespace {
 
 // ---------------------------------------------------------------------------
@@ -291,6 +293,50 @@ rad_status_t gem_loopback_selftest(GemDevice *device) {
     return result;
 }
 
+// Best-effort real-traffic probe: broadcast an ARP request for the SLIRP
+// gateway (10.0.2.2) and wait for the reply. Unlike the loopback self-test
+// (which stays inside the MAC), this drives a frame OUT to the QEMU network
+// backend and receives one back, validating the full external path. Never fails
+// boot -- bare metal has no SLIRP responder, so a timeout is expected there.
+void gem_slirp_arp_probe(GemDevice *device) {
+    uint8_t frame[42];
+    memset(frame, 0, sizeof(frame));
+    // Ethernet header.
+    memset(&frame[0], 0xff, 6);               // destination: broadcast
+    memcpy(&frame[6], device->mac.bytes, 6);  // source: our MAC
+    frame[12] = 0x08; frame[13] = 0x06;       // ethertype: ARP
+    // ARP payload (IPv4 over Ethernet, request).
+    frame[14] = 0x00; frame[15] = 0x01;       // htype: Ethernet
+    frame[16] = 0x08; frame[17] = 0x00;       // ptype: IPv4
+    frame[18] = 0x06; frame[19] = 0x04;       // hlen, plen
+    frame[20] = 0x00; frame[21] = 0x01;       // opcode: request
+    memcpy(&frame[22], device->mac.bytes, 6); // sender MAC
+    frame[28] = 10; frame[29] = 0; frame[30] = 2; frame[31] = 15; // sender IP 10.0.2.15
+    // target MAC left zero (frame[32..37])
+    frame[38] = 10; frame[39] = 0; frame[40] = 2; frame[41] = 2;  // target IP 10.0.2.2
+
+    if (gem_send_frame(device, frame, sizeof(frame)) != RAD_STATUS_OK) return;
+
+    uint8_t reply[FrameMax];
+    for (uint32_t attempt = 0; attempt < 60000u; ++attempt) {
+        const intptr_t got = gem_receive_frame(device, reply, sizeof(reply));
+        if (got == RAD_STATUS_NOT_FOUND) {
+            rad_hal_sleep_us(10); // let the emulated backend run and reply
+            continue;
+        }
+        if (got < 0) return;
+        // ARP reply for 10.0.2.2?
+        if (static_cast<size_t>(got) >= 42u &&
+            reply[12] == 0x08 && reply[13] == 0x06 &&    // ethertype ARP
+            reply[20] == 0x00 && reply[21] == 0x02 &&    // opcode reply
+            reply[28] == 10 && reply[29] == 0 && reply[30] == 2 && reply[31] == 2) {
+            rad_debug_marker("RADIX_GEM_ARP_GATEWAY_OK");
+            return;
+        }
+        // Some other frame arrived; keep looking.
+    }
+}
+
 // ---------------------------------------------------------------------------
 // rad_device_ops_t.ioctl contract (mirrors x86 net_ioctl).
 // ---------------------------------------------------------------------------
@@ -396,6 +442,11 @@ extern "C" rad_status_t rad_zynqmp_gem_init(void) {
     } else {
         rad_debug_marker("RADIX_GEM_LOOPBACK_FAIL");
     }
+
+    // Best-effort real-traffic check over the (now non-loopback) link.
+    gem_slirp_arp_probe(device);
+    device->tx_packets = 0;
+    device->rx_packets = 0;
 
     rad_device_ops_t ops{};
     ops.context = device;
