@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+#
+# provenance (commit-msg): reject a commit whose message carries a disallowed AI
+# co-author attribution (e.g. a co-author trailer or bot address). Match terms
+# are base64-encoded (see verify-provenance.sh).
+#
+# Enable once per clone:  git config core.hooksPath .githooks
+set -euo pipefail
+
+PATTERN="$(printf '%s' 'Y2xhdWRlfGFudGhyb3BpYw==' | base64 -d)"
+msg_file="$1"
+
+if grep -qiE "$PATTERN" "$msg_file"; then
+    echo "provenance: blocked -- commit message carries a disallowed co-author attribution:" >&2
+    grep -inE "$PATTERN" "$msg_file" >&2
+    echo "Remove the offending line(s) and retry." >&2
+    exit 1
+fi

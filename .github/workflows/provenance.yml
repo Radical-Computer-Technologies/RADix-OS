@@ -1,0 +1,41 @@
+name: provenance
+
+# Fail if any pushed/PR commit carries a disallowed AI co-author attribution in
+# its author, committer, or message. Standalone: pure git + bash, no external
+# checkout or secrets, so it runs independent of the main CI pipeline.
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: provenance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-commit-provenance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history so the scan range always resolves
+
+      - name: Verify commit provenance
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+            head="${{ github.event.pull_request.head.sha }}"
+            range="${base}..${head}"
+          else
+            before="${{ github.event.before }}"
+            after="${{ github.sha }}"
+            if [ -z "$before" ] || [ "$before" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "$before^{commit}" 2>/dev/null; then
+              range="${after}~1..${after}"
+            else
+              range="${before}..${after}"
+            fi
+          fi
+          echo "Scanning range: ${range}"
+          scripts/verify-provenance.sh "${range}"
