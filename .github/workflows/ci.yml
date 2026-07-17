@@ -46,6 +46,16 @@ jobs:
           token: ${{ secrets.RADBUILD_CHECKOUT_TOKEN }}
           ref: ${{ env.RADBUILD_REF }}
           path: RadBuild
+      # settings.ci.json's radpm block stages coreutils (radix-core), radlib, and
+      # vim-tiny into the rootfs; without them the shell's execve of ls/clear/etc.
+      # fails (RADIX_USER_EXECVE_LOAD_NOT_FOUND). The radpm repository path
+      # "../RadicalPackages" resolves relative to the settings dir (RADix-OS/), so
+      # check it out as a sibling. (The token must have RadicalPackages read too.)
+      - uses: actions/checkout@v4
+        with:
+          repository: Radical-Computer-Technologies/RadicalPackages
+          token: ${{ secrets.RADBUILD_CHECKOUT_TOKEN }}
+          path: RadicalPackages
       - name: Install dependencies
         run: |
           sudo apt-get update

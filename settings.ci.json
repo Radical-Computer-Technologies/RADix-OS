@@ -69,7 +69,17 @@
         "qemu_smp": [
           2
         ],
-        "jobs": 2
+        "jobs": 2,
+        "radpm": {
+          "repository": "../RadicalPackages",
+          "suite": "experimental",
+          "packages": [
+            "radix-core",
+            "radlib",
+            "radix-ncurses",
+            "radix-vim-tiny"
+          ]
+        }
       }
     },
     {
