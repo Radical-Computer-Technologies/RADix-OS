@@ -13,6 +13,12 @@ _start:
     b 1b
 
 2:
+    // CPUECTLR_EL1.SMPEN: join the coherency domain before caches matter.
+    // QEMU treats the register as constant; real A53 requires this.
+    mrs x5, S3_1_C15_C2_1
+    orr x5, x5, #(1 << 6)
+    msr S3_1_C15_C2_1, x5
+    isb
     mov x19, x0
     ldr x1, =__bss_start
     ldr x2, =__bss_end
@@ -282,6 +288,29 @@ radix_a53_irq_spin:
     wfe
     b radix_a53_irq_spin
 
+// PSCI CPU_ON entry for secondary cores: EL1, MMU off, x0 = core id.
+// Minimal asm bring-up, then C (rad_zynqmp_secondary_main) does the
+// park/release handshake, MMU, GIC, timer, and enters the worker loop.
+.global radix_a53_secondary_start
+.type radix_a53_secondary_start, %function
+radix_a53_secondary_start:
+    msr daifset, #0xf
+    mov x19, x0
+    ldr x1, =radix_a53_exception_vectors
+    msr vbar_el1, x1
+    isb
+    mrs x1, S3_1_C15_C2_1
+    orr x1, x1, #(1 << 6)
+    msr S3_1_C15_C2_1, x1
+    isb
+    ldr x1, =radix_a53_secondary_stack_top
+    mov sp, x1
+    mov x0, x19
+    bl rad_zynqmp_secondary_main
+50:
+    wfe
+    b 50b
+
 .section .bss.boot, "aw", %nobits
 .align 3
 .global radix_zuboard_boot_argument
@@ -295,3 +324,8 @@ __stack_bottom:
     .skip 65536
 .global __stack_top
 __stack_top:
+
+.align 12
+radix_a53_secondary_stack_bottom:
+    .skip 16384
+radix_a53_secondary_stack_top:

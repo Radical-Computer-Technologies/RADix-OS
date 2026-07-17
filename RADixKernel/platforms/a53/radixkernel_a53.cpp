@@ -71,13 +71,26 @@ constexpr uint64_t PteUxN = 1ull << 54u;
 constexpr uint64_t PtePxN = 1ull << 53u;
 constexpr uint64_t PteAddressMask = 0x0000fffffffff000ull;
 
+#ifndef RADIX_A53_MAX_CORES
+#define RADIX_A53_MAX_CORES 4u
+#endif
+constexpr uint32_t MaxCores = RADIX_A53_MAX_CORES;
+
 struct A53State {
     rad_a53_capabilities_t caps;
     rad_a53_vm_summary_t summary;
-    rad_a53_address_space_t *active_space;
+    // Per-core: each core tracks the address space its TTBR0 points at.
+    rad_a53_address_space_t *active_space[MaxCores];
     int process_arch_registered;
     int vm_initialized;
 };
+
+extern "C" uint32_t rad_hal_current_core(void) __attribute__((weak));
+
+uint32_t a53_current_core(void) {
+    const uint32_t core = rad_hal_current_core ? rad_hal_current_core() : 0u;
+    return core < MaxCores ? core : 0u;
+}
 
 struct [[gnu::packed]] Elf64Header {
     uint8_t ident[16];
@@ -159,7 +172,19 @@ alignas(PageSize) uint8_t g_host_pages[MaxTrackedPages][PageSize];
 A53State g_a53{};
 uint8_t g_init_image[MaxInitImage];
 A53UserProcess g_user_processes[MaxUserProcesses];
-A53UserContext *g_active_user_context = nullptr;
+A53UserContext *g_active_user_contexts[MaxCores]{};
+
+A53UserContext *active_user_context(void) {
+    return g_active_user_contexts[a53_current_core()];
+}
+
+void set_active_user_context(A53UserContext *context) {
+    g_active_user_contexts[a53_current_core()] = context;
+}
+
+rad_a53_address_space_t *&active_space_slot(void) {
+    return g_a53.active_space[a53_current_core()];
+}
 int g_seen_user_copy_marker = 0;
 
 uintptr_t align_down(uintptr_t value, uintptr_t alignment = PageSize) {
@@ -871,7 +896,7 @@ void user_process_task(void *context) {
         sync_instruction_cache();
         rad_debug_marker("RADIX_AARCH64_USERMODE_ENTER_OK");
         process->context.pid = process->pid;
-        g_active_user_context = &process->context;
+        set_active_user_context(&process->context);
 #if defined(__aarch64__)
         // Runs the process at EL0 until it exits, execs, or faults; the
         // exception path unwinds back here via the ksave state in the context.
@@ -880,7 +905,7 @@ void user_process_task(void *context) {
         process->exit_code = 0;
         process->exiting = 1;
 #endif
-        g_active_user_context = nullptr;
+        set_active_user_context(nullptr);
         // TTBR0 still points at the process space; switch away before any
         // teardown below frees its tables.
         rad_a53_activate_kernel_address_space();
@@ -998,7 +1023,7 @@ extern "C" rad_status_t rad_a53_vm_init(const rad_boot_info_t *boot, rad_a53_vm_
     build_kernel_tables();
     if (!enable_mmu_if_needed(reinterpret_cast<uintptr_t>(g_kernel_l1))) return RAD_STATUS_ERROR;
     g_a53.vm_initialized = 1;
-    g_a53.active_space = nullptr;
+    for (uint32_t core = 0; core < MaxCores; ++core) g_a53.active_space[core] = nullptr;
     g_a53.caps.mmu_ready = 1u;
     g_a53.caps.ttbr0_user_ready = 1u;
     g_a53.caps.ttbr1_kernel_ready = 1u;
@@ -1080,14 +1105,22 @@ extern "C" void rad_a53_destroy_address_space(rad_a53_address_space_t *space) {
 
 extern "C" rad_status_t rad_a53_activate_address_space(rad_a53_address_space_t *space) {
     if (!space || !space->ttbr0) return RAD_STATUS_INVALID_ARGUMENT;
-    g_a53.active_space = space;
-    g_a53.summary.active_table = space->ttbr0;
+    active_space_slot() = space;
+    g_a53.summary.active_table = space->ttbr0; // cosmetic: last activation wins
     activate_ttbr0(space->ttbr0);
     return RAD_STATUS_OK;
 }
 
+// Secondary-core MMU bring-up: enables translation with the shared kernel
+// identity tables (built once by core 0 in rad_a53_vm_init).
+extern "C" rad_status_t rad_a53_mmu_enable_current_core(void) {
+    if (!g_a53.vm_initialized) return RAD_STATUS_NOT_INITIALIZED;
+    if (!enable_mmu_if_needed(reinterpret_cast<uintptr_t>(g_kernel_l1))) return RAD_STATUS_ERROR;
+    return RAD_STATUS_OK;
+}
+
 extern "C" void rad_a53_activate_kernel_address_space(void) {
-    g_a53.active_space = nullptr;
+    active_space_slot() = nullptr;
     g_a53.summary.active_table = reinterpret_cast<uintptr_t>(g_kernel_l1);
     if (g_a53.summary.active_table) activate_ttbr0(g_a53.summary.active_table);
 }
@@ -1128,10 +1161,10 @@ extern "C" rad_status_t rad_a53_clone_cow(rad_a53_address_space_t *child, rad_a5
 }
 
 extern "C" int rad_a53_handle_data_abort(uintptr_t fault_address, uint64_t esr_el1) {
-    if (!g_a53.active_space) return 0;
+    if (!active_space_slot()) return 0;
     if (((esr_el1 >> 6u) & 1u) == 0u) return 0;
     const uintptr_t va = align_down(fault_address);
-    uint64_t *leaf = walk_user_leaf(g_a53.active_space, va);
+    uint64_t *leaf = walk_user_leaf(active_space_slot(), va);
     if (!leaf || ((*leaf & PteCow) == 0u)) return 0;
     const uintptr_t old_physical = static_cast<uintptr_t>(*leaf & PteAddressMask);
     size_t old_index = 0;
@@ -1146,7 +1179,7 @@ extern "C" int rad_a53_handle_data_abort(uintptr_t fault_address, uint64_t esr_e
     if (!new_physical) return 0;
     memcpy(reinterpret_cast<void *>(new_physical), reinterpret_cast<const void *>(old_physical), PageSize);
     clean_dcache_range(new_physical, PageSize);
-    if (!replace_owned_page(g_a53.active_space, old_physical, new_physical)) {
+    if (!replace_owned_page(active_space_slot(), old_physical, new_physical)) {
         rad_a53_vm_free_page(new_physical);
         return 0;
     }
@@ -1158,7 +1191,7 @@ extern "C" int rad_a53_handle_data_abort(uintptr_t fault_address, uint64_t esr_e
 }
 
 extern "C" int rad_a53_validate_user_range(uintptr_t virtual_address, size_t size, int write) {
-    rad_a53_address_space_t *space = g_a53.active_space;
+    rad_a53_address_space_t *space = active_space_slot();
     if (!space) return 0;
     if (size == 0) return virtual_address >= UserBase && virtual_address <= UserLimit;
     if (virtual_address < UserBase || virtual_address >= UserLimit || size > UserLimit - virtual_address) return 0;
@@ -1177,16 +1210,16 @@ extern "C" rad_status_t rad_a53_copy_from_user(void *dst, uintptr_t src, size_t 
     if ((!dst && size) || !rad_a53_validate_user_range(src, size, 0)) return RAD_STATUS_INVALID_ARGUMENT;
     uint8_t *out = static_cast<uint8_t *>(dst);
     for (size_t i = 0; i < size; ++i) {
-        if (!user_read_byte(g_a53.active_space, src + i, &out[i])) return RAD_STATUS_INVALID_ARGUMENT;
+        if (!user_read_byte(active_space_slot(), src + i, &out[i])) return RAD_STATUS_INVALID_ARGUMENT;
     }
     return RAD_STATUS_OK;
 }
 
 extern "C" rad_status_t rad_a53_copy_to_user(uintptr_t dst, const void *src, size_t size) {
-    if ((!src && size) || !g_a53.active_space) return RAD_STATUS_INVALID_ARGUMENT;
+    if ((!src && size) || !active_space_slot()) return RAD_STATUS_INVALID_ARGUMENT;
     const uint8_t *in = static_cast<const uint8_t *>(src);
     for (size_t i = 0; i < size; ++i) {
-        if (!user_write_byte(g_a53.active_space, dst + i, in[i])) return RAD_STATUS_INVALID_ARGUMENT;
+        if (!user_write_byte(active_space_slot(), dst + i, in[i])) return RAD_STATUS_INVALID_ARGUMENT;
     }
     return RAD_STATUS_OK;
 }
@@ -1195,7 +1228,7 @@ extern "C" rad_status_t rad_a53_copy_string_from_user(char *dst, size_t dst_size
     if (!dst || dst_size == 0) return RAD_STATUS_INVALID_ARGUMENT;
     for (size_t i = 0; i < dst_size; ++i) {
         uint8_t ch = 0;
-        if (!user_read_byte(g_a53.active_space, src + i, &ch)) return RAD_STATUS_INVALID_ARGUMENT;
+        if (!user_read_byte(active_space_slot(), src + i, &ch)) return RAD_STATUS_INVALID_ARGUMENT;
         dst[i] = static_cast<char>(ch);
         if (!ch) return RAD_STATUS_OK;
     }
@@ -1315,7 +1348,7 @@ extern "C" intptr_t rad_a53_syscall_dispatch(uintptr_t number, uintptr_t arg0, u
         }
         return static_cast<intptr_t>(UserExitMagic);
     case RAD_SYSCALL_FORK:
-        return rad_process_fork_from_arch_frame(g_active_user_context ? &g_active_user_context->frame : nullptr);
+        return rad_process_fork_from_arch_frame(active_user_context() ? &active_user_context()->frame : nullptr);
     case RAD_SYSCALL_EXECVE: {
         if (!process) return RAD_STATUS_INVALID_ARGUMENT;
         char path[128]{};
@@ -1515,7 +1548,7 @@ extern "C" intptr_t rad_a53_syscall_dispatch(uintptr_t number, uintptr_t arg0, u
 extern "C" intptr_t rad_a53_syscall_dispatch_frame(rad_a53_trap_frame_t *frame) {
     if (!frame) return RAD_STATUS_INVALID_ARGUMENT;
     rad_debug_marker("RADIX_AARCH64_SVC_DISPATCH_OK");
-    if (g_active_user_context) g_active_user_context->frame = *frame;
+    if (A53UserContext *active = active_user_context()) active->frame = *frame;
     const intptr_t result = rad_a53_syscall_dispatch(static_cast<uintptr_t>(frame->x[8]),
         static_cast<uintptr_t>(frame->x[0]),
         static_cast<uintptr_t>(frame->x[1]),
@@ -1532,7 +1565,7 @@ extern "C" intptr_t rad_a53_syscall_dispatch_frame(rad_a53_trap_frame_t *frame) 
 // exception stack frame; return the active A53UserContext pointer to unwind back
 // into the kernel caller of rad_a53_enter_user_context.
 extern "C" uintptr_t rad_a53_exception_dispatch(rad_a53_trap_frame_t *frame) {
-    const uintptr_t exit_to_kernel = reinterpret_cast<uintptr_t>(g_active_user_context);
+    const uintptr_t exit_to_kernel = reinterpret_cast<uintptr_t>(active_user_context());
     if (!frame) return exit_to_kernel;
     constexpr uint64_t EcShift = 26u;
     constexpr uint64_t EcMask = 0x3fu;
@@ -1543,7 +1576,7 @@ extern "C" uintptr_t rad_a53_exception_dispatch(rad_a53_trap_frame_t *frame) {
         return rad_a53_syscall_dispatch_frame(frame) == 0 ? 0u : exit_to_kernel;
     }
     if (ec == EcDataAbortLowerEl && rad_a53_handle_data_abort(frame->far_el1, frame->esr_el1)) return 0;
-    if (!g_active_user_context) {
+    if (!active_user_context()) {
         // Exception taken from EL1 with no user context: the kernel itself
         // faulted. There is nowhere sane to unwind to -- report and halt.
         rad_kprintk(RKERN_ERR,
@@ -1631,7 +1664,7 @@ extern "C" void rad_arch_task_context_switch(uintptr_t *old_context, uintptr_t *
 // user context, address space, and pid (or the kernel space for kernel tasks).
 extern "C" void rad_arch_task_context_resumed(void *user_context) {
     auto *context = static_cast<A53UserContext *>(user_context);
-    g_active_user_context = context;
+    set_active_user_context(context);
     if (!context) {
         rad_a53_activate_kernel_address_space();
         return;

@@ -32,7 +32,8 @@ RADIX_ZUBOARD_SERIAL_READY
 RADIX_CONTEXT_DISPATCH_OK
 RADIX_AARCH64_USERMODE_ENTER_OK
 # Parity Stage 2a: scheduler tick reached a running task from the timer IRQ.
-RADIX_PREEMPT_SCHED_OK
+# Presence-only: emitted from IRQ context, races the user-mode sequence.
+~RADIX_PREEMPT_SCHED_OK
 RADIX_RADINIT_BOOT_OK
 RADIX_PID1_PPID0_OK
 RADIX_USER_INIT_OK
@@ -45,8 +46,11 @@ RADIX_RADINIT_BOOT_SESSION_FORK_OK
 # the forked boot-session child schedules, execs login, and is reaped.
 RADIX_RADINIT_BOOT_SESSION_CHILD
 RADIX_AARCH64_USER_EXECVE_OK
-# Parity Stage 2a: witness task observed scheduler ticks advancing.
-RADIX_ZUBOARD_PREEMPT_TICK_OK
+# Parity Stage 2a: witness task observed scheduler ticks advancing
+# (presence-only: emitted from IRQ context).
+~RADIX_ZUBOARD_PREEMPT_TICK_OK
+# NOTE: second-core (RADIX_AP_*) markers are validated separately by
+# qemu_smp_smoke.sh under -smp 2; the default smoke runs -smp 1.
 RADIX_USER_PROCESS_WAIT_OK
 RADIX_USER_WAIT_WAKE_OK
 RADIX_USER_ZOMBIE_REAP_OK

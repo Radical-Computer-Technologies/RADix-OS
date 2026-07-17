@@ -10,7 +10,9 @@ extern "C" uintptr_t radix_zuboard_boot_argument;
 extern "C" void radix_zuboard_entry(rad_boot_handoff_t *incoming_handoff);
 extern "C" void rad_zynqmp_bind_handoff(const rad_boot_handoff_t *handoff);
 extern "C" rad_status_t rad_zynqmp_preempt_init(void);
+extern "C" rad_status_t rad_zynqmp_smp_release(void);
 extern "C" uint64_t rad_hal_time_micros(void);
+extern "C" void rad_hal_worker_wake(void);
 extern "C" rad_status_t x86_ext4_mount_root(const char *block_device);
 extern "C" int x86_ext4_self_test(void);
 extern "C" rad_status_t rad_a53_user_spawn_process_with_stdio(const char *path, int32_t parent_pid, const char *stdio_path, int32_t *pid_out, rad_task_t *task_out);
@@ -183,8 +185,19 @@ void prepare_fallback_handoff(rad_boot_handoff_t *handoff) {
     handoff->arm_memory_base = ZuboardDdrBase;
     handoff->arm_memory_size = ZuboardDdrSize;
     handoff->entry_el = 1u;
+    // Real ZuBoard hardware has 2 A53 cores. Under QEMU the actual -smp count is
+    // passed by run-qemu.sh in a scratch word (magic 'RSMP' + count at 0x90000);
+    // honor it so single-core QEMU does not attempt PSCI CPU_ON for an absent
+    // core (which hangs). Absent/invalid magic (hardware) keeps the default.
     handoff->core_count = 2u;
-    handoff->parked_core_mask = 0x02u;
+    {
+        const volatile uint32_t *scratch = reinterpret_cast<const volatile uint32_t *>(0x00090000u);
+        if (scratch[0] == 0x52534d50u) {
+            const uint32_t qemu_smp = scratch[1];
+            if (qemu_smp >= 1u && qemu_smp <= 4u) handoff->core_count = qemu_smp;
+        }
+    }
+    handoff->parked_core_mask = handoff->core_count > 1u ? 0x02u : 0x00u;
     strcpy(handoff->payload_name, "radix-zuboard.elf");
     radboot_prepare_default(&handoff->boot, "zynqmp_zuboard_1cg", "zuboard-1cg", "/dev/console", "none");
     radboot_add_memory_region(&handoff->boot, "ddr", ZuboardDdrBase, ZuboardDdrSize, RAD_BOOT_MEMORY_USABLE, 0);
@@ -212,6 +225,7 @@ extern "C" void radix_zuboard_entry(rad_boot_handoff_t *incoming_handoff) {
     rad_a53_note_boot_normalized(0u, static_cast<uintptr_t>(radix_zuboard_boot_argument), 1u);
     rad_a53_platform_init();
     if (rad_zynqmp_preempt_init() != RAD_STATUS_OK) marker("RADIX_ZUBOARD_TIMER_IRQ_FAIL");
+    const int smp_online = rad_zynqmp_smp_release() == RAD_STATUS_OK;
 
     marker("RADIX_ZYNQMP_ENTRY_OK");
     marker("RADIX_ZUBOARD_HANDOFF_OK");
@@ -272,6 +286,47 @@ extern "C" void radix_zuboard_entry(rad_boot_handoff_t *incoming_handoff) {
             if (after.preemption_enabled && after.scheduler_ticks > before.scheduler_ticks) {
                 marker("RADIX_ZUBOARD_PREEMPT_TICK_OK");
             }
+        }
+    }
+
+    // AP scheduler stress (mirrors the x86 self-test): a CORE_ANY task must be
+    // dispatched to completion on the worker core. The worker mask is
+    // deterministic; the task-completion witness uses a flag + bounded poll
+    // rather than rad_task_join, because under single-thread TCG the task is
+    // preempted every tick and join's finished-propagation races the poll loop.
+    if (smp_online) {
+        rad_scheduler_info_t info{};
+        rad_scheduler_info_get(&info);
+        if (info.worker_running_mask & 0x2u) marker("RADIX_AP_WORKERS_ONLINE_OK");
+
+        static volatile int ap_stress_done = 0;
+        rad_task_t stress = nullptr;
+        rad_task_config_t stress_config{};
+        stress_config.size = sizeof(stress_config);
+        stress_config.name = "ap-sched-stress";
+        stress_config.target_core = RAD_TASK_CORE_ANY;
+        auto busy = [](void *) {
+            // Span at least two 4 ms tick periods so a timer IRQ is guaranteed
+            // to land while this task runs on core 1 (RADIX_AP_PREEMPT_SCHED_OK
+            // is gate-required; a shorter task makes preemption a coin flip).
+            const uint64_t until = rad_hal_time_micros() + 10000u;
+            while (rad_hal_time_micros() < until) {
+            }
+            __atomic_store_n(&ap_stress_done, 1, __ATOMIC_RELEASE);
+        };
+        if (rad_task_create_config(&stress, &stress_config, busy, nullptr) == RAD_STATUS_OK) {
+            rad_task_detach(stress);
+            // Best-effort completion witness. Core 1 dispatch and preemption are
+            // already proven by RADIX_AP_WORKER_TASK_OK / RADIX_AP_PREEMPT_SCHED_OK
+            // (runtime-emitted, reliable); run-to-completion under single-thread
+            // TCG is timing-sensitive, so this marker is not part of the SMP gate.
+            // Keep the poll short so core 0 hands the round-robin back to core 1.
+            const uint64_t deadline = rad_hal_time_micros() + 500000u;
+            while (!__atomic_load_n(&ap_stress_done, __ATOMIC_ACQUIRE)
+                && rad_hal_time_micros() < deadline) {
+                rad_hal_worker_wake();
+            }
+            if (__atomic_load_n(&ap_stress_done, __ATOMIC_ACQUIRE)) marker("RADIX_AP_SCHED_STRESS_OK");
         }
     }
 

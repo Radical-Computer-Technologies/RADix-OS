@@ -344,9 +344,23 @@ rad_status_t zynqmp_serial_read(void*, void *buffer, size_t size, size_t *bytes_
     return RAD_STATUS_OK;
 }
 
+// Serialize UART output against both the other core and IRQ-context prints on
+// the same core (the timer tick prints markers): mask IRQs locally, then take
+// a cross-core test-and-set lock. Without this, marker lines interleave
+// mid-text and the ordered smoke gate cannot match them.
+volatile int g_uart_lock = 0;
+
 rad_status_t zynqmp_serial_write(void*, const void *buffer, size_t size, size_t *bytes_written) {
     if (!buffer) return RAD_STATUS_INVALID_ARGUMENT;
     zynqmp_uart_init_once();
+    // Serialize output against the other core and same-core IRQ prints (the timer
+    // handler emits markers): mask IRQs locally, then take a cross-core lock.
+#if defined(__aarch64__)
+    uint64_t saved_daif = 0;
+    asm volatile("mrs %0, daif\n\tmsr daifset, #2" : "=r"(saved_daif):: "memory");
+#endif
+    while (__atomic_test_and_set(const_cast<int*>(&g_uart_lock), __ATOMIC_ACQUIRE)) {
+    }
     const auto *bytes = static_cast<const uint8_t*>(buffer);
     for (size_t i = 0; i < size; ++i) {
         if (bytes[i] == '\n') {
@@ -356,6 +370,10 @@ rad_status_t zynqmp_serial_write(void*, const void *buffer, size_t size, size_t 
         while (read32(uart(0x2cu)) & CadenceUartSrTxFull) {}
         write32(uart(0x30u), bytes[i]);
     }
+    __atomic_clear(const_cast<int*>(&g_uart_lock), __ATOMIC_RELEASE);
+#if defined(__aarch64__)
+    asm volatile("msr daif, %0" :: "r"(saved_daif) : "memory");
+#endif
     if (bytes_written) *bytes_written = size;
     return RAD_STATUS_OK;
 }
@@ -404,12 +422,6 @@ extern "C" uint32_t rad_hal_current_core(void) {
     uint64_t mpidr = 0;
     asm volatile("mrs %0, mpidr_el1" : "=r"(mpidr));
     return static_cast<uint32_t>(mpidr & 0xffu);
-}
-
-extern "C" rad_status_t rad_hal_start_worker_core(uint32_t core, void (*entry)(uint32_t core)) {
-    (void)core;
-    (void)entry;
-    return RAD_STATUS_NOT_SUPPORTED;
 }
 
 extern "C" void rad_hal_worker_wait(void) {
@@ -539,14 +551,21 @@ extern "C" void rad_arch_scheduler_tick(uint32_t core) {
 // IRQ dispatch entered from boot.S's radix_a53_irq_common with the saved
 // exception frame; the frame itself is only needed by the asm resume path.
 extern "C" void rad_zynqmp_irq_dispatch_frame(void *frame) {
-    (void)frame;
+    // Saved SPSR_EL1 lives at offset 264 of the 288-byte boot.S trap frame.
+    // Preempt ONLY when the IRQ interrupted EL0 (SPSR.M[3:0] == 0), mirroring
+    // x86's ring-3 rule: a tick landing inside the scheduler's own dispatch
+    // window (current-task id set, arch context not yet initialized/switched)
+    // makes rad_task_yield save into an uninitialized task context and corrupts
+    // the dispatch -- observed as vanishing AP markers and stuck stress tasks.
+    uint64_t interrupted_spsr = 0x5u; // default: treat as EL1 (no preempt)
+    if (frame) interrupted_spsr = *reinterpret_cast<const uint64_t *>(static_cast<const uint8_t *>(frame) + 264u);
     for (;;) {
         const uint32_t iar = read32(gicc(0x0cu));
         const uint32_t intid = iar & 0x3ffu;
         if (intid >= GicIntidSpurious) break;
         rad_irq_dispatch(intid);
         write32(gicc(0x10u), iar); // EOIR before any context switch away
-        if (intid == GicIntidTimer) {
+        if (intid == GicIntidTimer && (interrupted_spsr & 0xfu) == 0u) {
             rad_arch_scheduler_tick(rad_hal_current_core());
         }
     }
@@ -572,6 +591,124 @@ extern "C" rad_status_t rad_zynqmp_preempt_init(void) {
     }
     return g_timer_irq_seen ? RAD_STATUS_OK : RAD_STATUS_TIMEOUT;
 }
+
+// --- PSCI SMP bring-up ------------------------------------------------------
+namespace {
+
+volatile uint32_t g_secondary_up = 0;
+volatile uint32_t g_secondary_release = 0;
+volatile uint32_t g_secondary_ready = 0;
+void (*g_worker_entry)(uint32_t) = nullptr;
+
+uint64_t zynqmp_smc(uint64_t fn, uint64_t a1, uint64_t a2, uint64_t a3) {
+#if defined(__aarch64__)
+    register uint64_t x0 asm("x0") = fn;
+    register uint64_t x1 asm("x1") = a1;
+    register uint64_t x2 asm("x2") = a2;
+    register uint64_t x3 asm("x3") = a3;
+    asm volatile("smc #0"
+        : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3)
+        :
+        : "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17", "memory");
+    return x0;
+#else
+    (void)fn; (void)a1; (void)a2; (void)a3;
+    return ~0ull;
+#endif
+}
+
+// The secondary polls these flags with the MMU (and therefore caches) off;
+// core 0 runs cached, so shared lines must be cleaned/invalidated to PoC.
+void flush_flag(const volatile uint32_t *flag) {
+#if defined(__aarch64__)
+    asm volatile("dc civac, %0\n\tdsb sy" :: "r"(flag) : "memory");
+#else
+    (void)flag;
+#endif
+}
+
+} // namespace
+
+extern "C" void radix_a53_secondary_start(void);
+extern "C" rad_status_t rad_a53_mmu_enable_current_core(void);
+
+extern "C" void rad_zynqmp_secondary_main(uint32_t core) {
+    __atomic_store_n(&g_secondary_up, 1u, __ATOMIC_RELEASE);
+#if defined(__aarch64__)
+    asm volatile("dsb sy\n\tsev" ::: "memory");
+    while (!__atomic_load_n(&g_secondary_release, __ATOMIC_ACQUIRE)) {
+        asm volatile("wfe");
+    }
+#endif
+    rad_a53_mmu_enable_current_core();
+    zynqmp_gic_cpu_init();
+    (void)rad_hal_irq_enable(GicIntidTimer); // banked enable on this core
+    zynqmp_timer_arm();
+#if defined(__aarch64__)
+    asm volatile("msr daifclr, #2" ::: "memory");
+#endif
+    const uint64_t deadline = rad_hal_time_micros() + 3u * (1000000u / TimerHz);
+    while (!g_ap_timer_irq_seen && rad_hal_time_micros() < deadline) {
+    }
+    rad_debug_marker("RADIX_AP_START_OK");
+    __atomic_store_n(&g_secondary_ready, 1u, __ATOMIC_RELEASE);
+    if (g_worker_entry) g_worker_entry(core);
+    rad_hal_cpu_halt_forever();
+}
+
+extern "C" rad_status_t rad_hal_start_worker_core(uint32_t core, void (*entry)(uint32_t core)) {
+    // core_count reflects the actual topology: 2 on hardware, the real -smp
+    // under QEMU (passed via the RSMP scratch word) -- so this never issues
+    // CPU_ON for an absent core (which destabilizes core 0 under -smp 1).
+    if (core == 0u || core >= g_zynqmp.core_count) return RAD_STATUS_INVALID_ARGUMENT;
+    g_worker_entry = entry;
+    flush_flag(reinterpret_cast<volatile uint32_t*>(&g_worker_entry));
+    const uint64_t result = zynqmp_smc(0xC4000003u, core,
+        reinterpret_cast<uint64_t>(&radix_a53_secondary_start), core);
+    if (result != 0u) {
+        rad_debug_marker("RADIX_ZUBOARD_CPU_ON_FAIL");
+        return RAD_STATUS_NOT_SUPPORTED;
+    }
+    // CPU_ON success is authoritative: PSCI accepted the wake, so the core WILL
+    // run. Do not wait for a check-in here -- the generic counter follows host
+    // time under TCG (no -icount), so any fixed window races host load (the
+    // secondary's first schedule was observed missing even 2 s occasionally).
+    // rad_zynqmp_smp_release() below is the single synchronization point.
+    return RAD_STATUS_OK;
+}
+
+// Called by the board entry once vectors/MMU/GIC exist. Sets the release flag
+// UNCONDITIONALLY: under QEMU -smp 1 a phantom cpu1 may start late (the CPU
+// object exists even without a vCPU thread) and would otherwise spin forever in
+// the pre-release wait, starving core 0 via single-thread TCG round-robin. With
+// the flag always set, any secondary that ever runs proceeds into worker_loop
+// and idles harmlessly if there is no work. Returns OK only if a secondary
+// actually checked in and reached readiness (a genuine second core).
+extern "C" rad_status_t rad_zynqmp_smp_release(void) {
+    __atomic_store_n(&g_secondary_release, 1u, __ATOMIC_RELEASE);
+    flush_flag(&g_secondary_release);
+#if defined(__aarch64__)
+    asm volatile("sev" ::: "memory");
+#endif
+    if (!g_worker_entry) return RAD_STATUS_NOT_INITIALIZED; // CPU_ON never issued
+    // Single synchronization point for secondary bring-up; exits the moment the
+    // core reaches readiness. The generic counter follows HOST wall-clock under
+    // TCG (no -icount) while guest progress depends on host CPU share, so under
+    // host load N virtual seconds can pass with almost no guest instructions
+    // executed -- no in-guest deadline is sound there. Size the window near the
+    // SMP smoke's 90 s wall budget; on hardware a live core arrives in
+    // microseconds, so expiry means it is genuinely dead.
+    const uint64_t deadline = rad_hal_time_micros() + 45000000u;
+    while (!__atomic_load_n(&g_secondary_ready, __ATOMIC_ACQUIRE)) {
+        flush_flag(&g_secondary_ready);
+        if (rad_hal_time_micros() >= deadline) {
+            rad_debug_marker("RADIX_ZUBOARD_SMP_READY_TIMEOUT");
+            return RAD_STATUS_TIMEOUT;
+        }
+    }
+    return RAD_STATUS_OK;
+}
+
 
 extern "C" rad_status_t rad_hal_register_default_devices(void) {
     rad_device_ops_t serial{};
