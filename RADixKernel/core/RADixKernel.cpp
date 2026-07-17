@@ -2146,16 +2146,20 @@ int32_t rad_process_fork(void) {
 int32_t rad_process_create(const char *path, int32_t parent_pid) {
     if (!path || !*path) return RAD_STATUS_INVALID_ARGUMENT;
     std::lock_guard<std::mutex> lock(state().mutex);
-    if ((strcmp(path, "/bin/init") == 0 || strcmp(path, "/sbin/radinit") == 0)
-        && state().processes.find(1) == state().processes.end()) {
-        ProcessRecord init;
-        init.pid = 1;
-        init.parent_pid = 0;
-        init.path = path;
-        init.state = RAD_PROCESS_RUNNING;
-        init.exit_code = 0;
-        init.credentials = {0, 0, 0, 0};
-        state().processes[1] = init;
+    if (strcmp(path, "/bin/init") == 0 || strcmp(path, "/sbin/radinit") == 0) {
+        // The service manager is the singleton pid 1 (pid 0 is the kernel),
+        // matching the x86 process model. Idempotent: return the existing
+        // service manager rather than spawning a duplicate.
+        if (state().processes.find(1) == state().processes.end()) {
+            ProcessRecord init;
+            init.pid = 1;
+            init.parent_pid = 0;
+            init.path = path;
+            init.state = RAD_PROCESS_RUNNING;
+            init.exit_code = 0;
+            init.credentials = {0, 0, 0, 0};
+            state().processes[1] = init;
+        }
         return 1;
     }
     if (parent_pid <= 0 && state().processes.find(1) != state().processes.end()) parent_pid = 1;

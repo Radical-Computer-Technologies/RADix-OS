@@ -1836,6 +1836,13 @@ extern "C" rad_status_t rad_a53_process_self_test(void) {
     frame.x[8] = RAD_SYSCALL_GETPID;
     (void)rad_a53_syscall_dispatch_frame(&frame);
 
+    // Match the x86 process model: pid 0 is the kernel, pid 1 is the service
+    // manager. Earlier bring-up may leave the current pid pointing at a slot
+    // with no process record; (re)establish the service manager as pid 1 and
+    // run the fork from it so the child inherits a registered parent.
+    rad_process_create("/sbin/radinit", 0);
+    rad_process_set_current_pid(1);
+
     const int32_t parent = rad_process_current_pid();
     const int32_t child = rad_process_fork_from_arch_frame(&frame);
     if (child <= 1) return static_cast<rad_status_t>(child);
