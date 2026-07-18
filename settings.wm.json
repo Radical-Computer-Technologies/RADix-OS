@@ -5,9 +5,9 @@
   "systems": [
     {
       "id": "rad-x86-64-grub-wm",
-      "type": "os.rad",
+      "type": "os.radix",
       "name": "RADPx-OS x86_64 GRUB RADCompositor WM image",
-      "provider": "radpx-os",
+      "provider": "radix-os",
       "depends_on": [],
       "toolchain": {
         "architecture": "x86_64",

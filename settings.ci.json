@@ -5,9 +5,9 @@
   "systems": [
     {
       "id": "rad-x86-64-grub-terminal-ci",
-      "type": "os.rad",
+      "type": "os.radix",
       "name": "CI x86_64 GRUB terminal smoke",
-      "provider": "radpx-os",
+      "provider": "radix-os",
       "depends_on": [],
       "toolchain": {
         "architecture": "x86_64",
@@ -84,9 +84,9 @@
     },
     {
       "id": "rad-zuboard-1cg-qemu-ci",
-      "type": "os.rad",
+      "type": "os.radix",
       "name": "CI ZuBoard 1CG QEMU serial smoke",
-      "provider": "radpx-os",
+      "provider": "radix-os",
       "depends_on": [],
       "toolchain": {
         "architecture": "aarch64",
