@@ -3,7 +3,21 @@
 #include <stdarg.h>
 #include <new>
 
-extern "C" void x86_serial_write(const char *text);
+// Portable early-console + halt hooks (implemented by each platform HAL; weak so
+// this freestanding runtime links on any target).
+extern "C" void rad_hal_early_console_write(const char *text) __attribute__((weak));
+extern "C" void rad_hal_cpu_halt_forever(void) __attribute__((weak));
+
+// Portable CPU relax for spin-wait loops.
+static inline void cpu_relax(void) {
+#if defined(__x86_64__) || defined(__i386__)
+    asm volatile("pause");
+#elif defined(__aarch64__)
+    asm volatile("yield");
+#else
+    asm volatile("" ::: "memory");
+#endif
+}
 
 namespace {
 struct alignas(64) HeapBlock {
@@ -35,7 +49,7 @@ struct CppRuntimeProbe {
 CppRuntimeProbe g_cpp_runtime_probe;
 
 void heap_lock(void) {
-    while (__atomic_test_and_set(&g_heap_lock, __ATOMIC_ACQUIRE)) asm volatile("pause");
+    while (__atomic_test_and_set(&g_heap_lock, __ATOMIC_ACQUIRE)) cpu_relax();
 }
 
 void heap_unlock(void) {
@@ -127,8 +141,10 @@ void put_unsigned(char *buffer, size_t size, size_t& pos, unsigned long long val
 
 extern "C" {
 
+#if defined(__x86_64__) || defined(__i386__)
 extern void (*__init_array_start[])();
 extern void (*__init_array_end[])();
+#endif
 
 void *memcpy(void *dst, const void *src, size_t n) {
     auto *d = static_cast<unsigned char*>(dst);
@@ -180,6 +196,19 @@ size_t strlen(const char *s) {
     if (!s) return 0;
     while (s[n]) ++n;
     return n;
+}
+
+size_t strnlen(const char *s, size_t max) {
+    size_t n = 0;
+    if (!s) return 0;
+    while (n < max && s[n]) ++n;
+    return n;
+}
+
+char *strcpy(char *dst, const char *src) {
+    char *out = dst;
+    while ((*out++ = *src++) != '\0') {}
+    return dst;
 }
 
 int strcmp(const char *a, const char *b) {
@@ -344,8 +373,9 @@ void free(void *pointer) {
 }
 
 void abort(void) {
-    x86_serial_write("abort\n");
-    for (;;) asm volatile("cli; hlt");
+    if (rad_hal_early_console_write) rad_hal_early_console_write("abort\n");
+    if (rad_hal_cpu_halt_forever) rad_hal_cpu_halt_forever();
+    for (;;) cpu_relax();
 }
 
 void rust_eh_personality(void) {}
@@ -359,6 +389,10 @@ int __cxa_guard_acquire(uint64_t *guard) { return !(*guard); }
 void __cxa_guard_release(uint64_t *guard) { *guard = 1; }
 void __cxa_guard_abort(uint64_t*) {}
 
+#if defined(__x86_64__) || defined(__i386__)
+// C++ global-constructor running is x86-only for now: the x86 GRUB image relies on
+// it and its linker script defines __init_array_start/end. Other targets run any
+// needed init explicitly and do not link this.
 void x86_run_global_constructors(void) {
     for (auto ctor = __init_array_start; ctor != __init_array_end; ++ctor) {
         if (*ctor) (*ctor)();
@@ -369,6 +403,7 @@ int x86_cpp_runtime_self_test(void) {
     void *aligned = allocate_aligned(64u, 64u);
     return g_cpp_ctor_ran && aligned && (reinterpret_cast<uintptr_t>(aligned) & 63u) == 0u;
 }
+#endif
 
 }
 

@@ -289,7 +289,7 @@ add_executable(radixkernel_x86_64_grub_slint
     "${RADIX_FS_SOURCE_DIR}/fat.cpp"
     "${RADIX_X86_PLATFORM_SOURCE_DIR}/x86_user.cpp"
     "${RADIX_X86_PLATFORM_SOURCE_DIR}/hal_x86_64.cpp"
-    "${RADIX_X86_PLATFORM_SOURCE_DIR}/runtime.cpp"
+    "${RADIX_OS_ROOT}/RADixKernel/runtime/freestanding_runtime.cpp"
     "${RADIX_OS_ROOT}/RADixKernel/boot/radboot.cpp"
     "${RADIX_OS_ROOT}/RADixKernel/subsystems/RADixOverlayRuntime.cpp"
     "${RADIX_OS_ROOT}/RADixKernel/core/RADixKernel_runtime.cpp"
