@@ -9,6 +9,10 @@ This hub documents the experimental Crimson 0.2.0 kernel/package API surface.
 
 ## Start Here
 
+- @ref getting_started walks a fresh checkout to a booted image on x86_64 and
+  the ZuBoard-1CG A53 (QEMU).
+- @ref architecture maps the source tree — core, fs, drivers, platforms,
+  boards, runtime, and hal.
 - @ref api_structure explains the public ABI shape and subsystem ownership.
 - @ref api_groups provides a subsystem-oriented API index.
 - @ref device_tree_guide documents the runtime overlay/device-tree model.
