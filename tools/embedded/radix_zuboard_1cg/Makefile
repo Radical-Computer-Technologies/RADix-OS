@@ -42,7 +42,7 @@ OBJS := \
 	radixkernel_overlay.o \
 	radixkernel_ext4.o \
 	radixkernel_hal_zynqmp.o \
-	zynqmp_gem.o
+	gem_cadence.o
 
 USERLAND_ELFS := \
 	$(USER_BUILD_DIR)/radinit.elf \
@@ -154,7 +154,7 @@ radixkernel_ext4.o: $(RADIX_OS_ROOT)/RADixKernel/fs/ext4.cpp
 radixkernel_hal_zynqmp.o: $(RADIX_OS_ROOT)/RADixKernel/platforms/a53/zynqmp/radixkernel_hal_zynqmp.cpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
 
-zynqmp_gem.o: $(RADIX_OS_ROOT)/RADixKernel/platforms/a53/zynqmp/zynqmp_gem.cpp
+gem_cadence.o: $(RADIX_OS_ROOT)/RADixKernel/drivers/net/gem_cadence.cpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
 
 radixkernel_runtime_newlib.o: $(RADIX_OS_ROOT)/RADixKernel/hal/circle/radixkernel_runtime_newlib.cpp
