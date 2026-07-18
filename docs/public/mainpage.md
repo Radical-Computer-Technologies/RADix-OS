@@ -45,18 +45,18 @@ mkdir, rename, truncate, symlink/readlink, unlink, rmdir, chmod, and fsync.
 Journal replay and journaled metadata commits are intentionally outside the
 current beta profile.
 
-RadBuild stages RADPx packages through RadicalPackages `.radpm` packagegroups.
-The standard terminal image selects `radix-terminal-base` and can add
-`radix-networking`; RADCompositor images select `radix-desktop-base`.
+RadBuild stages RADPx-OS packages through RadicalPackages `.radpm` packagegroups.
+The standard terminal image selects `rad-terminal-base` and can add
+`rad-networking`; RADCompositor images select `rad-desktop-base`.
 
 ## Verification
 
 Host kernel tests:
 
 ```bash
-cmake -S . -B build-host -DRADIX_OS_BUILD_TESTS=ON
+cmake -S . -B build-host -DRADPX_OS_BUILD_TESTS=ON
 cmake --build build-host -j2
-./build-host/tests/RADixKernelTests
+./build-host/tests/RADKernelTests
 ```
 
 x86_64 GRUB + Slint VM smoke:

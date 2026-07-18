@@ -5,11 +5,11 @@
   "args": [],
   "type": "oneshot",
   "terminal": "/dev/pts/boot-terminal",
-  "autostart": @RADIX_TERMINAL_STRESS_AUTOSTART@,
-  "order": @RADIX_TERMINAL_STRESS_ORDER@,
+  "autostart": @RAD_TERMINAL_STRESS_AUTOSTART@,
+  "order": @RAD_TERMINAL_STRESS_ORDER@,
   "requires": ["storage-root", "base-terminal"],
   "after": ["base-terminal"],
   "restart": "no",
-  "stdout": "/var/log/radix/terminal-stress.log",
-  "stderr": "/var/log/radix/terminal-stress.log"
+  "stdout": "/var/log/rad/terminal-stress.log",
+  "stderr": "/var/log/rad/terminal-stress.log"
 }

@@ -80,16 +80,16 @@ fail:
 
 .section .rodata
 argv_envp_message:
-    .ascii "RADIX_USER_ARGV_ENVP_OK\n"
+    .ascii "RAD_USER_ARGV_ENVP_OK\n"
 argv_envp_message_end:
 script_message:
-    .ascii "RADIX_USER_SH_SCRIPT_OK\n"
+    .ascii "RAD_USER_SH_SCRIPT_OK\n"
 script_message_end:
 exit_message:
-    .ascii "RADIX_USER_RADSH_EXIT_OK\n"
+    .ascii "RAD_USER_RADSH_EXIT_OK\n"
 exit_message_end:
 fail_message:
-    .ascii "RADIX_USER_SH_SCRIPT_FAIL\n"
+    .ascii "RAD_USER_SH_SCRIPT_FAIL\n"
 fail_message_end:
 
 .section .bss

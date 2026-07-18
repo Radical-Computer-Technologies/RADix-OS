@@ -1,12 +1,12 @@
 cmake_minimum_required(VERSION 3.15)
 
-project(RADixOS LANGUAGES C CXX)
+project(RADOS LANGUAGES C CXX)
 
-option(RADIX_OS_BUILD_TESTS "Build RADPx OS host tests" ON)
+option(RADPX_OS_BUILD_TESTS "Build RADPx-OS host tests" ON)
 
-add_subdirectory(RADixKernel)
+add_subdirectory(RADKernel)
 
-if(RADIX_OS_BUILD_TESTS)
+if(RADPX_OS_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
 endif()

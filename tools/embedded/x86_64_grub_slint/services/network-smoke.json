@@ -8,6 +8,6 @@
   "requires": ["network"],
   "after": ["network"],
   "restart": "no",
-  "stdout": "/var/log/radix/network-smoke.log",
-  "stderr": "/var/log/radix/network-smoke.log"
+  "stdout": "/var/log/rad/network-smoke.log",
+  "stderr": "/var/log/rad/network-smoke.log"
 }

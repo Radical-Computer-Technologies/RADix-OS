@@ -143,34 +143,34 @@ fail:
 
 .section .rodata
 abi_message:
-    .ascii "RADIX_USER_LINUX_SYSCALL_ABI_OK\n"
+    .ascii "RAD_USER_LINUX_SYSCALL_ABI_OK\n"
 abi_message_end:
 shell_message:
-    .ascii "RADIX_USER_RADSH_BOOT_OK\n"
+    .ascii "RAD_USER_RADSH_BOOT_OK\n"
 shell_message_end:
 live_message:
-    .ascii "RADIX_SLINT_WM_PTY_TERMINAL_OK\n"
+    .ascii "RAD_SLINT_WM_PTY_TERMINAL_OK\n"
 live_message_end:
 fork_parent_message:
-    .ascii "RADIX_USER_FORK_OK\n"
+    .ascii "RAD_USER_FORK_OK\n"
 fork_parent_message_end:
 fork_child_message:
-    .ascii "RADIX_USER_FORK_CHILD_OK\n"
+    .ascii "RAD_USER_FORK_CHILD_OK\n"
 fork_child_message_end:
 fork_fd_message:
-    .ascii "RADIX_USER_FORK_FD_INHERIT_OK\n"
+    .ascii "RAD_USER_FORK_FD_INHERIT_OK\n"
 fork_fd_message_end:
 fork_wait_message:
-    .ascii "RADIX_USER_FORK_WAIT_OK\n"
+    .ascii "RAD_USER_FORK_WAIT_OK\n"
 fork_wait_message_end:
 cow_parent_message:
-    .ascii "RADIX_USER_COW_PARENT_ISOLATED_OK\n"
+    .ascii "RAD_USER_COW_PARENT_ISOLATED_OK\n"
 cow_parent_message_end:
 exit_message:
-    .ascii "RADIX_USER_RADSH_EXIT_OK\n"
+    .ascii "RAD_USER_RADSH_EXIT_OK\n"
 exit_message_end:
 fail_message:
-    .ascii "RADIX_USER_RADSH_FAIL\n"
+    .ascii "RAD_USER_RADSH_FAIL\n"
 fail_message_end:
 script_path:
     .asciz "/bin/test.sh"

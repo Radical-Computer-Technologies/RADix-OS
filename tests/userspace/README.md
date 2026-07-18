@@ -1,7 +1,7 @@
-# RADPx Userspace Tests
+# RADPx-OS Userspace Tests
 
 This directory owns userspace stress and compatibility tests that can be built
-for RADPx guest images or compiled for host parity checks.
+for RADPx-OS guest images or compiled for host parity checks.
 
 Target build directories package selected tests into root filesystems, but test
 source should live here so scheduler, TTY, POSIX, shared-library, and TUI

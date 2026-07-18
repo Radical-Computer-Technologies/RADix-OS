@@ -43,7 +43,7 @@ def main() -> int:
     ntp = bind_udp(args.ntp_port)
     echo = bind_udp(args.echo_port)
     deadline = time.monotonic() + args.duration
-    print(f"RADIX_HOST_NET_RESPONDER_READY ntp={args.ntp_port} echo={args.echo_port}", flush=True)
+    print(f"RAD_HOST_NET_RESPONDER_READY ntp={args.ntp_port} echo={args.echo_port}", flush=True)
     try:
         while time.monotonic() < deadline:
             readable, _, _ = select.select([ntp, echo], [], [], 0.2)

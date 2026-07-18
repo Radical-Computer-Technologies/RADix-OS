@@ -8,6 +8,6 @@
   "requires": ["storage-root"],
   "after": ["storage-root"],
   "restart": "no",
-  "stdout": "/var/log/radix/base-terminal.log",
-  "stderr": "/var/log/radix/base-terminal.log"
+  "stdout": "/var/log/rad/base-terminal.log",
+  "stderr": "/var/log/rad/base-terminal.log"
 }

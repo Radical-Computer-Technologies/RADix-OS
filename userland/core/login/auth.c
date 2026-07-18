@@ -4,7 +4,7 @@ typedef struct {
     uint32_t state[8];
     uint64_t bit_count;
     uint8_t buffer[64];
-} radix_sha256_t;
+} rad_sha256_t;
 
 static uint32_t rotr32(uint32_t value, uint32_t bits) {
     return (value >> bits) | (value << (32u - bits));
@@ -28,7 +28,7 @@ static void store_be64(uint8_t *p, uint64_t value) {
     }
 }
 
-static void sha256_transform(radix_sha256_t *ctx, const uint8_t block[64]) {
+static void sha256_transform(rad_sha256_t *ctx, const uint8_t block[64]) {
     static const uint32_t k[64] = {
         0x428a2f98u,0x71374491u,0xb5c0fbcfu,0xe9b5dba5u,0x3956c25bu,0x59f111f1u,0x923f82a4u,0xab1c5ed5u,
         0xd807aa98u,0x12835b01u,0x243185beu,0x550c7dc3u,0x72be5d74u,0x80deb1feu,0x9bdc06a7u,0xc19bf174u,
@@ -68,14 +68,14 @@ static void sha256_transform(radix_sha256_t *ctx, const uint8_t block[64]) {
     ctx->state[4] += e; ctx->state[5] += f; ctx->state[6] += g; ctx->state[7] += h;
 }
 
-static void sha256_init(radix_sha256_t *ctx) {
+static void sha256_init(rad_sha256_t *ctx) {
     ctx->state[0] = 0x6a09e667u; ctx->state[1] = 0xbb67ae85u; ctx->state[2] = 0x3c6ef372u; ctx->state[3] = 0xa54ff53au;
     ctx->state[4] = 0x510e527fu; ctx->state[5] = 0x9b05688cu; ctx->state[6] = 0x1f83d9abu; ctx->state[7] = 0x5be0cd19u;
     ctx->bit_count = 0;
     for (int i = 0; i < 64; ++i) ctx->buffer[i] = 0;
 }
 
-static void sha256_update(radix_sha256_t *ctx, const uint8_t *data, size_t size) {
+static void sha256_update(rad_sha256_t *ctx, const uint8_t *data, size_t size) {
     size_t used = (size_t)((ctx->bit_count >> 3u) & 63u);
     ctx->bit_count += (uint64_t)size * 8u;
     for (size_t i = 0; i < size; ++i) {
@@ -87,7 +87,7 @@ static void sha256_update(radix_sha256_t *ctx, const uint8_t *data, size_t size)
     }
 }
 
-static void sha256_final(radix_sha256_t *ctx, uint8_t digest[32]) {
+static void sha256_final(rad_sha256_t *ctx, uint8_t digest[32]) {
     size_t used = (size_t)((ctx->bit_count >> 3u) & 63u);
     const uint64_t bits = ctx->bit_count;
     ctx->buffer[used++] = 0x80u;
@@ -117,8 +117,8 @@ static void hex_encode(const uint8_t *bytes, size_t size, char *out) {
     out[size * 2] = 0;
 }
 
-void radix_auth_sha256_hex(const char *text, char out_hex[65]) {
-    radix_sha256_t ctx;
+void rad_auth_sha256_hex(const char *text, char out_hex[65]) {
+    rad_sha256_t ctx;
     uint8_t digest[32];
     sha256_init(&ctx);
     sha256_update(&ctx, (const uint8_t*)(text ? text : ""), auth_len(text));
@@ -126,8 +126,8 @@ void radix_auth_sha256_hex(const char *text, char out_hex[65]) {
     hex_encode(digest, sizeof(digest), out_hex);
 }
 
-void radix_auth_password_hash(const char *salt, const char *password, char out_hex[65]) {
-    radix_sha256_t ctx;
+void rad_auth_password_hash(const char *salt, const char *password, char out_hex[65]) {
+    rad_sha256_t ctx;
     uint8_t digest[32];
     const char sep = ':';
     sha256_init(&ctx);

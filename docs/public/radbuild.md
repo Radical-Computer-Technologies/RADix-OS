@@ -26,12 +26,12 @@ while full Slint startup inside the VM remains a separate stabilization item.
 Successful builds stage development artifacts under:
 
 ```text
-artifacts/radix/x86_64-grub-terminal/
-artifacts/radix/x86_64-grub-wm/
+artifacts/rad/x86_64-grub-terminal/
+artifacts/rad/x86_64-grub-wm/
 ```
 
 The staged set includes the GRUB ISO, kernel ELF, ext4 root filesystem, FAT32
-image, `run-radix-vm.sh`, one serial log per SMP smoke, and `SHA256SUMS`.
+image, `run-rad-vm.sh`, one serial log per SMP smoke, and `SHA256SUMS`.
 
 The terminal profile excludes Slint/RADCompositor chunks and boots directly to
 the framebuffer terminal. The WM profile includes the Slint-backed
@@ -39,7 +39,7 @@ RADCompositor shell.
 
 ## rkconfig and Root Filesystem Layout
 
-Each `os.radix` system can provide a `config.rkconfig` object. The current
+Each `os.rad` system can provide a `config.rkconfig` object. The current
 Crimson fields are:
 
 - `hostname`: written to `/etc/hostname` and used by the `rash` prompt.
@@ -50,7 +50,7 @@ Crimson fields are:
 - `terminal_theme`: framebuffer terminal color/theme selection.
 - `terminal_autocomplete`: enables `rash` tab completion.
 - `terminal_posix_compat`: enables the POSIX terminal compatibility layer.
-- `terminal_ncurses`: stages the RADPx terminfo/sysroot readiness pieces for
+- `terminal_ncurses`: stages the RADPx-OS terminfo/sysroot readiness pieces for
   ncurses-style ports.
 - `terminal_nano`: disabled by default; reserved for the experimental upstream
   nano port while TTY/libc compatibility matures.
@@ -65,12 +65,12 @@ Crimson fields are:
 The generated ext4 image stages a Unix-like base layout:
 
 ```text
-/bin /dev /etc /home/root /lib /lib/radix/modules /mnt/fat /sbin /tmp /usr/bin /usr/lib /var/log
+/bin /dev /etc /home/root /lib /lib/rad/modules /mnt/fat /sbin /tmp /usr/bin /usr/lib /var/log
 ```
 
-Kernel modules use the `.rko` extension under `/lib/radix/modules`. Dynamic
+Kernel modules use the `.rko` extension under `/lib/rad/modules`. Dynamic
 shared objects use `.rso` under `/lib` or `/usr/lib` once the runtime dynamic
-linker lands. These names are RADPx-specific and intentionally do not collide
+linker lands. These names are RADPx-OS-specific and intentionally do not collide
 with Linux `.ko` kernel modules or `.so` shared libraries.
 
 RadBuild writes the machine-readable manifest at:
@@ -91,9 +91,9 @@ RadBuild can consume packagegroups from that repository during image creation:
 ```json
 {
   "radpm": {
-    "repository": "https://github.com/Radical-Computer-Technologies/RadicalPackages/releases/download/radix-os-0.2.0-beta.1",
+    "repository": "https://github.com/Radical-Computer-Technologies/RadicalPackages/releases/download/radpx-os-0.2.0-beta.1",
     "suite": "experimental",
-    "packagegroups": ["radix-terminal-base", "radix-networking"],
+    "packagegroups": ["rad-terminal-base", "rad-networking"],
     "packages": [],
     "verify_signatures": true
   }

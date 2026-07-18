@@ -1,6 +1,6 @@
 # API Structure {#api_structure}
 
-RADPx-OS exposes one stable C ABI through `radixkernel.h`. The smaller
+RADPx-OS exposes one stable C ABI through `radkernel.h`. The smaller
 subsystem headers, such as `rad_vfs.h` and `rad_spi.h`, include that ABI and
 exist so drivers and applications can include the subsystem they use.
 
@@ -29,7 +29,7 @@ The core runtime is intentionally explicit:
 
 ## Platform Layout
 
-Architecture and SoC code is split under `RADixKernel/platforms`. Portable A53
+Architecture and SoC code is split under `RADKernel/platforms`. Portable A53
 execution code belongs in `platforms/a53`; Broadcom-specific Pi drivers belong
 under `platforms/a53/bcm283x`. The x86 VM target remains the parity reference
 and will move under `platforms/x86` once its target wrapper is thin enough to

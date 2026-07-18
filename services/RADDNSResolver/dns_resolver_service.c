@@ -91,12 +91,12 @@ static int write_resolver_config(const char *config_path) {
 }
 
 int main(int argc, char **argv) {
-    const char *config_path = argc > 1 ? argv[1] : "/etc/radix/network/dns-resolver.json";
+    const char *config_path = argc > 1 ? argv[1] : "/etc/rad/network/dns-resolver.json";
     if (write_resolver_config(config_path) != 0) {
-        put_fd(1, "RADIX_SERVICE_DNS_RESOLVER_FAIL\n");
+        put_fd(1, "RAD_SERVICE_DNS_RESOLVER_FAIL\n");
         return 2;
     }
-    put_fd(1, "RADIX_SERVICE_DNS_RESOLVER_OK\n");
+    put_fd(1, "RAD_SERVICE_DNS_RESOLVER_OK\n");
     for (;;) {
         service_sleep_seconds(30);
         (void)write_resolver_config(config_path);

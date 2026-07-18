@@ -1,14 +1,14 @@
 {
   "name": "userspace-shell",
-  "description": "RADPx shell self-test and first userspace command service",
+  "description": "RADPx-OS shell self-test and first userspace command service",
   "exec": "/bin/rash",
   "args": ["--selftest"],
   "type": "oneshot",
-  "autostart": @RADIX_USERSPACE_SHELL_AUTOSTART@,
+  "autostart": @RAD_USERSPACE_SHELL_AUTOSTART@,
   "order": 20,
   "requires": ["storage-root"],
   "after": ["storage-root"],
   "restart": "no",
-  "stdout": "/var/log/radix/userspace-shell.log",
-  "stderr": "/var/log/radix/userspace-shell.log"
+  "stdout": "/var/log/rad/userspace-shell.log",
+  "stderr": "/var/log/rad/userspace-shell.log"
 }

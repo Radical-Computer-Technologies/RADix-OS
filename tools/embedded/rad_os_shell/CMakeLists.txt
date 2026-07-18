@@ -2,10 +2,10 @@ cmake_minimum_required(VERSION 3.15)
 
 project(rad_os_shell LANGUAGES CXX)
 
-set(RADIX_OS_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../.." CACHE PATH "Path to RADPx-OS")
+set(RADPX_OS_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../.." CACHE PATH "Path to RADPx-OS")
 if(NOT RADLIB_ROOT)
-    get_filename_component(RADIX_OS_PARENT "${RADIX_OS_ROOT}/.." ABSOLUTE)
-    set(RADLIB_ROOT "${RADIX_OS_PARENT}/RADLib" CACHE PATH "Path to RADLib")
+    get_filename_component(RADPX_OS_PARENT "${RADPX_OS_ROOT}/.." ABSOLUTE)
+    set(RADLIB_ROOT "${RADPX_OS_PARENT}/RADLib" CACHE PATH "Path to RADLib")
 endif()
 
 add_compile_definitions(
@@ -18,9 +18,9 @@ add_compile_definitions(
 set(RADLIB_EMBEDDED ON CACHE BOOL "" FORCE)
 set(BUILD_RADCore ON CACHE BOOL "" FORCE)
 set(BUILD_RADUi ON CACHE BOOL "" FORCE)
-set(BUILD_RADixKernel ON CACHE BOOL "" FORCE)
-set(RADIX_KERNEL_BUILD_STATIC ON CACHE BOOL "" FORCE)
-set(RADIX_KERNEL_BACKEND linux_sim CACHE STRING "" FORCE)
+set(BUILD_RADKernel ON CACHE BOOL "" FORCE)
+set(RAD_KERNEL_BUILD_STATIC ON CACHE BOOL "" FORCE)
+set(RAD_KERNEL_BACKEND linux_sim CACHE STRING "" FORCE)
 set(RADUI_ENABLE_SLINT ON CACHE BOOL "" FORCE)
 set(RADUI_ENABLE_EMBEDDED_FRAMEBUFFER ON CACHE BOOL "" FORCE)
 if(NOT RADUI_SLINT_PROVIDER)
@@ -36,26 +36,26 @@ if(RADUI_SLINT_PROVIDER STREQUAL "binary" AND NOT TARGET Slint::Slint)
     )
 endif()
 
-add_subdirectory("${RADIX_OS_ROOT}/RADixKernel" "${CMAKE_BINARY_DIR}/RADixKernel")
+add_subdirectory("${RADPX_OS_ROOT}/RADKernel" "${CMAKE_BINARY_DIR}/RADKernel")
 add_subdirectory("${RADLIB_ROOT}/RADCore" "${CMAKE_BINARY_DIR}/RADCore")
 add_subdirectory("${RADLIB_ROOT}/RADUi" "${CMAKE_BINARY_DIR}/RADUi")
 
 add_executable(rad_os_shell
     main.cpp
-    "${RADIX_OS_ROOT}/services/RADCompositor/RADCompositorModel.cpp"
-    "${RADIX_OS_ROOT}/services/RADCompositor/RADCompositorCore.cpp"
+    "${RADPX_OS_ROOT}/services/RADCompositor/RADCompositorModel.cpp"
+    "${RADPX_OS_ROOT}/services/RADCompositor/RADCompositorCore.cpp"
 )
 
 target_compile_features(rad_os_shell PRIVATE cxx_std_20)
 target_include_directories(rad_os_shell PRIVATE
-    "${RADIX_OS_ROOT}/RADixKernel/boot"
-    "${RADIX_OS_ROOT}/services/RADCompositor"
+    "${RADPX_OS_ROOT}/RADKernel/boot"
+    "${RADPX_OS_ROOT}/services/RADCompositor"
 )
-target_link_libraries(rad_os_shell PRIVATE RADixKernel RADCore RADUi Slint::Slint)
+target_link_libraries(rad_os_shell PRIVATE RADKernel RADCore RADUi Slint::Slint)
 
 target_compile_definitions(rad_os_shell PRIVATE SLINT_BACKEND=1)
 
-SLINT_TARGET_SOURCES(rad_os_shell "${RADIX_OS_ROOT}/services/RADCompositor/RADCompositor.slint")
+SLINT_TARGET_SOURCES(rad_os_shell "${RADPX_OS_ROOT}/services/RADCompositor/RADCompositor.slint")
 
 
 if(DEFINED SLINT_SDK_DIR)

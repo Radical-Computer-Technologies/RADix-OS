@@ -4,10 +4,10 @@
   "project_name": "RADPx-OS Window Manager",
   "systems": [
     {
-      "id": "radix-x86-64-grub-wm",
-      "type": "os.radix",
-      "name": "RADPx x86_64 GRUB RADCompositor WM image",
-      "provider": "radix-os",
+      "id": "rad-x86-64-grub-wm",
+      "type": "os.rad",
+      "name": "RADPx-OS x86_64 GRUB RADCompositor WM image",
+      "provider": "radpx-os",
       "depends_on": [],
       "toolchain": {
         "architecture": "x86_64",
@@ -34,12 +34,12 @@
           "terminal.ncurses"
         ],
         "rkconfig": {
-          "hostname": "radix",
-          "root_password": "radix",
+          "hostname": "rad",
+          "root_password": "rad",
           "rootfs_size_mb": 256,
           "terminal_scale": "auto",
-          "terminal_font": "radix-default",
-          "terminal_theme": "radix-dark",
+          "terminal_font": "rad-default",
+          "terminal_theme": "rad-dark",
           "terminal_autocomplete": true,
           "terminal_posix_compat": true,
           "terminal_ncurses": true,
@@ -52,27 +52,27 @@
           "repository": "../RadicalPackages",
           "suite": "experimental",
           "packages": [
-            "radix-core",
+            "rad-core",
             "radlib",
             "radlib-ui",
-            "radix-vim-tiny"
+            "rad-vim-tiny"
           ]
         },
         "sdk": {
           "enabled": true,
-          "name": "radix-sdk-x86_64-grub-wm.tar.gz",
-          "root_name": "radix-sdk-x86_64-grub-wm"
+          "name": "rad-sdk-x86_64-grub-wm.tar.gz",
+          "root_name": "rad-sdk-x86_64-grub-wm"
         },
         "build_dir": "build/embedded/x86_64_grub_wm",
         "smoke_script": "tools/embedded/x86_64_grub_slint_smoke.sh",
-        "artifact_dir": "artifacts/radix/x86_64-grub-wm",
-        "log_dir": ".radmeta/radix-os/wm/logs",
+        "artifact_dir": "artifacts/rad/x86_64-grub-wm",
+        "log_dir": ".radmeta/radpx-os/wm/logs",
         "skip_qemu": true,
         "artifact_names": {
-          "kernel": "radixkernel-x86-64-grub-wm",
-          "iso": "radixkernel-x86-64-grub-wm.iso",
-          "rootfs": "radix-rootfs.ext4",
-          "fat32": "radix-fat32.img",
+          "kernel": "radkernel-x86-64-grub-wm",
+          "iso": "radkernel-x86-64-grub-wm.iso",
+          "rootfs": "rad-rootfs.ext4",
+          "fat32": "rad-fat32.img",
           "serial_log": "x86-64-grub-wm-smoke.log"
         },
         "qemu_timeout": "120s",

@@ -113,7 +113,7 @@ static int sync_time_once(const char *server, int port, int set_clock) {
     hints.ai_socktype = SOCK_DGRAM;
     struct addrinfo *result = 0;
     if (getaddrinfo(server, 0, &hints, &result) != 0 || !result) {
-        put_fd(1, "RADIX_SERVICE_TIME_SYNC_RESOLVE_FAIL\n");
+        put_fd(1, "RAD_SERVICE_TIME_SYNC_RESOLVE_FAIL\n");
         return 2;
     }
 
@@ -123,7 +123,7 @@ static int sync_time_once(const char *server, int port, int set_clock) {
 
     int fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (fd < 0) {
-        put_fd(1, "RADIX_SERVICE_TIME_SYNC_SOCKET_FAIL\n");
+        put_fd(1, "RAD_SERVICE_TIME_SYNC_SOCKET_FAIL\n");
         return 3;
     }
     uint8_t request[48];
@@ -131,7 +131,7 @@ static int sync_time_once(const char *server, int port, int set_clock) {
     request[0] = 0x1b;
     if (sendto(fd, request, sizeof(request), 0, (struct sockaddr*)&remote, sizeof(remote)) != (ssize_t)sizeof(request)) {
         close(fd);
-        put_fd(1, "RADIX_SERVICE_TIME_SYNC_SEND_FAIL\n");
+        put_fd(1, "RAD_SERVICE_TIME_SYNC_SEND_FAIL\n");
         return 4;
     }
 
@@ -151,12 +151,12 @@ static int sync_time_once(const char *server, int port, int set_clock) {
     }
     close(fd);
     if (received < 48) {
-        put_fd(1, "RADIX_SERVICE_TIME_SYNC_TIMEOUT\n");
+        put_fd(1, "RAD_SERVICE_TIME_SYNC_TIMEOUT\n");
         return 5;
     }
     uint32_t ntp_seconds = read_be32(response + 40);
     if (ntp_seconds < 2208988800u) {
-        put_fd(1, "RADIX_SERVICE_TIME_SYNC_BAD_SAMPLE\n");
+        put_fd(1, "RAD_SERVICE_TIME_SYNC_BAD_SAMPLE\n");
         return 6;
     }
     uint64_t unix_seconds = (uint64_t)(ntp_seconds - 2208988800u);
@@ -165,17 +165,17 @@ static int sync_time_once(const char *server, int port, int set_clock) {
         tv.tv_sec = (long)unix_seconds;
         tv.tv_usec = 0;
         if (settimeofday(&tv, 0) != 0) {
-            put_fd(1, "RADIX_SERVICE_TIME_SYNC_SETTIME_FAIL\n");
+            put_fd(1, "RAD_SERVICE_TIME_SYNC_SETTIME_FAIL\n");
             return 7;
         }
     }
-    put_fd(1, "RADIX_SERVICE_TZDATA_OK\n");
-    put_fd(1, "RADIX_SERVICE_TIME_SYNC_OK\n");
+    put_fd(1, "RAD_SERVICE_TZDATA_OK\n");
+    put_fd(1, "RAD_SERVICE_TIME_SYNC_OK\n");
     return 0;
 }
 
 int main(int argc, char **argv) {
-    const char *config_path = argc > 1 ? argv[1] : "/etc/radix/time/time-sync.json";
+    const char *config_path = argc > 1 ? argv[1] : "/etc/rad/time/time-sync.json";
     for (;;) {
         char json[1024];
         char server[96] = "time.google.com";

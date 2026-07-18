@@ -77,16 +77,16 @@ fail:
 
 .section .rodata
 invalid_ptr_message:
-    .ascii "RADIX_USER_INVALID_PTR_OK\n"
+    .ascii "RAD_USER_INVALID_PTR_OK\n"
 invalid_ptr_message_end:
 syscall_message:
-    .ascii "RADIX_USER_SYSCALLS_OK\n"
+    .ascii "RAD_USER_SYSCALLS_OK\n"
 syscall_message_end:
 init_message:
-    .ascii "RADIX_USER_INIT_OK\n"
+    .ascii "RAD_USER_INIT_OK\n"
 init_message_end:
 fail_message:
-    .ascii "RADIX_USER_SYSCALLS_FAIL\n"
+    .ascii "RAD_USER_SYSCALLS_FAIL\n"
 fail_message_end:
 radsh_path:
     .asciz "/bin/radsh"

@@ -20,7 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Configure
-        run: cmake -S . -B build-host -DRADIX_OS_BUILD_TESTS=ON
+        run: cmake -S . -B build-host -DRADPX_OS_BUILD_TESTS=ON
       - name: Build
         run: cmake --build build-host -j"$(nproc)"
       - name: Test
@@ -46,9 +46,9 @@ jobs:
           token: ${{ secrets.RADBUILD_CHECKOUT_TOKEN }}
           ref: ${{ env.RADBUILD_REF }}
           path: RadBuild
-      # settings.ci.json's radpm block stages coreutils (radix-core), radlib, and
+      # settings.ci.json's radpm block stages coreutils (rad-core), radlib, and
       # vim-tiny into the rootfs; without them the shell's execve of ls/clear/etc.
-      # fails (RADIX_USER_EXECVE_LOAD_NOT_FOUND). The radpm repository path
+      # fails (RAD_USER_EXECVE_LOAD_NOT_FOUND). The radpm repository path
       # "../RadicalPackages" resolves relative to the settings dir (RADPx-OS/), so
       # check it out as a sibling. (The token must have RadicalPackages read too.)
       - uses: actions/checkout@v4
@@ -70,7 +70,7 @@ jobs:
         run: |
           python3 RadBuild/radbuild/.tools/radbuild.py build os \
             --settings RADPx-OS/settings.ci.json \
-            --system radix-x86-64-grub-terminal-ci \
+            --system rad-x86-64-grub-terminal-ci \
             --json-events
       - name: Upload smoke logs
         if: failure()
@@ -115,10 +115,10 @@ jobs:
         run: |
           python3 RadBuild/radbuild/.tools/radbuild.py build os \
             --settings RADPx-OS/settings.ci.json \
-            --system radix-zuboard-1cg-qemu-ci \
+            --system rad-zuboard-1cg-qemu-ci \
             --json-events
       - name: Assert QEMU SD image exists # belt-and-braces vs silent image skips
-        run: test -s RADPx-OS/artifacts/radix/zuboard-1cg-qemu/radix-zuboard-1cg-qemu.img
+        run: test -s RADPx-OS/artifacts/rad/zuboard-1cg-qemu/rad-zuboard-1cg-qemu.img
       - name: Upload serial and build logs
         if: always()
         uses: actions/upload-artifact@v4

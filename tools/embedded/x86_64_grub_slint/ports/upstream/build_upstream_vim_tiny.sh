@@ -10,25 +10,25 @@ source_arg="$1"
 build_dir="$2"
 # Self-fetch the upstream Vim source if it is not already present, so a clean
 # checkout / fresh CI runner can build without a pre-staged tree (mirrors the
-# ncurses port's download). Pin a known-good tag; override with RADIX_VIM_TAG.
+# ncurses port's download). Pin a known-good tag; override with RAD_VIM_TAG.
 if [[ ! -f "${source_arg}/src/configure" && ! -f "${source_arg}/configure" ]]; then
     rm -rf "${source_arg}"
     mkdir -p "$(dirname "${source_arg}")"
-    git clone --depth 1 --branch "${RADIX_VIM_TAG:-v9.2.0782}" \
+    git clone --depth 1 --branch "${RAD_VIM_TAG:-v9.2.0782}" \
         https://github.com/vim/vim.git "${source_arg}"
 fi
 source_dir="$(cd "${source_arg}" && pwd)"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 target_dir="$(cd "${script_dir}/../.." && pwd)"
-sysroot="${RADIX_SYSROOT_DIR:-${target_dir}/sysroot}"
-ncurses_include="${RADIX_NCURSES_INCLUDE_DIR:-${sysroot}/include}"
-lib_dir="${RADIX_USERSPACE_LIB_DIR:-${build_dir}/radix-libs}"
-cc="${RADIX_CC:-x86_64-linux-gnu-gcc}"
+sysroot="${RAD_SYSROOT_DIR:-${target_dir}/sysroot}"
+ncurses_include="${RAD_NCURSES_INCLUDE_DIR:-${sysroot}/include}"
+lib_dir="${RAD_USERSPACE_LIB_DIR:-${build_dir}/rad-libs}"
+cc="${RAD_CC:-x86_64-linux-gnu-gcc}"
 # Architecture knobs (x86_64 defaults preserved; ZuBoard aarch64 overrides all):
-arch_flags="${RADIX_PORT_STATIC_ARCH_FLAGS:--mno-red-zone}"
-text_base="${RADIX_PORT_TTEXT:-0x40000000}"
-host_triplet="${RADIX_PORT_HOST_TRIPLET:-x86_64-none}"
-crt0_source="${RADIX_PORT_CRT0_SOURCE:-}"
+arch_flags="${RAD_PORT_STATIC_ARCH_FLAGS:--mno-red-zone}"
+text_base="${RAD_PORT_TTEXT:-0x40000000}"
+host_triplet="${RAD_PORT_HOST_TRIPLET:-x86_64-none}"
+crt0_source="${RAD_PORT_CRT0_SOURCE:-}"
 
 if [[ -f "${source_dir}/src/configure" ]]; then
     configure_rel="src/configure"
@@ -43,7 +43,7 @@ rm -rf "${build_dir}"
 mkdir -p "$(dirname "${build_dir}")" "${build_dir}" "${lib_dir}"
 cp -a "${source_dir}/." "${build_dir}/"
 
-cat >"${build_dir}/radix-cc" <<EOF
+cat >"${build_dir}/rad-cc" <<EOF
 #!/usr/bin/env bash
 compile_only=0
 preprocess_only=0
@@ -68,14 +68,14 @@ for arg in "\$@"; do
     esac
     filtered+=("\${arg}")
 done
-exec "${cc}" -ffreestanding -fno-stack-protector -fno-pic -fno-pie ${arch_flags} -nostdinc -U__linux__ -Ulinux -U__gnu_linux__ -I"${ncurses_include}" -I"${ncurses_include}/ncursesw" -I"${sysroot}/include" -nostdlib -static -no-pie -Wl,-Ttext=${text_base} -Wl,--build-id=none "${build_dir}/radix_crt0.o" -L"${lib_dir}" "\${filtered[@]}" -lncursesw -ltinfo -lradixc
+exec "${cc}" -ffreestanding -fno-stack-protector -fno-pic -fno-pie ${arch_flags} -nostdinc -U__linux__ -Ulinux -U__gnu_linux__ -I"${ncurses_include}" -I"${ncurses_include}/ncursesw" -I"${sysroot}/include" -nostdlib -static -no-pie -Wl,-Ttext=${text_base} -Wl,--build-id=none "${build_dir}/rad_crt0.o" -L"${lib_dir}" "\${filtered[@]}" -lncursesw -ltinfo -lradc
 EOF
-chmod +x "${build_dir}/radix-cc"
+chmod +x "${build_dir}/rad-cc"
 
 if [[ -n "${crt0_source}" ]]; then
-    cp "${crt0_source}" "${build_dir}/radix_crt0.S"
+    cp "${crt0_source}" "${build_dir}/rad_crt0.S"
 else
-cat >"${build_dir}/radix_crt0.S" <<'EOF'
+cat >"${build_dir}/rad_crt0.S" <<'EOF'
 .section .text
 .code64
 .global _start
@@ -93,21 +93,21 @@ _start:
 EOF
 fi
 
-"${cc}" -ffreestanding -fno-stack-protector -fno-pic -fno-pie ${arch_flags} -c "${build_dir}/radix_crt0.S" -o "${build_dir}/radix_crt0.o"
+"${cc}" -ffreestanding -fno-stack-protector -fno-pic -fno-pie ${arch_flags} -c "${build_dir}/rad_crt0.S" -o "${build_dir}/rad_crt0.o"
 
-cp "${RADIX_LIBC_ARCHIVE:-${lib_dir}/libradixc.a}" "${lib_dir}/libradixc.a" 2>/dev/null || true
-cp "${RADIX_NCURSESW_ARCHIVE:-${lib_dir}/libncursesw.a}" "${lib_dir}/libncursesw.a" 2>/dev/null || true
-cp "${RADIX_TINFO_ARCHIVE:-${lib_dir}/libtinfo.a}" "${lib_dir}/libtinfo.a" 2>/dev/null || true
+cp "${RAD_LIBC_ARCHIVE:-${lib_dir}/libradc.a}" "${lib_dir}/libradc.a" 2>/dev/null || true
+cp "${RAD_NCURSESW_ARCHIVE:-${lib_dir}/libncursesw.a}" "${lib_dir}/libncursesw.a" 2>/dev/null || true
+cp "${RAD_TINFO_ARCHIVE:-${lib_dir}/libtinfo.a}" "${lib_dir}/libtinfo.a" 2>/dev/null || true
 
-if [[ ! -f "${lib_dir}/libradixc.a" || ! -f "${lib_dir}/libncursesw.a" || ! -f "${lib_dir}/libtinfo.a" ]]; then
-    echo "missing RADPx userspace libraries in ${lib_dir}; build radix_userspace_libs first" >&2
+if [[ ! -f "${lib_dir}/libradc.a" || ! -f "${lib_dir}/libncursesw.a" || ! -f "${lib_dir}/libtinfo.a" ]]; then
+    echo "missing RADPx-OS userspace libraries in ${lib_dir}; build rad_userspace_libs first" >&2
     exit 4
 fi
 
 cd "${build_dir}/$(dirname "${configure_rel}")"
-CONFIG_SITE="${RADIX_VIM_CONFIG_SITE:-${script_dir}/radix-config.site}" \
-CC="${build_dir}/radix-cc" \
-CFLAGS="-Os -D__radix__=1" \
+CONFIG_SITE="${RAD_VIM_CONFIG_SITE:-${script_dir}/rad-config.site}" \
+CC="${build_dir}/rad-cc" \
+CFLAGS="-Os -D__rad__=1" \
 CPPFLAGS="-I${ncurses_include} -I${ncurses_include}/ncursesw -I${sysroot}/include" \
 LDFLAGS="" \
 PKG_CONFIG=false \
@@ -128,5 +128,5 @@ PKG_CONFIG=false \
     --disable-cscope \
     --with-tlib=ncursesw
 
-make -j"${RADIX_BUILD_JOBS:-2}" vim
+make -j"${RAD_BUILD_JOBS:-2}" vim
 test -f "${build_dir}/src/vim" -o -f "${build_dir}/vim"

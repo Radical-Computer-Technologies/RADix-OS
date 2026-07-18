@@ -8,6 +8,6 @@
   "requires": ["storage-root"],
   "after": ["storage-root"],
   "restart": "no",
-  "stdout": "/var/log/radix/fatfs.log",
-  "stderr": "/var/log/radix/fatfs.log"
+  "stdout": "/var/log/rad/fatfs.log",
+  "stderr": "/var/log/rad/fatfs.log"
 }

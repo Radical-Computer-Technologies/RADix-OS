@@ -1,7 +1,7 @@
 #ifndef RAD_COMPOSITOR_CORE_H
 #define RAD_COMPOSITOR_CORE_H
 
-#include <radixkernel/radixkernel.h>
+#include <radkernel/radkernel.h>
 
 #include <stddef.h>
 #include <stdint.h>

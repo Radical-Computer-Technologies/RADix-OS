@@ -1,9 +1,9 @@
 #
-# RADixKernel Circle Pi Zero 2 W smoke image
+# RADKernel Circle Pi Zero 2 W smoke image
 #
 
-RADIX_OS_ROOT ?= ../../..
-RADLIB_ROOT ?= $(RADIX_OS_ROOT)/../RADLib
+RADPX_OS_ROOT ?= ../../..
+RADLIB_ROOT ?= $(RADPX_OS_ROOT)/../RADLib
 CIRCLEHOME ?= /media/jvincent/Kingspec512/repos/circle
 
 AARCH ?= 64
@@ -31,11 +31,11 @@ RADLIB_OBJS = \
 	radserial_RADSerial.o \
 	raddevice_RADDevice.o
 
-OBJS = main.o kernel.o radboot_wrap.o radixkernel_runtime_wrap.o radixkernel_overlay_wrap.o radixkernel_hal_circle_wrap.o radixkernel_runtime_newlib_wrap.o \
+OBJS = main.o kernel.o radboot_wrap.o radkernel_runtime_wrap.o radkernel_overlay_wrap.o radkernel_hal_circle_wrap.o radkernel_runtime_newlib_wrap.o \
 	$(RADCORE_OBJS) $(RADLIB_OBJS)
 
-EXTRAINCLUDE += -I$(RADIX_OS_ROOT)/RADixKernel/headers \
-	-I$(RADIX_OS_ROOT)/RADixKernel/boot \
+EXTRAINCLUDE += -I$(RADPX_OS_ROOT)/RADKernel/headers \
+	-I$(RADPX_OS_ROOT)/RADKernel/boot \
 	-I$(RADLIB_ROOT)/RADCore/headers \
 	-I$(RADLIB_ROOT)/RADDsp/headers \
 	-I$(RADLIB_ROOT)/RADSettings/headers \

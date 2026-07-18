@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 EMU="${RP2350_EMU_TUI:-/home/jvincent/.cargo/bin/rp2350-emu-tui}"
 PICOEM="$ROOT/.radbuild/picoem"
 ROM_LINK="/home/jvincent/.cargo/registry/src/roms/rp2350"
-FIRMWARE="${1:-$ROOT/build/embedded/rp235x_pico/radixkernel_rp235x_smoke.bin}"
+FIRMWARE="${1:-$ROOT/build/embedded/rp235x_pico/radkernel_rp235x_smoke.bin}"
 LOG="$ROOT/.radbuild/rp2350-emu-smoke.log"
 
 if [[ ! -x "$EMU" ]]; then

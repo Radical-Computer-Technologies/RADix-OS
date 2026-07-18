@@ -3,29 +3,29 @@
 RADPx-OS now has the first pieces of the Raspberry Pi Zero 2 W port. Raspberry
 Pi firmware remains the real first-stage boot path: the GPU ROM, `bootcode.bin`,
 and `start4.elf` initialize RAM, read `config.txt`, load the ARM payload, and
-release the AArch64 cores. The RADPx-specific second stage is optional, but it
+release the AArch64 cores. The RADPx-OS-specific second stage is optional, but it
 is still useful as a maintenance loader for future boot menus, kernel selection,
 reflash tools, handoff validation, and hardware policy.
 
 The intended final shape is:
 
 - Pi firmware performs first-stage hardware boot.
-- A narrow Circle-based second-stage loader can load `RADIXKRN.IMG` from the
+- A narrow Circle-based second-stage loader can load `RADKRN.IMG` from the
   FAT boot partition and jump through `rad_boot_handoff_t`.
-- The standalone RADPx payload uses the `bcm283x_pi` backend and does not link
+- The standalone RADPx-OS payload uses the `bcm283x_pi` backend and does not link
   Circle.
 
 ## Required Loader State
 
 The handoff is intentionally strict for physical silicon. Before jumping from
-any second-stage loader to the RADPx payload, the loader must:
+any second-stage loader to the RADPx-OS payload, the loader must:
 
 - Park secondary cores 1-3 in a clean `wfe` loop owned by the loader handoff.
 - Mask interrupts on core 0.
 - Disable the MMU and data cache.
 - Clean/invalidate data cache state covering the payload and handoff record.
 - Invalidate the instruction cache and TLB.
-- Jump to the RADPx entry in AArch64 EL1.
+- Jump to the RADPx-OS entry in AArch64 EL1.
 
 `radboot_validate_handoff()` rejects Pi handoff records that do not declare
 these conditions through the `RAD_BOOT_HANDOFF_FLAG_*` safety bits.
@@ -35,18 +35,18 @@ these conditions through the `RAD_BOOT_HANDOFF_FLAG_*` safety bits.
 Build the standalone payload with:
 
 ```bash
-make -C tools/embedded/radix_pi_zero2w
+make -C tools/embedded/rad_pi_zero2w
 ```
 
 The output files are:
 
-- `tools/embedded/radix_pi_zero2w/RADIXKRN.ELF`
-- `tools/embedded/radix_pi_zero2w/RADIXKRN.IMG`
+- `tools/embedded/rad_pi_zero2w/RADKRN.ELF`
+- `tools/embedded/rad_pi_zero2w/RADKRN.IMG`
 
-Run the RADPx-owned QEMU smoke test with:
+Run the RADPx-OS-owned QEMU smoke test with:
 
 ```bash
-tools/embedded/radix_pi_zero2w_smoke.sh
+tools/embedded/rad_pi_zero2w_smoke.sh
 ```
 
 The script uses `qemu-system-aarch64 -M raspi3b` because QEMU does not expose a
@@ -60,7 +60,7 @@ parity markers.
 
 The current RAD-owned backend includes:
 
-- A platform split under `RADixKernel/platforms`: portable A53 code in
+- A platform split under `RADKernel/platforms`: portable A53 code in
   `platforms/a53` and Pi-specific BCM283x drivers in `platforms/a53/bcm283x`.
 - PL011 serial console registration.
 - System timer reads and busy sleep.
@@ -89,7 +89,7 @@ The Circle loader source now builds a narrow second-stage handoff record and
 emits loader-intent markers when serial output is visible. On this workstation
 the Circle image currently reaches QEMU without serial markers, so the combined
 smoke script treats the Circle image as a build gate and then runs the
-standalone RADPx payload gate. Physical Pi hardware remains the next authority
+standalone RADPx-OS payload gate. Physical Pi hardware remains the next authority
 for validating the actual Circle FAT load and jump sequence.
 
 ## Current Limits

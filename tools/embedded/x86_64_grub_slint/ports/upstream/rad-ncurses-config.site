@@ -1,0 +1,17 @@
+# RADPx-OS cross-configure defaults for upstream ncurses.
+#
+# These intentionally mark unimplemented kernel facilities as unavailable.
+# The libc may expose ENOSYS entry points for source compatibility, but
+# upstream packages should not compile optional paths that require them until
+# RADPx-OS implements the corresponding kernel semantics.
+ac_cv_func_sigaction=no
+ac_cv_func_sigvec=no
+ac_cv_func_sigprocmask=no
+cf_cv_type_sigaction=no
+cf_cv_struct_sigaction=no
+ac_cv_func_tcgetpgrp=no
+ac_cv_func_clock_gettime=no
+ac_cv_func_select=no
+ac_cv_func_sysconf=no
+ac_cv_func_times=no
+ac_cv_func_fseeko=no

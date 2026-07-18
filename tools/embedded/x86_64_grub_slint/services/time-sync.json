@@ -1,15 +1,15 @@
 {
   "name": "time-sync",
-  "description": "RADPx NTP/SNTP realtime clock synchronization service",
+  "description": "RADPx-OS NTP/SNTP realtime clock synchronization service",
   "exec": "/sbin/time-sync",
-  "args": ["/etc/radix/time/time-sync.json"],
+  "args": ["/etc/rad/time/time-sync.json"],
   "type": "simple",
   "autostart": true,
   "order": 44,
   "requires": ["network", "dns-resolver"],
   "after": ["dns-resolver"],
   "restart": "on-failure",
-  "ready_marker": "RADIX_SERVICE_TIME_SYNC_OK",
-  "stdout": "/var/log/radix/time-sync.log",
-  "stderr": "/var/log/radix/time-sync.log"
+  "ready_marker": "RAD_SERVICE_TIME_SYNC_OK",
+  "stdout": "/var/log/rad/time-sync.log",
+  "stderr": "/var/log/rad/time-sync.log"
 }

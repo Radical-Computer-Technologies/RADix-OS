@@ -71,11 +71,11 @@ write_cstr:
 
 .section .rodata
 invalid_ptr_msg:
-    .asciz "RADIX_AARCH64_USER_INVALID_PTR_OK\n"
+    .asciz "RAD_AARCH64_USER_INVALID_PTR_OK\n"
 syscalls_msg:
-    .asciz "RADIX_AARCH64_USER_SYSCALLS_OK\n"
+    .asciz "RAD_AARCH64_USER_SYSCALLS_OK\n"
 init_msg:
-    .asciz "RADIX_AARCH64_USER_INIT_OK\n"
+    .asciz "RAD_AARCH64_USER_INIT_OK\n"
 radsh_path:
     .asciz "/bin/radsh"
 radsh_arg0:

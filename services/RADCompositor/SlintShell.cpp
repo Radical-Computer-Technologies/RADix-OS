@@ -1,8 +1,8 @@
 #include "SlintShell.h"
 
-#include <radixkernel/rad_display.h>
-#include <radixkernel/rad_input.h>
-#include <radixkernel/rad_pty.h>
+#include <radkernel/rad_display.h>
+#include <radkernel/rad_input.h>
+#include <radkernel/rad_pty.h>
 
 #include "RADCompositorCore.h"
 
@@ -22,7 +22,7 @@ extern "C" void x86_serial_write(const char *text);
 extern "C" void x86_ps2_poll_devices(void) __attribute__((weak));
 extern "C" void x86_ui_idle_frame(void) __attribute__((weak));
 extern "C" void x86_virtio_input_poll(void) __attribute__((weak));
-extern "C" rad_status_t radix_shell_launch_terminal_process(void) __attribute__((weak));
+extern "C" rad_status_t rad_shell_launch_terminal_process(void) __attribute__((weak));
 extern "C" rad_status_t x86_user_spawn_process(const char *path, int32_t parent_pid, int32_t *pid_out, rad_task_t *task_out) __attribute__((weak));
 extern "C" rad_status_t x86_user_spawn_process_with_stdio(const char *path, int32_t parent_pid, const char *stdio_path, int32_t *pid_out, rad_task_t *task_out) __attribute__((weak));
 extern "C" int x86_user_wait_process(int32_t pid) __attribute__((weak));
@@ -337,7 +337,7 @@ void scroll_terminal(int32_t lines) {
     if (g_terminal_scroll_lines == 0) g_terminal_auto_scroll = 1;
     update_terminal_visible_text();
     if (g_terminal_shell) (*g_terminal_shell)->set_terminal(shared_string(g_terminal_visible_text));
-    marker_once(&g_terminal_scroll_marker_sent, "RADIX_SLINT_TERMINAL_SCROLL_OK");
+    marker_once(&g_terminal_scroll_marker_sent, "RAD_SLINT_TERMINAL_SCROLL_OK");
     request_terminal_surface_redraw();
 }
 
@@ -389,12 +389,12 @@ void queue_cursor_damage(void) {
     rad_compositor_rect_t previous = cursor_rect_at(g_drawn_cursor_x, g_drawn_cursor_y);
     rad_compositor_rect_t current = cursor_rect_at(g_cursor_x, g_cursor_y);
     if (rad_compositor_queue_damage(&g_compositor, g_desktop_surface_id, &previous, RAD_COMPOSITOR_DAMAGE_EXPOSED) == RAD_STATUS_OK) {
-        marker_once(&g_compositor_damage_marker_sent, "RADIX_COMPOSITOR_DAMAGE_QUEUE_OK");
-        marker_once(&g_compositor_exposed_marker_sent, "RADIX_COMPOSITOR_EXPOSED_DAMAGE_OK");
+        marker_once(&g_compositor_damage_marker_sent, "RAD_COMPOSITOR_DAMAGE_QUEUE_OK");
+        marker_once(&g_compositor_exposed_marker_sent, "RAD_COMPOSITOR_EXPOSED_DAMAGE_OK");
     }
     if (rad_compositor_queue_damage(&g_compositor, g_desktop_surface_id, &current, RAD_COMPOSITOR_DAMAGE_EXPOSED) == RAD_STATUS_OK) {
-        marker_once(&g_compositor_damage_marker_sent, "RADIX_COMPOSITOR_DAMAGE_QUEUE_OK");
-        marker_once(&g_compositor_exposed_marker_sent, "RADIX_COMPOSITOR_EXPOSED_DAMAGE_OK");
+        marker_once(&g_compositor_damage_marker_sent, "RAD_COMPOSITOR_DAMAGE_QUEUE_OK");
+        marker_once(&g_compositor_exposed_marker_sent, "RAD_COMPOSITOR_EXPOSED_DAMAGE_OK");
     }
 }
 
@@ -429,7 +429,7 @@ void draw_cursor(uint32_t *pixels, uint32_t stride_pixels) {
             pixels[static_cast<size_t>(y) * stride_pixels + static_cast<size_t>(x)] = edge ? 0xff020617u : 0xffffffffu;
         }
     }
-    marker_once(&g_cursor_marker_sent, "RADIX_SLINT_CURSOR_OK");
+    marker_once(&g_cursor_marker_sent, "RAD_SLINT_CURSOR_OK");
     g_drawn_cursor_x = g_cursor_x;
     g_drawn_cursor_y = g_cursor_y;
     g_cursor_dirty = 0;
@@ -444,7 +444,7 @@ void update_cursor_position(const rad_input_event_t& event) {
     if (g_cursor_x != old_x || g_cursor_y != old_y || event.type == RAD_INPUT_EVENT_POINTER_BUTTON) {
         g_cursor_dirty = 1;
         if (g_cursor_x != old_x || g_cursor_y != old_y) {
-            marker_once(&g_cursor_move_marker_sent, "RADIX_SLINT_CURSOR_MOVE_OK");
+            marker_once(&g_cursor_move_marker_sent, "RAD_SLINT_CURSOR_MOVE_OK");
         }
     }
 }
@@ -474,7 +474,7 @@ rad_status_t compositor_device_ioctl(void*, uint32_t request, void *argument) {
         config.stride_pixels = surface->stride_pixels;
         const rad_status_t status = rad_compositor_create_surface(&g_compositor, &config, &surface->surface_id);
         if (status == RAD_STATUS_OK) {
-            marker_once(&g_compositor_ipc_marker_sent, "RADIX_COMPOSITOR_IPC_SURFACE_OK");
+            marker_once(&g_compositor_ipc_marker_sent, "RAD_COMPOSITOR_IPC_SURFACE_OK");
         }
         return status;
     }
@@ -488,9 +488,9 @@ rad_status_t compositor_device_ioctl(void*, uint32_t request, void *argument) {
         rect.height = damage->height;
         const rad_status_t status = rad_compositor_queue_damage(&g_compositor, damage->surface_id, &rect, damage->flags);
         if (status == RAD_STATUS_OK) {
-            marker_once(&g_compositor_damage_marker_sent, "RADIX_COMPOSITOR_DAMAGE_QUEUE_OK");
+            marker_once(&g_compositor_damage_marker_sent, "RAD_COMPOSITOR_DAMAGE_QUEUE_OK");
             if (damage->flags & RAD_COMPOSITOR_DAMAGE_EXPOSED) {
-                marker_once(&g_compositor_exposed_marker_sent, "RADIX_COMPOSITOR_EXPOSED_DAMAGE_OK");
+                marker_once(&g_compositor_exposed_marker_sent, "RAD_COMPOSITOR_EXPOSED_DAMAGE_OK");
             }
         }
         return status;
@@ -515,7 +515,7 @@ void drain_terminal_pty(void) {
     }
     if (changed) {
         (*g_terminal_shell)->set_terminal(shared_string(g_terminal_visible_text));
-        marker_once(&g_ready_marker_sent, "RADIX_SLINT_TERMINAL_READY_OK");
+        marker_once(&g_ready_marker_sent, "RAD_SLINT_TERMINAL_READY_OK");
     }
 }
 
@@ -524,7 +524,7 @@ void write_terminal_input(const char *text, size_t size) {
     if (!g_terminal_pty || !text || !size || !window || window->state == DesktopWindowState::Closed || !window->focused) return;
     size_t written = 0;
     rad_pty_write_master(g_terminal_pty, text, size, &written);
-    if (written > 0) marker_once(&g_key_input_marker_sent, "RADIX_SLINT_KEY_INPUT_OK");
+    if (written > 0) marker_once(&g_key_input_marker_sent, "RAD_SLINT_KEY_INPUT_OK");
 }
 
 void set_shell_state(const char *status = nullptr);
@@ -536,9 +536,9 @@ int32_t bounded_drag_delta(float value) {
     return static_cast<int32_t>(value);
 }
 
-class RadixSlintWindowAdapter final : public slint::platform::WindowAdapter {
+class RadSlintWindowAdapter final : public slint::platform::WindowAdapter {
 public:
-    RadixSlintWindowAdapter(SlintSurfaceRole role, uint32_t surface_id, uint32_t *pixels, uint32_t width, uint32_t height, uint32_t stride_pixels)
+    RadSlintWindowAdapter(SlintSurfaceRole role, uint32_t surface_id, uint32_t *pixels, uint32_t width, uint32_t height, uint32_t stride_pixels)
         : role_(role),
           surface_id_(surface_id),
           pixels_(pixels),
@@ -623,7 +623,7 @@ public:
             damage.height = static_cast<int32_t>(dirty_max_y - dirty_min_y);
             rad_compositor_queue_damage(&g_compositor, surface_id_, &damage, 0);
         }
-        marker_once(&g_compositor_offscreen_marker_sent, "RADIX_COMPOSITOR_OFFSCREEN_RENDER_OK");
+        marker_once(&g_compositor_offscreen_marker_sent, "RAD_COMPOSITOR_OFFSCREEN_RENDER_OK");
         if (rendered) *rendered = true;
         return RAD_STATUS_OK;
     }
@@ -748,9 +748,9 @@ private:
     slint::Rgb8Pixel line_buffer_[4096]{};
 };
 
-class RadixSlintPlatform final : public slint::platform::Platform {
+class RadSlintPlatform final : public slint::platform::Platform {
 public:
-    RadixSlintPlatform(rad_framebuffer_t framebuffer, const rad_framebuffer_info_t& info)
+    RadSlintPlatform(rad_framebuffer_t framebuffer, const rad_framebuffer_info_t& info)
         : framebuffer_(framebuffer), info_(info) {
         if (rad_input_open("/dev/input/event0", &keyboard_) != RAD_STATUS_OK) keyboard_ = nullptr;
         if (rad_input_open("/dev/input/event1", &pointer_) != RAD_STATUS_OK) pointer_ = nullptr;
@@ -766,12 +766,12 @@ public:
             const DesktopWindow *terminal = g_desktop.terminalWindow();
             const uint32_t width = terminal && terminal->bounds.width > 0 ? static_cast<uint32_t>(terminal->bounds.width) : 640u;
             const uint32_t height = terminal && terminal->bounds.height > 0 ? static_cast<uint32_t>(terminal->bounds.height) : 380u;
-            auto window = std::make_unique<RadixSlintWindowAdapter>(SlintSurfaceRole::Terminal, g_terminal_surface_id, g_terminal_pixels, width, height, MaxSurfaceWidth);
+            auto window = std::make_unique<RadSlintWindowAdapter>(SlintSurfaceRole::Terminal, g_terminal_surface_id, g_terminal_pixels, width, height, MaxSurfaceWidth);
             terminal_window_ = window.get();
             next_role_ = SlintSurfaceRole::Desktop;
             return window;
         }
-        auto window = std::make_unique<RadixSlintWindowAdapter>(SlintSurfaceRole::Desktop, g_desktop_surface_id, g_desktop_pixels, g_desktop_surface_width, g_desktop_surface_height, MaxSurfaceWidth);
+        auto window = std::make_unique<RadSlintWindowAdapter>(SlintSurfaceRole::Desktop, g_desktop_surface_id, g_desktop_pixels, g_desktop_surface_width, g_desktop_surface_height, MaxSurfaceWidth);
         desktop_window_ = window.get();
         return window;
     }
@@ -822,10 +822,10 @@ public:
             draw_cursor(g_present_back, MaxSurfaceWidth);
         }
         if (g_compositor.last_present_rect_count == 0) {
-            marker_once(&g_compositor_empty_marker_sent, "RADIX_COMPOSITOR_EMPTY_FRAME_SKIP_OK");
+            marker_once(&g_compositor_empty_marker_sent, "RAD_COMPOSITOR_EMPTY_FRAME_SKIP_OK");
         } else {
-            marker_once(&g_compositor_copy_forward_marker_sent, "RADIX_COMPOSITOR_COPY_FORWARD_OK");
-            marker_once(&g_compositor_blit_marker_sent, "RADIX_COMPOSITOR_BLIT_OK");
+            marker_once(&g_compositor_copy_forward_marker_sent, "RAD_COMPOSITOR_COPY_FORWARD_OK");
+            marker_once(&g_compositor_blit_marker_sent, "RAD_COMPOSITOR_BLIT_OK");
             for (uint32_t i = 0; i < g_compositor.last_present_rect_count; ++i) {
                 const rad_compositor_rect_t& dirty = g_compositor.last_present_rects[i];
                 rad_framebuffer_present_t present{};
@@ -839,13 +839,13 @@ public:
                 const rad_status_t status = rad_framebuffer_present(framebuffer_, &present);
                 if (status != RAD_STATUS_OK && status != RAD_STATUS_NOT_SUPPORTED) return status;
             }
-            marker_once(&g_framebuffer_dirty_present_marker_sent, "RADIX_FRAMEBUFFER_DIRTY_PRESENT_OK");
+            marker_once(&g_framebuffer_dirty_present_marker_sent, "RAD_FRAMEBUFFER_DIRTY_PRESENT_OK");
             uint32_t *tmp = g_present_front;
             g_present_front = g_present_back;
             g_present_back = tmp;
         }
         if (any_rendered && !g_boot_marker_sent) {
-            marker_once(&g_boot_marker_sent, "RADIX_SLINT_BOOT_SHELL_OK");
+            marker_once(&g_boot_marker_sent, "RAD_SLINT_BOOT_SHELL_OK");
         }
         return RAD_STATUS_OK;
     }
@@ -893,7 +893,7 @@ private:
 
     void dispatch_polled_event(const rad_input_event_t& event) {
         if (event.type == RAD_INPUT_EVENT_KEY) {
-            RadixSlintWindowAdapter *target = terminal_window_ ? terminal_window_ : desktop_window_;
+            RadSlintWindowAdapter *target = terminal_window_ ? terminal_window_ : desktop_window_;
             if (!target) return;
             dispatching_input_ = true;
             target->dispatch_input_event(event);
@@ -906,13 +906,13 @@ private:
         }
         rad_compositor_input_result_t result{};
         if (rad_compositor_dispatch_input(&g_compositor, &event, &result) != RAD_STATUS_OK || !result.hit) return;
-        RadixSlintWindowAdapter *target = adapter_for_surface(result.surface_id);
+        RadSlintWindowAdapter *target = adapter_for_surface(result.surface_id);
         if (!target) return;
-        marker_once(&g_compositor_hit_marker_sent, "RADIX_COMPOSITOR_HIT_TEST_OK");
+        marker_once(&g_compositor_hit_marker_sent, "RAD_COMPOSITOR_HIT_TEST_OK");
         if (event.type == RAD_INPUT_EVENT_POINTER_MOTION
             || event.type == RAD_INPUT_EVENT_POINTER_BUTTON
             || event.type == RAD_INPUT_EVENT_POINTER_SCROLL) {
-            marker_once(&g_compositor_input_marker_sent, "RADIX_COMPOSITOR_INPUT_TRANSLATE_OK");
+            marker_once(&g_compositor_input_marker_sent, "RAD_COMPOSITOR_INPUT_TRANSLATE_OK");
             if (event.type == RAD_INPUT_EVENT_POINTER_BUTTON && event.pressed) {
                 rad_compositor_focus_surface(&g_compositor, result.surface_id);
                 if (result.surface_id == g_terminal_surface_id) {
@@ -950,7 +950,7 @@ private:
         }
     }
 
-    RadixSlintWindowAdapter *adapter_for_surface(uint32_t surface_id) {
+    RadSlintWindowAdapter *adapter_for_surface(uint32_t surface_id) {
         if (desktop_window_ && desktop_window_->surface_id() == surface_id) return desktop_window_;
         if (terminal_window_ && terminal_window_->surface_id() == surface_id) return terminal_window_;
         return nullptr;
@@ -962,8 +962,8 @@ private:
     rad_device_t pointer_ = nullptr;
     uint64_t started_ms_ = 0;
     SlintSurfaceRole next_role_ = SlintSurfaceRole::Desktop;
-    RadixSlintWindowAdapter *desktop_window_ = nullptr;
-    RadixSlintWindowAdapter *terminal_window_ = nullptr;
+    RadSlintWindowAdapter *desktop_window_ = nullptr;
+    RadSlintWindowAdapter *terminal_window_ = nullptr;
     rad_compositor_rect_t terminal_bounds_{};
     int terminal_bounds_valid_ = 0;
     bool dispatching_input_ = false;
@@ -972,7 +972,7 @@ private:
     uint32_t pending_terminal_height_ = 0;
 };
 
-RadixSlintPlatform *g_platform = nullptr;
+RadSlintPlatform *g_platform = nullptr;
 
 void request_terminal_surface_redraw(void) {
     if (g_platform) g_platform->request_terminal_redraw();
@@ -997,7 +997,7 @@ void set_shell_state(const char *status) {
     const DesktopWindow *terminal = g_desktop.terminalWindow();
     (*g_desktop_shell)->set_surface_width(static_cast<float>(g_desktop_surface_width));
     (*g_desktop_shell)->set_surface_height(static_cast<float>(g_desktop_surface_height));
-    (*g_desktop_shell)->set_backend(shared_string("x86_64_grub / RADPx"));
+    (*g_desktop_shell)->set_backend(shared_string("x86_64_grub / RADPx-OS"));
     (*g_desktop_shell)->set_status(shared_string(status ? status : shell_status_text()));
     (*g_desktop_shell)->set_applications_open(g_desktop.applicationsMenuOpen());
     (*g_terminal_shell)->set_terminal(shared_string(g_terminal_visible_text));
@@ -1022,7 +1022,7 @@ void launch_terminal(const char *terminal_text) {
     g_desktop.beginTerminalLaunch();
     set_shell_state();
     render_ticks(2);
-    marker_once(&g_loading_marker_sent, "RADIX_SLINT_TERMINAL_LOADING_OK");
+    marker_once(&g_loading_marker_sent, "RAD_SLINT_TERMINAL_LOADING_OK");
     if (g_terminal_pty) {
         copy_terminal_text(terminal_text && *terminal_text ? terminal_text : g_terminal_text);
         g_desktop.terminalReady();
@@ -1040,18 +1040,18 @@ void launch_terminal(const char *terminal_text) {
     if (status == RAD_STATUS_OK && x86_user_spawn_process_with_stdio) {
         status = x86_user_spawn_process_with_stdio("/bin/radsh", rad_process_current_pid(), slave_name, &g_terminal_pid, &g_terminal_task);
         if (status == RAD_STATUS_OK) {
-            rad_debug_marker("RADIX_SLINT_APP_LAUNCH_PROCESS_OK");
-            rad_debug_marker("RADIX_SLINT_APP_LIVE_PTY_OK");
-            append_terminal_text("RADPx PTY terminal ready\n$ ", 27);
+            rad_debug_marker("RAD_SLINT_APP_LAUNCH_PROCESS_OK");
+            rad_debug_marker("RAD_SLINT_APP_LIVE_PTY_OK");
+            append_terminal_text("RADPx-OS PTY terminal ready\n$ ", 27);
         }
-    } else if (radix_shell_launch_terminal_process) {
-        status = radix_shell_launch_terminal_process();
+    } else if (rad_shell_launch_terminal_process) {
+        status = rad_shell_launch_terminal_process();
         if (status != RAD_STATUS_OK) {
-            rad_debug_marker("RADIX_SLINT_APP_LAUNCH_PROCESS_FAIL");
+            rad_debug_marker("RAD_SLINT_APP_LAUNCH_PROCESS_FAIL");
         }
     }
     if (status != RAD_STATUS_OK) {
-        rad_debug_marker("RADIX_SLINT_APP_LAUNCH_PROCESS_FAIL");
+        rad_debug_marker("RAD_SLINT_APP_LAUNCH_PROCESS_FAIL");
         if (g_terminal_pty) {
             rad_pty_close(g_terminal_pty);
             g_terminal_pty = nullptr;
@@ -1062,16 +1062,16 @@ void launch_terminal(const char *terminal_text) {
     g_desktop.terminalReady();
     set_shell_state();
     render_ticks(2);
-    marker_once(&g_ready_marker_sent, "RADIX_SLINT_TERMINAL_READY_OK");
-    marker_once(&g_wm_marker_sent, "RADIX_SLINT_WM_OK");
-    marker_once(&g_terminal_window_marker_sent, "RADIX_SLINT_APP_TERMINAL_WINDOW_OK");
+    marker_once(&g_ready_marker_sent, "RAD_SLINT_TERMINAL_READY_OK");
+    marker_once(&g_wm_marker_sent, "RAD_SLINT_WM_OK");
+    marker_once(&g_terminal_window_marker_sent, "RAD_SLINT_APP_TERMINAL_WINDOW_OK");
 }
 
 void close_terminal_model_only() {
     if (const DesktopWindow *window = g_desktop.terminalWindow()) {
         g_desktop.closeWindow(window->id);
         set_shell_state();
-        marker_once(&g_terminal_close_marker_sent, "RADIX_SLINT_TERMINAL_CLOSE_OK");
+        marker_once(&g_terminal_close_marker_sent, "RAD_SLINT_TERMINAL_CLOSE_OK");
     }
 }
 
@@ -1092,8 +1092,8 @@ void run_compositor_input_smoke() {
         && result.surface_id == g_terminal_surface_id
         && result.local_x == 12
         && result.local_y == 10) {
-        marker_once(&g_compositor_hit_marker_sent, "RADIX_COMPOSITOR_HIT_TEST_OK");
-        marker_once(&g_compositor_input_marker_sent, "RADIX_COMPOSITOR_INPUT_TRANSLATE_OK");
+        marker_once(&g_compositor_hit_marker_sent, "RAD_COMPOSITOR_HIT_TEST_OK");
+        marker_once(&g_compositor_input_marker_sent, "RAD_COMPOSITOR_INPUT_TRANSLATE_OK");
     }
 }
 
@@ -1102,22 +1102,22 @@ void run_shell_smoke_actions() {
     g_shell_smoke_actions_done = 1;
     g_desktop.toggleApplicationsMenu();
     set_shell_state();
-    marker_once(&g_menu_open_marker_sent, "RADIX_SLINT_MENU_OPEN_OK");
+    marker_once(&g_menu_open_marker_sent, "RAD_SLINT_MENU_OPEN_OK");
     if (g_desktop.handleEscape()) {
         set_shell_state();
-        marker_once(&g_menu_escape_marker_sent, "RADIX_SLINT_MENU_ESCAPE_OK");
+        marker_once(&g_menu_escape_marker_sent, "RAD_SLINT_MENU_ESCAPE_OK");
     }
     if (const DesktopWindow *window = g_desktop.terminalWindow()) {
         if (g_desktop.moveWindow(window->id, 16, 10)) {
             set_shell_state();
-            marker_once(&g_window_move_marker_sent, "RADIX_SLINT_WINDOW_MOVE_OK");
+            marker_once(&g_window_move_marker_sent, "RAD_SLINT_WINDOW_MOVE_OK");
         }
         g_desktop.endPointerGesture();
     }
     if (const DesktopWindow *window = g_desktop.terminalWindow()) {
         if (g_desktop.resizeWindow(window->id, 28, 18)) {
             set_shell_state();
-            marker_once(&g_window_resize_marker_sent, "RADIX_SLINT_WINDOW_RESIZE_OK");
+            marker_once(&g_window_resize_marker_sent, "RAD_SLINT_WINDOW_RESIZE_OK");
         }
         g_desktop.endPointerGesture();
     }
@@ -1125,7 +1125,7 @@ void run_shell_smoke_actions() {
     close_terminal_model_only();
     launch_terminal(g_terminal_text);
     run_compositor_input_smoke();
-    marker_once(&g_terminal_relaunch_marker_sent, "RADIX_SLINT_TERMINAL_RELAUNCH_OK");
+    marker_once(&g_terminal_relaunch_marker_sent, "RAD_SLINT_TERMINAL_RELAUNCH_OK");
 }
 
 void run_compositor_alpha_smoke() {
@@ -1155,13 +1155,13 @@ void run_compositor_alpha_smoke() {
         && rad_compositor_compose_frame(&compositor) == RAD_STATUS_OK
         && target[0] != back[0]
         && target[0] != blend[0]) {
-        marker_once(&g_compositor_alpha_marker_sent, "RADIX_COMPOSITOR_ALPHA_OK");
+        marker_once(&g_compositor_alpha_marker_sent, "RAD_COMPOSITOR_ALPHA_OK");
     }
 }
 
 } // namespace
 
-extern "C" rad_status_t radix_slint_shell_start(rad_framebuffer_t framebuffer, const char *terminal_text) {
+extern "C" rad_status_t rad_slint_shell_start(rad_framebuffer_t framebuffer, const char *terminal_text) {
     if (g_slint_started) return RAD_STATUS_OK;
     if (!framebuffer) return RAD_STATUS_INVALID_ARGUMENT;
 
@@ -1216,11 +1216,11 @@ extern "C" rad_status_t radix_slint_shell_start(rad_framebuffer_t framebuffer, c
     status = rad_compositor_create_surface(&g_compositor, &terminal_config, &g_terminal_surface_id);
     if (status != RAD_STATUS_OK) return status;
     rad_compositor_focus_surface(&g_compositor, g_terminal_surface_id);
-    marker_once(&g_compositor_surface_marker_sent, "RADIX_COMPOSITOR_SURFACE_CREATE_OK");
-    marker_once(&g_compositor_z_marker_sent, "RADIX_COMPOSITOR_Z_ORDER_OK");
+    marker_once(&g_compositor_surface_marker_sent, "RAD_COMPOSITOR_SURFACE_CREATE_OK");
+    marker_once(&g_compositor_z_marker_sent, "RAD_COMPOSITOR_Z_ORDER_OK");
     run_compositor_alpha_smoke();
 
-    auto *platform = new RadixSlintPlatform(framebuffer, info);
+    auto *platform = new RadSlintPlatform(framebuffer, info);
     g_platform = platform;
     slint::platform::set_platform(std::unique_ptr<slint::platform::Platform>(platform));
     platform->set_next_role(SlintSurfaceRole::Desktop);
@@ -1231,7 +1231,7 @@ extern "C" rad_status_t radix_slint_shell_start(rad_framebuffer_t framebuffer, c
         if (!g_desktop_shell) return;
         g_desktop.toggleApplicationsMenu();
         set_shell_state();
-        if (g_desktop.applicationsMenuOpen()) marker_once(&g_menu_open_marker_sent, "RADIX_SLINT_MENU_OPEN_OK");
+        if (g_desktop.applicationsMenuOpen()) marker_once(&g_menu_open_marker_sent, "RAD_SLINT_MENU_OPEN_OK");
     });
     (*g_desktop_shell)->on_launch_terminal([]() {
         launch_terminal(g_terminal_text);
@@ -1241,23 +1241,23 @@ extern "C" rad_status_t radix_slint_shell_start(rad_framebuffer_t framebuffer, c
         const bool menu_was_open = g_desktop.applicationsMenuOpen();
         if (g_desktop.handleEscape()) {
             set_shell_state();
-            if (menu_was_open) marker_once(&g_menu_escape_marker_sent, "RADIX_SLINT_MENU_ESCAPE_OK");
-            else marker_once(&g_terminal_close_marker_sent, "RADIX_SLINT_TERMINAL_CLOSE_OK");
+            if (menu_was_open) marker_once(&g_menu_escape_marker_sent, "RAD_SLINT_MENU_ESCAPE_OK");
+            else marker_once(&g_terminal_close_marker_sent, "RAD_SLINT_TERMINAL_CLOSE_OK");
         }
     });
     (*g_terminal_shell)->on_escape_pressed([]() {
         const bool menu_was_open = g_desktop.applicationsMenuOpen();
         if (g_desktop.handleEscape()) {
             set_shell_state();
-            if (menu_was_open) marker_once(&g_menu_escape_marker_sent, "RADIX_SLINT_MENU_ESCAPE_OK");
-            else marker_once(&g_terminal_close_marker_sent, "RADIX_SLINT_TERMINAL_CLOSE_OK");
+            if (menu_was_open) marker_once(&g_menu_escape_marker_sent, "RAD_SLINT_MENU_ESCAPE_OK");
+            else marker_once(&g_terminal_close_marker_sent, "RAD_SLINT_TERMINAL_CLOSE_OK");
         }
     });
     (*g_terminal_shell)->on_focus_terminal_window([]() {
         if (const DesktopWindow *window = g_desktop.terminalWindow()) {
             g_desktop.focusWindow(window->id);
             rad_compositor_focus_surface(&g_compositor, g_terminal_surface_id);
-            marker_once(&g_compositor_z_marker_sent, "RADIX_COMPOSITOR_Z_ORDER_OK");
+            marker_once(&g_compositor_z_marker_sent, "RAD_COMPOSITOR_Z_ORDER_OK");
         }
         set_shell_state();
     });
@@ -1267,7 +1267,7 @@ extern "C" rad_status_t radix_slint_shell_start(rad_framebuffer_t framebuffer, c
     (*g_terminal_shell)->on_move_terminal_window([](float dx, float dy) {
         if (const DesktopWindow *window = g_desktop.terminalWindow()) {
             if (g_desktop.moveWindow(window->id, bounded_drag_delta(dx), bounded_drag_delta(dy))) {
-                marker_once(&g_window_move_marker_sent, "RADIX_SLINT_WINDOW_MOVE_OK");
+                marker_once(&g_window_move_marker_sent, "RAD_SLINT_WINDOW_MOVE_OK");
             }
         }
         set_shell_state();
@@ -1275,7 +1275,7 @@ extern "C" rad_status_t radix_slint_shell_start(rad_framebuffer_t framebuffer, c
     (*g_terminal_shell)->on_resize_terminal_window([](float dx, float dy) {
         if (const DesktopWindow *window = g_desktop.terminalWindow()) {
             if (g_desktop.resizeWindow(window->id, bounded_drag_delta(dx), bounded_drag_delta(dy))) {
-                marker_once(&g_window_resize_marker_sent, "RADIX_SLINT_WINDOW_RESIZE_OK");
+                marker_once(&g_window_resize_marker_sent, "RAD_SLINT_WINDOW_RESIZE_OK");
             }
         }
         set_shell_state();
@@ -1291,18 +1291,18 @@ extern "C" rad_status_t radix_slint_shell_start(rad_framebuffer_t framebuffer, c
     return RAD_STATUS_OK;
 }
 
-extern "C" void radix_slint_shell_set_terminal_text(const char *terminal_text) {
+extern "C" void rad_slint_shell_set_terminal_text(const char *terminal_text) {
     if (!g_slint_started) return;
     copy_terminal_text(terminal_text);
     if (g_desktop.terminalOpen()) g_desktop.terminalReady();
     set_shell_state();
 }
 
-extern "C" void radix_slint_shell_poll(void) {
+extern "C" void rad_slint_shell_poll(void) {
     if (!g_slint_started || !g_platform) return;
     g_platform->tick();
 }
 
-extern "C" int radix_slint_shell_ready(void) {
+extern "C" int rad_slint_shell_ready(void) {
     return g_slint_started && g_ready_marker_sent;
 }

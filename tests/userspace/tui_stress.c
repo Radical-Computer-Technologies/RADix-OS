@@ -8,7 +8,7 @@ static void event(const char *name) {
 
 int main(void) {
     const char *term = getenv("TERM");
-    if (!term || !*term) setenv("TERM", "radix", 1);
+    if (!term || !*term) setenv("TERM", "rad", 1);
 
     WINDOW *screen = initscr();
     if (!screen) {
@@ -26,7 +26,7 @@ int main(void) {
     }
 
     clear();
-    mvaddstr(1, 2, "RADPx TUI Stress");
+    mvaddstr(1, 2, "RADPx-OS TUI Stress");
     mvaddstr(3, 4, "> Terminal");
     mvaddstr(4, 4, "  Ncurses");
     move(3, 4);
@@ -47,11 +47,11 @@ int main(void) {
     refresh();
     endwin();
 
-    event("RADIX_NCURSES_INIT_OK");
-    event("RADIX_NCURSES_CURSOR_OK");
-    event("RADIX_NCURSES_INPUT_OK");
-    event("RADIX_NCURSES_EXIT_OK");
-    event("RADIX_NCURSES_PARITY_OK");
+    event("RAD_NCURSES_INIT_OK");
+    event("RAD_NCURSES_CURSOR_OK");
+    event("RAD_NCURSES_INPUT_OK");
+    event("RAD_NCURSES_EXIT_OK");
+    event("RAD_NCURSES_PARITY_OK");
     event("tui-stress-ok");
     return 0;
 }

@@ -1,5 +1,5 @@
-#ifndef RADIX_COMPOSITOR_MODEL_H
-#define RADIX_COMPOSITOR_MODEL_H
+#ifndef RAD_COMPOSITOR_MODEL_H
+#define RAD_COMPOSITOR_MODEL_H
 
 #include <cstdint>
 #include <string>

@@ -1,0 +1,13 @@
+name=rad-ncurses
+version=0.1.0-experimental
+kind=userspace-library
+architecture=rad-x86_64
+upstream=ncurses
+upstream_version=6.6-20251230
+upstream_sha256=9796dfb0e790bac2a994a86df83adddc1a96021cbc02c44c4f2ea886069bd91d
+terminfo=rad
+libraries=/usr/lib/libradc.rso,/usr/lib/libtinfo.rso,/usr/lib/libncurses.rso,/usr/lib/libncursesw.rso
+headers=/usr/include/curses.h,/usr/include/ncurses.h,/usr/include/term.h,/usr/include/termcap.h,/usr/include/unctrl.h,/usr/include/panel.h,/usr/include/menu.h,/usr/include/form.h,/usr/include/eti.h,/usr/include/ncurses_dll.h
+provides=libncurses,libncursesw,libtinfo,libradc,rad-terminal-ui-dev
+requires=rad-core
+note=RADPx-OS ncurses/tinfo shared runtime, static archives, and terminal UI development headers.

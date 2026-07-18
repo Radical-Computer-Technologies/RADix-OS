@@ -8,6 +8,6 @@
   "requires": [],
   "after": [],
   "restart": "no",
-  "stdout": "/var/log/radix/storage-root.log",
-  "stderr": "/var/log/radix/storage-root.log"
+  "stdout": "/var/log/rad/storage-root.log",
+  "stderr": "/var/log/rad/storage-root.log"
 }

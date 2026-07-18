@@ -17,7 +17,7 @@ testing.
 - x86 GRUB VM smoke target with `rash` as the default shell, framebuffer
   terminal, PTY/TTY path, JSON `radinit` services, persistent logs, FAT32 test
   volume, clean no-journal ext4 read/write profile, and RadBuild 0.2.1
-  `os.radix` build orchestration.
+  `os.rad` build orchestration.
 - RadicalPackages `.radpm` packagegroups for terminal, desktop, networking,
   and SDK image composition.
 

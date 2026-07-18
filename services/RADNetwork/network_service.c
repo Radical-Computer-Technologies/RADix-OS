@@ -6,33 +6,33 @@
 #include <time.h>
 #include <unistd.h>
 
-#define RADIX_IOCTL_TYPE_NET 'N'
-#define RADIX_DEVICE_IOCTL_NET_LINK_INFO RADIX_IOR(RADIX_IOCTL_TYPE_NET, 1u, struct radix_net_link_info)
-#define RADIX_DEVICE_IOCTL_NET_CONFIGURE RADIX_IOW(RADIX_IOCTL_TYPE_NET, 7u, struct radix_net_stack_config)
+#define RAD_IOCTL_TYPE_NET 'N'
+#define RAD_DEVICE_IOCTL_NET_LINK_INFO RAD_IOR(RAD_IOCTL_TYPE_NET, 1u, struct rad_net_link_info)
+#define RAD_DEVICE_IOCTL_NET_CONFIGURE RAD_IOW(RAD_IOCTL_TYPE_NET, 7u, struct rad_net_stack_config)
 
-struct radix_ipv4 {
+struct rad_ipv4 {
     uint8_t bytes[4];
 };
 
-struct radix_mac {
+struct rad_mac {
     uint8_t bytes[6];
 };
 
-struct radix_net_link_info {
+struct rad_net_link_info {
     uint32_t size;
-    struct radix_mac mac;
+    struct rad_mac mac;
     uint32_t mtu;
     int link_up;
     uint64_t tx_packets;
     uint64_t rx_packets;
 };
 
-struct radix_net_stack_config {
+struct rad_net_stack_config {
     uint32_t size;
-    struct radix_ipv4 ipv4;
-    struct radix_ipv4 netmask;
-    struct radix_ipv4 gateway;
-    struct radix_ipv4 ntp_server;
+    struct rad_ipv4 ipv4;
+    struct rad_ipv4 netmask;
+    struct rad_ipv4 gateway;
+    struct rad_ipv4 ntp_server;
     uint16_t ntp_port;
     uint16_t flags;
 };
@@ -103,7 +103,7 @@ static int json_int(const char *json, const char *key, int fallback) {
     return digits ? v : fallback;
 }
 
-static int parse_ipv4(const char *text, struct radix_ipv4 *out) {
+static int parse_ipv4(const char *text, struct rad_ipv4 *out) {
     if (!text || !out) return 0;
     uint32_t values[4] = {0, 0, 0, 0};
     const char *p = text;
@@ -126,7 +126,7 @@ static int parse_ipv4(const char *text, struct radix_ipv4 *out) {
     return 1;
 }
 
-static void configure_from_json(struct radix_net_stack_config *config, const char *json) {
+static void configure_from_json(struct rad_net_stack_config *config, const char *json) {
     char value[64];
     if (json_string(json, "ipv4", value, sizeof(value))) (void)parse_ipv4(value, &config->ipv4);
     if (json_string(json, "netmask", value, sizeof(value))) (void)parse_ipv4(value, &config->netmask);
@@ -144,8 +144,8 @@ static void service_sleep_seconds(long seconds) {
 }
 
 int main(int argc, char **argv) {
-    const char *config_path = argc > 1 ? argv[1] : "/etc/radix/network/netinterfaces.json";
-    struct radix_net_stack_config config;
+    const char *config_path = argc > 1 ? argv[1] : "/etc/rad/network/netinterfaces.json";
+    struct rad_net_stack_config config;
     memset(&config, 0, sizeof(config));
     config.size = sizeof(config);
     (void)parse_ipv4("10.0.2.15", &config.ipv4);
@@ -159,32 +159,32 @@ int main(int argc, char **argv) {
 
     int fd = open("/dev/net0", O_RDWR);
     if (fd < 0) {
-        put_fd(1, "RADIX_SERVICE_NETWORK_NO_DEVICE\n");
+        put_fd(1, "RAD_SERVICE_NETWORK_NO_DEVICE\n");
         return 2;
     }
-    struct radix_net_link_info link;
+    struct rad_net_link_info link;
     memset(&link, 0, sizeof(link));
     link.size = sizeof(link);
-    if (ioctl(fd, RADIX_DEVICE_IOCTL_NET_LINK_INFO, &link) < 0 || !link.link_up) {
+    if (ioctl(fd, RAD_DEVICE_IOCTL_NET_LINK_INFO, &link) < 0 || !link.link_up) {
         close(fd);
-        put_fd(1, "RADIX_NETWORK_INTERFACE_DOWN\n");
+        put_fd(1, "RAD_NETWORK_INTERFACE_DOWN\n");
         return 3;
     }
-    if (ioctl(fd, RADIX_DEVICE_IOCTL_NET_CONFIGURE, &config) < 0) {
+    if (ioctl(fd, RAD_DEVICE_IOCTL_NET_CONFIGURE, &config) < 0) {
         close(fd);
-        put_fd(1, "RADIX_SERVICE_NETWORK_CONFIG_FAIL\n");
+        put_fd(1, "RAD_SERVICE_NETWORK_CONFIG_FAIL\n");
         return 4;
     }
     close(fd);
-    put_fd(1, "RADIX_NETWORK_INTERFACE_UP_OK\n");
-    put_fd(1, "RADIX_SERVICE_NETWORK_OK\n");
+    put_fd(1, "RAD_NETWORK_INTERFACE_UP_OK\n");
+    put_fd(1, "RAD_SERVICE_NETWORK_OK\n");
     for (;;) {
         service_sleep_seconds(5);
         fd = open("/dev/net0", O_RDWR);
         if (fd < 0) continue;
         memset(&link, 0, sizeof(link));
         link.size = sizeof(link);
-        (void)ioctl(fd, RADIX_DEVICE_IOCTL_NET_LINK_INFO, &link);
+        (void)ioctl(fd, RAD_DEVICE_IOCTL_NET_LINK_INFO, &link);
         close(fd);
     }
 }

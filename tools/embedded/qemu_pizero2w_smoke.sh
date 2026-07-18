@@ -9,7 +9,7 @@ LOG="$ROOT/.radbuild/qemu-pizero2w-smoke.log"
 
 # shellcheck source=/dev/null
 source "$ROOT/tools/embedded/qemu_aarch64_env.sh"
-QEMU="$(radix_resolve_qemu_system_aarch64 "$ROOT")"
+QEMU="$(rad_resolve_qemu_system_aarch64 "$ROOT")"
 
 cd "$CIRCLEHOME"
 ./configure -f -r 3 -p "$TOOLCHAIN" --multicore --qemu --c++20 >/dev/null
@@ -47,18 +47,18 @@ require_marker() {
     fi
 }
 
-if grep -q "RADIX_PI_CIRCLE_LOADER_OK" "$LOG"; then
-    require_marker "RADIX_PI_LOADER_FAT_OK"
-    require_marker "RADIX_PI_PAYLOAD_LOAD_OK"
-    require_marker "RADIX_PI_SECONDARIES_PARKED_OK"
-    require_marker "RADIX_PI_CLEAN_CPU_STATE_OK"
-    require_marker "RADIX_PI_LOADER_HANDOFF_RECORD_OK"
+if grep -q "RAD_PI_CIRCLE_LOADER_OK" "$LOG"; then
+    require_marker "RAD_PI_LOADER_FAT_OK"
+    require_marker "RAD_PI_PAYLOAD_LOAD_OK"
+    require_marker "RAD_PI_SECONDARIES_PARKED_OK"
+    require_marker "RAD_PI_CLEAN_CPU_STATE_OK"
+    require_marker "RAD_PI_LOADER_HANDOFF_RECORD_OK"
 else
     cat "$LOG"
-    echo "Pi Zero 2 W Circle loader built, but QEMU emitted no loader serial markers; running RADPx payload gate." >&2
+    echo "Pi Zero 2 W Circle loader built, but QEMU emitted no loader serial markers; running RADPx-OS payload gate." >&2
 fi
 
-"$ROOT/tools/embedded/radix_pi_zero2w_smoke.sh"
+"$ROOT/tools/embedded/rad_pi_zero2w_smoke.sh"
 
 if [[ "${RADLIB_RESTORE_CIRCLE_HW:-1}" == "1" ]]; then
     (

@@ -104,5 +104,5 @@ overlay format for now.
 ## Current Limits
 
 Crimson 0.2.0 overlays are a compact runtime binding format, not a full Linux
-DTB replacement. They intentionally cover the current RADPx buses, IRQ domains,
+DTB replacement. They intentionally cover the current RADPx-OS buses, IRQ domains,
 boot metadata, framebuffer selection, and boot-service seeds first.

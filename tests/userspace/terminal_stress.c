@@ -60,16 +60,16 @@ static void line_num(const char *prefix, long value) {
 static int run_one(const char *path, const char *ok, const char *fail) {
     long child = sc(SYS_FORK, 0, 0, 0, 0, 0, 0);
     if (child == 0) {
-        line("RADIX_TERMINAL_STRESS_CHILD_EXEC");
+        line("RAD_TERMINAL_STRESS_CHILD_EXEC");
         char *argv[2];
         argv[0] = (char*)path;
         argv[1] = 0;
         long exec_status = sc(SYS_EXECVE, (long)path, (long)argv, 0, 0, 0, 0);
-        line_num("RADIX_TERMINAL_STRESS_CHILD_EXEC_FAIL status=", exec_status);
+        line_num("RAD_TERMINAL_STRESS_CHILD_EXEC_FAIL status=", exec_status);
         sc(SYS_EXIT, 127, 0, 0, 0, 0, 0);
     }
     if (child < 0) {
-        line_num("RADIX_TERMINAL_STRESS_FORK_FAIL status=", child);
+        line_num("RAD_TERMINAL_STRESS_FORK_FAIL status=", child);
         line(fail);
         return 1;
     }
@@ -84,22 +84,22 @@ static int run_one(const char *path, const char *ok, const char *fail) {
         line(ok);
         return 0;
     }
-    line_num("RADIX_TERMINAL_STRESS_WAIT_RESULT waited=", waited);
-    line_num("RADIX_TERMINAL_STRESS_WAIT_STATUS status=", status);
+    line_num("RAD_TERMINAL_STRESS_WAIT_RESULT waited=", waited);
+    line_num("RAD_TERMINAL_STRESS_WAIT_STATUS status=", status);
     line(fail);
     return 1;
 }
 
 int main(void) {
     int failed = 0;
-    failed |= run_one("/usr/bin/libc-rso-stress", "RADIX_LIBRADIXC_RSO_BOOT_OK", "RADIX_LIBRADIXC_RSO_BOOT_FAIL");
-    failed |= run_one("/usr/bin/tinfo-rso-stress", "RADIX_LIBTINFO_RSO_BOOT_OK", "RADIX_LIBTINFO_RSO_BOOT_FAIL");
-    failed |= run_one("/usr/bin/tui-stress-dyn", "RADIX_TUI_STRESS_DYN_BOOT_OK", "RADIX_TUI_STRESS_DYN_BOOT_FAIL");
-    failed |= run_one("/usr/bin/sleep-stress", "RADIX_SLEEP_STRESS_BOOT_OK", "RADIX_SLEEP_STRESS_BOOT_FAIL");
-    failed |= run_one("/usr/bin/signal-stress", "RADIX_SIGNAL_STRESS_BOOT_OK", "RADIX_SIGNAL_STRESS_BOOT_FAIL");
-    failed |= run_one("/usr/bin/posix-stress", "RADIX_POSIX_STRESS_BOOT_OK", "RADIX_POSIX_STRESS_BOOT_FAIL");
-    failed |= run_one("/usr/bin/tty-stress", "RADIX_TTY_STRESS_BOOT_OK", "RADIX_TTY_STRESS_BOOT_FAIL");
-    failed |= run_one("/usr/bin/tui-stress", "RADIX_TUI_STRESS_BOOT_OK", "RADIX_TUI_STRESS_BOOT_FAIL");
-    line(failed ? "RADIX_STRESS_AUTOTEST_FAIL" : "RADIX_STRESS_AUTOTEST_OK");
+    failed |= run_one("/usr/bin/libc-rso-stress", "RAD_LIBRADC_RSO_BOOT_OK", "RAD_LIBRADC_RSO_BOOT_FAIL");
+    failed |= run_one("/usr/bin/tinfo-rso-stress", "RAD_LIBTINFO_RSO_BOOT_OK", "RAD_LIBTINFO_RSO_BOOT_FAIL");
+    failed |= run_one("/usr/bin/tui-stress-dyn", "RAD_TUI_STRESS_DYN_BOOT_OK", "RAD_TUI_STRESS_DYN_BOOT_FAIL");
+    failed |= run_one("/usr/bin/sleep-stress", "RAD_SLEEP_STRESS_BOOT_OK", "RAD_SLEEP_STRESS_BOOT_FAIL");
+    failed |= run_one("/usr/bin/signal-stress", "RAD_SIGNAL_STRESS_BOOT_OK", "RAD_SIGNAL_STRESS_BOOT_FAIL");
+    failed |= run_one("/usr/bin/posix-stress", "RAD_POSIX_STRESS_BOOT_OK", "RAD_POSIX_STRESS_BOOT_FAIL");
+    failed |= run_one("/usr/bin/tty-stress", "RAD_TTY_STRESS_BOOT_OK", "RAD_TTY_STRESS_BOOT_FAIL");
+    failed |= run_one("/usr/bin/tui-stress", "RAD_TUI_STRESS_BOOT_OK", "RAD_TUI_STRESS_BOOT_FAIL");
+    line(failed ? "RAD_STRESS_AUTOTEST_FAIL" : "RAD_STRESS_AUTOTEST_OK");
     return failed ? 1 : 0;
 }

@@ -1,15 +1,15 @@
 PROJECT_NAME           = "RADPx-OS Kernel (Radical Posix OS)"
 PROJECT_NUMBER         = "Crimson 0.2.0"
 PROJECT_BRIEF          = "POSIX-inspired kernel API with embedded and desktop VM targets"
-OUTPUT_DIRECTORY       = $(RADIX_DOCS_OUTPUT)
-INPUT                  = $(RADIX_SOURCE_DIR)/RADixKernel/headers \
-                         $(RADIX_SOURCE_DIR)/RADixKernel/boot \
-                         $(RADIX_SOURCE_DIR)/RADixKernel/platforms \
-                         $(RADIX_SOURCE_DIR)/docs/public
+OUTPUT_DIRECTORY       = $(RAD_DOCS_OUTPUT)
+INPUT                  = $(RAD_SOURCE_DIR)/RADKernel/headers \
+                         $(RAD_SOURCE_DIR)/RADKernel/boot \
+                         $(RAD_SOURCE_DIR)/RADKernel/platforms \
+                         $(RAD_SOURCE_DIR)/docs/public
 RECURSIVE              = YES
 FILE_PATTERNS          = *.h \
                          *.md
-USE_MDFILE_AS_MAINPAGE = $(RADIX_SOURCE_DIR)/docs/public/mainpage.md
+USE_MDFILE_AS_MAINPAGE = $(RAD_SOURCE_DIR)/docs/public/mainpage.md
 EXTRACT_ALL            = NO
 EXTRACT_PRIVATE        = NO
 EXTRACT_STATIC         = NO
@@ -18,7 +18,7 @@ HIDE_UNDOC_CLASSES     = NO
 SORT_MEMBER_DOCS       = YES
 GENERATE_HTML          = YES
 HTML_OUTPUT            = api
-HTML_EXTRA_STYLESHEET  = $(RADIX_SOURCE_DIR)/docs/radix-docs.css
+HTML_EXTRA_STYLESHEET  = $(RAD_SOURCE_DIR)/docs/rad-docs.css
 HTML_DYNAMIC_SECTIONS  = YES
 GENERATE_TREEVIEW      = YES
 DISABLE_INDEX          = NO
@@ -41,7 +41,7 @@ WARN_AS_ERROR          = YES
 ENABLE_PREPROCESSING   = YES
 MACRO_EXPANSION        = YES
 EXPAND_ONLY_PREDEF     = YES
-PREDEFINED             = RADIX_KERNEL_VERSION_MAJOR=0 \
-                         RADIX_KERNEL_VERSION_MINOR=2 \
-                         RADIX_KERNEL_VERSION_PATCH=0 \
+PREDEFINED             = RAD_KERNEL_VERSION_MAJOR=0 \
+                         RAD_KERNEL_VERSION_MINOR=2 \
+                         RAD_KERNEL_VERSION_PATCH=0 \
                          RADLIB_EMBEDDED_NO_CPP_WRAPPERS=1

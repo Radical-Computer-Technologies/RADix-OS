@@ -1,6 +1,6 @@
 #include <RADUi/RADSlintFramebufferBackend.h>
 #include <radboot.h>
-#include <radixkernel/radixkernel.h>
+#include <radkernel/radkernel.h>
 
 #include "RADCompositorModel.h"
 #include "RADCompositorCore.h"
@@ -387,28 +387,28 @@ int main(int argc, char **argv) {
     }
     if (self_test) {
         std::cout << "RAD OS Slint shell rendered checksum=0x" << std::hex << checksum << "\n";
-        if (terminalLoadingObserved) std::cout << "RADIX_SLINT_TERMINAL_LOADING_OK\n";
-        if (terminalReadyObserved) std::cout << "RADIX_SLINT_TERMINAL_READY_OK\n";
-        if (windowManagerObserved) std::cout << "RADIX_SLINT_WM_OK\n";
-        if (terminalWindowObserved) std::cout << "RADIX_SLINT_APP_TERMINAL_WINDOW_OK\n";
-        if (menuOpenObserved) std::cout << "RADIX_SLINT_MENU_OPEN_OK\n";
-        if (menuEscapeObserved) std::cout << "RADIX_SLINT_MENU_ESCAPE_OK\n";
-        if (windowMoveObserved) std::cout << "RADIX_SLINT_WINDOW_MOVE_OK\n";
-        if (windowResizeObserved) std::cout << "RADIX_SLINT_WINDOW_RESIZE_OK\n";
-        if (terminalScrollObserved) std::cout << "RADIX_SLINT_TERMINAL_SCROLL_OK\n";
-        if (terminalCloseObserved) std::cout << "RADIX_SLINT_TERMINAL_CLOSE_OK\n";
-        if (terminalRelaunchObserved) std::cout << "RADIX_SLINT_TERMINAL_RELAUNCH_OK\n";
-        if (compositorSelfTest.surfaceCreate) std::cout << "RADIX_COMPOSITOR_SURFACE_CREATE_OK\n";
-        if (compositorSelfTest.offscreenRender) std::cout << "RADIX_COMPOSITOR_OFFSCREEN_RENDER_OK\n";
-        if (compositorSelfTest.blit) std::cout << "RADIX_COMPOSITOR_BLIT_OK\n";
-        if (compositorSelfTest.hitTest) std::cout << "RADIX_COMPOSITOR_HIT_TEST_OK\n";
-        if (compositorSelfTest.inputTranslate) std::cout << "RADIX_COMPOSITOR_INPUT_TRANSLATE_OK\n";
-        if (compositorSelfTest.zOrder) std::cout << "RADIX_COMPOSITOR_Z_ORDER_OK\n";
-        if (compositorSelfTest.alpha) std::cout << "RADIX_COMPOSITOR_ALPHA_OK\n";
-        if (compositorSelfTest.damageQueue) std::cout << "RADIX_COMPOSITOR_DAMAGE_QUEUE_OK\n";
-        if (compositorSelfTest.copyForward) std::cout << "RADIX_COMPOSITOR_COPY_FORWARD_OK\n";
-        if (compositorSelfTest.exposedDamage) std::cout << "RADIX_COMPOSITOR_EXPOSED_DAMAGE_OK\n";
-        if (compositorSelfTest.emptyFrame) std::cout << "RADIX_COMPOSITOR_EMPTY_FRAME_SKIP_OK\n";
+        if (terminalLoadingObserved) std::cout << "RAD_SLINT_TERMINAL_LOADING_OK\n";
+        if (terminalReadyObserved) std::cout << "RAD_SLINT_TERMINAL_READY_OK\n";
+        if (windowManagerObserved) std::cout << "RAD_SLINT_WM_OK\n";
+        if (terminalWindowObserved) std::cout << "RAD_SLINT_APP_TERMINAL_WINDOW_OK\n";
+        if (menuOpenObserved) std::cout << "RAD_SLINT_MENU_OPEN_OK\n";
+        if (menuEscapeObserved) std::cout << "RAD_SLINT_MENU_ESCAPE_OK\n";
+        if (windowMoveObserved) std::cout << "RAD_SLINT_WINDOW_MOVE_OK\n";
+        if (windowResizeObserved) std::cout << "RAD_SLINT_WINDOW_RESIZE_OK\n";
+        if (terminalScrollObserved) std::cout << "RAD_SLINT_TERMINAL_SCROLL_OK\n";
+        if (terminalCloseObserved) std::cout << "RAD_SLINT_TERMINAL_CLOSE_OK\n";
+        if (terminalRelaunchObserved) std::cout << "RAD_SLINT_TERMINAL_RELAUNCH_OK\n";
+        if (compositorSelfTest.surfaceCreate) std::cout << "RAD_COMPOSITOR_SURFACE_CREATE_OK\n";
+        if (compositorSelfTest.offscreenRender) std::cout << "RAD_COMPOSITOR_OFFSCREEN_RENDER_OK\n";
+        if (compositorSelfTest.blit) std::cout << "RAD_COMPOSITOR_BLIT_OK\n";
+        if (compositorSelfTest.hitTest) std::cout << "RAD_COMPOSITOR_HIT_TEST_OK\n";
+        if (compositorSelfTest.inputTranslate) std::cout << "RAD_COMPOSITOR_INPUT_TRANSLATE_OK\n";
+        if (compositorSelfTest.zOrder) std::cout << "RAD_COMPOSITOR_Z_ORDER_OK\n";
+        if (compositorSelfTest.alpha) std::cout << "RAD_COMPOSITOR_ALPHA_OK\n";
+        if (compositorSelfTest.damageQueue) std::cout << "RAD_COMPOSITOR_DAMAGE_QUEUE_OK\n";
+        if (compositorSelfTest.copyForward) std::cout << "RAD_COMPOSITOR_COPY_FORWARD_OK\n";
+        if (compositorSelfTest.exposedDamage) std::cout << "RAD_COMPOSITOR_EXPOSED_DAMAGE_OK\n";
+        if (compositorSelfTest.emptyFrame) std::cout << "RAD_COMPOSITOR_EMPTY_FRAME_SKIP_OK\n";
     }
     rad_kernel_shutdown();
     return checksum ? EXIT_SUCCESS : EXIT_FAILURE;

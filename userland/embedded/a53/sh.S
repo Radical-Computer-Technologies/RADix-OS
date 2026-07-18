@@ -76,11 +76,11 @@ write_cstr:
 
 .section .rodata
 argv_envp_msg:
-    .asciz "RADIX_AARCH64_USER_ARGV_ENVP_OK\n"
+    .asciz "RAD_AARCH64_USER_ARGV_ENVP_OK\n"
 script_msg:
-    .asciz "RADIX_AARCH64_USER_SH_SCRIPT_OK\n"
+    .asciz "RAD_AARCH64_USER_SH_SCRIPT_OK\n"
 radsh_exit_msg:
-    .asciz "RADIX_AARCH64_USER_RADSH_EXIT_OK\n"
+    .asciz "RAD_AARCH64_USER_RADSH_EXIT_OK\n"
 
 .section .bss
 .align 3

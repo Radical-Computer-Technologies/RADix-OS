@@ -44,12 +44,12 @@ def looks_ipv4(value: str) -> bool:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", required=True)
-    parser.add_argument("--hostname", default="radix")
-    parser.add_argument("--root-password", default="radix")
+    parser.add_argument("--hostname", default="rad")
+    parser.add_argument("--root-password", default="rad")
     parser.add_argument("--rootfs-size-mb", default="256")
     parser.add_argument("--terminal-scale", default="auto")
-    parser.add_argument("--terminal-font", default="radix-default")
-    parser.add_argument("--terminal-theme", default="radix-dark")
+    parser.add_argument("--terminal-font", default="rad-default")
+    parser.add_argument("--terminal-theme", default="rad-dark")
     parser.add_argument("--terminal-autocomplete", default="true")
     parser.add_argument("--terminal-posix-compat", default="true")
     parser.add_argument("--terminal-ncurses", default="true")
@@ -74,7 +74,7 @@ def main() -> int:
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    salt = "radix-root-v1"
+    salt = "rad-root-v1"
     digest = password_hash(salt, args.root_password)
     version = "0.1.3"
     autocomplete = bool_arg(args.terminal_autocomplete)
@@ -114,36 +114,36 @@ def main() -> int:
     (out / "rkconfig").write_text(
         "\n".join(
             [
-                "CONFIG_RADIX_OS=y",
-                f'CONFIG_RADIX_HOSTNAME="{args.hostname}"',
-                f"CONFIG_RADIX_ROOTFS_SIZE_MB={args.rootfs_size_mb}",
-                f'CONFIG_RADIX_TERMINAL_SCALE="{args.terminal_scale}"',
-                f'CONFIG_RADIX_TERMINAL_FONT="{args.terminal_font}"',
-                f'CONFIG_RADIX_TERMINAL_THEME="{args.terminal_theme}"',
-                f"CONFIG_RADIX_TERMINAL_AUTOCOMPLETE={'y' if autocomplete else 'n'}",
-                f"CONFIG_RADIX_TERMINAL_POSIX_COMPAT={'y' if posix_compat else 'n'}",
-                f"CONFIG_RADIX_TERMINAL_NCURSES={'y' if ncurses else 'n'}",
-                f"CONFIG_RADIX_TERMINAL_NANO={'y' if nano else 'n'}",
-                f'CONFIG_RADIX_TERMINAL_NANO_VARIANT="{nano_variant}"',
-                f"CONFIG_RADIX_TERMINAL_VIM={'y' if vim else 'n'}",
-                f'CONFIG_RADIX_TERMINAL_VIM_VARIANT="{vim_variant}"',
-                f"CONFIG_RADIX_NETWORK={'y' if network_enabled else 'n'}",
-                f'CONFIG_RADIX_NET_IPV4="{args.net_ipv4}"',
-                f'CONFIG_RADIX_NET_NETMASK="{args.net_netmask}"',
-                f'CONFIG_RADIX_NET_GATEWAY="{args.net_gateway}"',
-                f'CONFIG_RADIX_NET_NTP_SERVER="{net_ntp_host}"',
-                f"CONFIG_RADIX_NET_NTP_PORT={net_ntp_port}",
-                f'CONFIG_RADIX_NET_DNS_SERVER="{args.net_dns_server}"',
-                f"CONFIG_RADIX_KERNEL_MAX_TASKS={args.kernel_max_tasks}",
-                f"CONFIG_RADIX_KERNEL_MAX_PROCESSES={args.kernel_max_processes}",
-                f"CONFIG_RADIX_KERNEL_TASK_STACK_BYTES={args.kernel_task_stack_bytes}",
-                f'CONFIG_RADIX_KERNEL_TASK_STACK_POLICY="{stack_policy}"',
-                'CONFIG_RADIX_TERMINAL_PALETTE_BACKGROUND="#090716"',
-                'CONFIG_RADIX_TERMINAL_PALETTE_FOREGROUND="#d8f7ee"',
-                'CONFIG_RADIX_TERMINAL_PALETTE_PROMPT="#4ade80"',
-                "CONFIG_RADIX_AUTH_PASSWORDS=y",
-                "CONFIG_RADIX_MODULE_EXT_RKO=y",
-                "CONFIG_RADIX_SHARED_OBJECT_EXT_RSO=y",
+                "CONFIG_RADPX_OS=y",
+                f'CONFIG_RAD_HOSTNAME="{args.hostname}"',
+                f"CONFIG_RAD_ROOTFS_SIZE_MB={args.rootfs_size_mb}",
+                f'CONFIG_RAD_TERMINAL_SCALE="{args.terminal_scale}"',
+                f'CONFIG_RAD_TERMINAL_FONT="{args.terminal_font}"',
+                f'CONFIG_RAD_TERMINAL_THEME="{args.terminal_theme}"',
+                f"CONFIG_RAD_TERMINAL_AUTOCOMPLETE={'y' if autocomplete else 'n'}",
+                f"CONFIG_RAD_TERMINAL_POSIX_COMPAT={'y' if posix_compat else 'n'}",
+                f"CONFIG_RAD_TERMINAL_NCURSES={'y' if ncurses else 'n'}",
+                f"CONFIG_RAD_TERMINAL_NANO={'y' if nano else 'n'}",
+                f'CONFIG_RAD_TERMINAL_NANO_VARIANT="{nano_variant}"',
+                f"CONFIG_RAD_TERMINAL_VIM={'y' if vim else 'n'}",
+                f'CONFIG_RAD_TERMINAL_VIM_VARIANT="{vim_variant}"',
+                f"CONFIG_RAD_NETWORK={'y' if network_enabled else 'n'}",
+                f'CONFIG_RAD_NET_IPV4="{args.net_ipv4}"',
+                f'CONFIG_RAD_NET_NETMASK="{args.net_netmask}"',
+                f'CONFIG_RAD_NET_GATEWAY="{args.net_gateway}"',
+                f'CONFIG_RAD_NET_NTP_SERVER="{net_ntp_host}"',
+                f"CONFIG_RAD_NET_NTP_PORT={net_ntp_port}",
+                f'CONFIG_RAD_NET_DNS_SERVER="{args.net_dns_server}"',
+                f"CONFIG_RAD_KERNEL_MAX_TASKS={args.kernel_max_tasks}",
+                f"CONFIG_RAD_KERNEL_MAX_PROCESSES={args.kernel_max_processes}",
+                f"CONFIG_RAD_KERNEL_TASK_STACK_BYTES={args.kernel_task_stack_bytes}",
+                f'CONFIG_RAD_KERNEL_TASK_STACK_POLICY="{stack_policy}"',
+                'CONFIG_RAD_TERMINAL_PALETTE_BACKGROUND="#090716"',
+                'CONFIG_RAD_TERMINAL_PALETTE_FOREGROUND="#d8f7ee"',
+                'CONFIG_RAD_TERMINAL_PALETTE_PROMPT="#4ade80"',
+                "CONFIG_RAD_AUTH_PASSWORDS=y",
+                "CONFIG_RAD_MODULE_EXT_RKO=y",
+                "CONFIG_RAD_SHARED_OBJECT_EXT_RSO=y",
                 "",
             ]
         ),
@@ -152,55 +152,55 @@ def main() -> int:
     (out / "rkconfig.h").write_text(
         "\n".join(
             [
-                "#ifndef RADIX_GENERATED_RKCONFIG_H",
-                "#define RADIX_GENERATED_RKCONFIG_H",
-                f'#define RADIX_RKCONFIG_HOSTNAME "{args.hostname}"',
-                f"#define RADIX_RKCONFIG_ROOTFS_SIZE_MB {args.rootfs_size_mb}",
-                f'#define RADIX_RKCONFIG_TERMINAL_SCALE "{args.terminal_scale}"',
-                f'#define RADIX_RKCONFIG_TERMINAL_FONT "{args.terminal_font}"',
-                f'#define RADIX_RKCONFIG_TERMINAL_THEME "{args.terminal_theme}"',
-                f"#define RADIX_RKCONFIG_TERMINAL_AUTOCOMPLETE {1 if autocomplete else 0}",
-                f"#define RADIX_RKCONFIG_TERMINAL_POSIX_COMPAT {1 if posix_compat else 0}",
-                f"#define RADIX_RKCONFIG_TERMINAL_NCURSES {1 if ncurses else 0}",
-                f"#define RADIX_RKCONFIG_TERMINAL_NANO {1 if nano else 0}",
-                f'#define RADIX_RKCONFIG_TERMINAL_NANO_VARIANT "{nano_variant}"',
-                f"#define RADIX_RKCONFIG_TERMINAL_VIM {1 if vim else 0}",
-                f'#define RADIX_RKCONFIG_TERMINAL_VIM_VARIANT "{vim_variant}"',
-                f"#define RADIX_RKCONFIG_NETWORK {1 if network_enabled else 0}",
-                f"#define RADIX_RKCONFIG_NET_IPV4_A {net_ipv4[0]}",
-                f"#define RADIX_RKCONFIG_NET_IPV4_B {net_ipv4[1]}",
-                f"#define RADIX_RKCONFIG_NET_IPV4_C {net_ipv4[2]}",
-                f"#define RADIX_RKCONFIG_NET_IPV4_D {net_ipv4[3]}",
-                f"#define RADIX_RKCONFIG_NET_NETMASK_A {net_netmask[0]}",
-                f"#define RADIX_RKCONFIG_NET_NETMASK_B {net_netmask[1]}",
-                f"#define RADIX_RKCONFIG_NET_NETMASK_C {net_netmask[2]}",
-                f"#define RADIX_RKCONFIG_NET_NETMASK_D {net_netmask[3]}",
-                f"#define RADIX_RKCONFIG_NET_GATEWAY_A {net_gateway[0]}",
-                f"#define RADIX_RKCONFIG_NET_GATEWAY_B {net_gateway[1]}",
-                f"#define RADIX_RKCONFIG_NET_GATEWAY_C {net_gateway[2]}",
-                f"#define RADIX_RKCONFIG_NET_GATEWAY_D {net_gateway[3]}",
-                f'#define RADIX_RKCONFIG_NET_NTP_HOST "{net_ntp_host}"',
-                f"#define RADIX_RKCONFIG_NET_NTP_A {net_ntp_server[0]}",
-                f"#define RADIX_RKCONFIG_NET_NTP_B {net_ntp_server[1]}",
-                f"#define RADIX_RKCONFIG_NET_NTP_C {net_ntp_server[2]}",
-                f"#define RADIX_RKCONFIG_NET_NTP_D {net_ntp_server[3]}",
-                f"#define RADIX_RKCONFIG_NET_NTP_PORT {net_ntp_port}",
-                f"#define RADIX_RKCONFIG_NET_DNS_A {net_dns_server[0]}",
-                f"#define RADIX_RKCONFIG_NET_DNS_B {net_dns_server[1]}",
-                f"#define RADIX_RKCONFIG_NET_DNS_C {net_dns_server[2]}",
-                f"#define RADIX_RKCONFIG_NET_DNS_D {net_dns_server[3]}",
-                f"#define RADIX_RKCONFIG_KERNEL_MAX_TASKS {args.kernel_max_tasks}",
-                f"#define RADIX_RKCONFIG_KERNEL_MAX_PROCESSES {args.kernel_max_processes}",
-                f"#define RADIX_RKCONFIG_KERNEL_TASK_STACK_BYTES {args.kernel_task_stack_bytes}",
-                f'#define RADIX_RKCONFIG_KERNEL_TASK_STACK_POLICY "{stack_policy}"',
-                "#define RADIX_RKCONFIG_AUTH_PASSWORDS 1",
+                "#ifndef RAD_GENERATED_RKCONFIG_H",
+                "#define RAD_GENERATED_RKCONFIG_H",
+                f'#define RAD_RKCONFIG_HOSTNAME "{args.hostname}"',
+                f"#define RAD_RKCONFIG_ROOTFS_SIZE_MB {args.rootfs_size_mb}",
+                f'#define RAD_RKCONFIG_TERMINAL_SCALE "{args.terminal_scale}"',
+                f'#define RAD_RKCONFIG_TERMINAL_FONT "{args.terminal_font}"',
+                f'#define RAD_RKCONFIG_TERMINAL_THEME "{args.terminal_theme}"',
+                f"#define RAD_RKCONFIG_TERMINAL_AUTOCOMPLETE {1 if autocomplete else 0}",
+                f"#define RAD_RKCONFIG_TERMINAL_POSIX_COMPAT {1 if posix_compat else 0}",
+                f"#define RAD_RKCONFIG_TERMINAL_NCURSES {1 if ncurses else 0}",
+                f"#define RAD_RKCONFIG_TERMINAL_NANO {1 if nano else 0}",
+                f'#define RAD_RKCONFIG_TERMINAL_NANO_VARIANT "{nano_variant}"',
+                f"#define RAD_RKCONFIG_TERMINAL_VIM {1 if vim else 0}",
+                f'#define RAD_RKCONFIG_TERMINAL_VIM_VARIANT "{vim_variant}"',
+                f"#define RAD_RKCONFIG_NETWORK {1 if network_enabled else 0}",
+                f"#define RAD_RKCONFIG_NET_IPV4_A {net_ipv4[0]}",
+                f"#define RAD_RKCONFIG_NET_IPV4_B {net_ipv4[1]}",
+                f"#define RAD_RKCONFIG_NET_IPV4_C {net_ipv4[2]}",
+                f"#define RAD_RKCONFIG_NET_IPV4_D {net_ipv4[3]}",
+                f"#define RAD_RKCONFIG_NET_NETMASK_A {net_netmask[0]}",
+                f"#define RAD_RKCONFIG_NET_NETMASK_B {net_netmask[1]}",
+                f"#define RAD_RKCONFIG_NET_NETMASK_C {net_netmask[2]}",
+                f"#define RAD_RKCONFIG_NET_NETMASK_D {net_netmask[3]}",
+                f"#define RAD_RKCONFIG_NET_GATEWAY_A {net_gateway[0]}",
+                f"#define RAD_RKCONFIG_NET_GATEWAY_B {net_gateway[1]}",
+                f"#define RAD_RKCONFIG_NET_GATEWAY_C {net_gateway[2]}",
+                f"#define RAD_RKCONFIG_NET_GATEWAY_D {net_gateway[3]}",
+                f'#define RAD_RKCONFIG_NET_NTP_HOST "{net_ntp_host}"',
+                f"#define RAD_RKCONFIG_NET_NTP_A {net_ntp_server[0]}",
+                f"#define RAD_RKCONFIG_NET_NTP_B {net_ntp_server[1]}",
+                f"#define RAD_RKCONFIG_NET_NTP_C {net_ntp_server[2]}",
+                f"#define RAD_RKCONFIG_NET_NTP_D {net_ntp_server[3]}",
+                f"#define RAD_RKCONFIG_NET_NTP_PORT {net_ntp_port}",
+                f"#define RAD_RKCONFIG_NET_DNS_A {net_dns_server[0]}",
+                f"#define RAD_RKCONFIG_NET_DNS_B {net_dns_server[1]}",
+                f"#define RAD_RKCONFIG_NET_DNS_C {net_dns_server[2]}",
+                f"#define RAD_RKCONFIG_NET_DNS_D {net_dns_server[3]}",
+                f"#define RAD_RKCONFIG_KERNEL_MAX_TASKS {args.kernel_max_tasks}",
+                f"#define RAD_RKCONFIG_KERNEL_MAX_PROCESSES {args.kernel_max_processes}",
+                f"#define RAD_RKCONFIG_KERNEL_TASK_STACK_BYTES {args.kernel_task_stack_bytes}",
+                f'#define RAD_RKCONFIG_KERNEL_TASK_STACK_POLICY "{stack_policy}"',
+                "#define RAD_RKCONFIG_AUTH_PASSWORDS 1",
                 "#endif",
                 "",
             ]
         ),
         encoding="utf-8",
     )
-    (out / "issue").write_text(f"RADPx OS {version} x86_64\nKernel API {version}\n\n", encoding="utf-8")
+    (out / "issue").write_text(f"RADPx-OS {version} x86_64\nKernel API {version}\n\n", encoding="utf-8")
     (out / "hostname").write_text(f"{args.hostname}\n", encoding="utf-8")
     (out / "terminal.theme").write_text(
         "\n".join(
@@ -234,7 +234,7 @@ def main() -> int:
         encoding="utf-8",
     )
     (out / "radpm-index.json").write_text(
-        '{\n  "schema": "radix-radpm-index",\n  "schema_version": 1,\n  "packages": []\n}\n',
+        '{\n  "schema": "rad-radpm-index",\n  "schema_version": 1,\n  "packages": []\n}\n',
         encoding="utf-8",
     )
     (out / "hosts").write_text(
@@ -266,7 +266,7 @@ def main() -> int:
         "\n".join(
             [
                 "{",
-                '  "schema": "radix-netinterfaces",',
+                '  "schema": "rad-netinterfaces",',
                 '  "schema_version": 1,',
                 '  "interfaces": [',
                 "    {",
@@ -293,7 +293,7 @@ def main() -> int:
         "\n".join(
             [
                 "{",
-                '  "schema": "radix-dns-resolver",',
+                '  "schema": "rad-dns-resolver",',
                 '  "schema_version": 1,',
                 f'  "nameserver": "{args.net_dns_server}",',
                 f'  "search": "{args.dns_search}",',
@@ -308,7 +308,7 @@ def main() -> int:
         "\n".join(
             [
                 "{",
-                '  "schema": "radix-time-sync",',
+                '  "schema": "rad-time-sync",',
                 '  "schema_version": 1,',
                 f'  "servers": ["{net_ntp_host}"],',
                 f'  "server": "{net_ntp_host}",',
@@ -332,8 +332,8 @@ def main() -> int:
     zone_file.write_text(
         "\n".join(
             [
-                "# RADPx tzdata package marker.",
-                "# Full binary TZif coverage is packaged by radix-tzdata releases as the timezone loader grows.",
+                "# RADPx-OS tzdata package marker.",
+                "# Full binary TZif coverage is packaged by rad-tzdata releases as the timezone loader grows.",
                 f"TZID={args.timezone}",
                 "",
             ]
@@ -346,11 +346,11 @@ def main() -> int:
         encoding="utf-8",
     )
     (out / "rko-note.txt").write_text(
-        ".rko files are trusted RADPx kernel objects and must be loaded only from privileged module paths.\n",
+        ".rko files are trusted RADPx-OS kernel objects and must be loaded only from privileged module paths.\n",
         encoding="utf-8",
     )
     (out / "rso-note.txt").write_text(
-        ".rso files are RADPx shared objects; future POSIX compatibility may add .so aliases.\n",
+        ".rso files are RADPx-OS shared objects; future POSIX compatibility may add .so aliases.\n",
         encoding="utf-8",
     )
     return 0

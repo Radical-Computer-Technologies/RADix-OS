@@ -3,7 +3,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <radix/syscalls.h>
+#include <rad/syscalls.h>
 
 enum {
     SYS_READ = 0,
@@ -34,7 +34,7 @@ enum {
 #define RAD_TTY_MODE_CRLF (1u << 2)
 
 static long sc(long n, long a, long b, long c, long d, long e, long f) {
-    return radix_syscall6(n, a, b, c, d, e, f);
+    return rad_syscall6(n, a, b, c, d, e, f);
 }
 
 static size_t s_len(const char *s) {
@@ -171,10 +171,10 @@ int login_main(long argc, char **argv, char **envp) {
         read_line(password, sizeof(password), 1);
         tty_set_mode(old_mode);
         if (lookup_user(user, &uid, &gid, salt, sizeof(salt), expected, sizeof(expected), shell, sizeof(shell))) {
-            radix_auth_password_hash(salt, password, actual);
+            rad_auth_password_hash(salt, password, actual);
             if (s_eq(actual, expected)) {
-                puts_fd(1, "RADIX_LOGIN_OK\n");
-                puts_fd(1, "RADIX_UID_ROOT_OK\n");
+                puts_fd(1, "RAD_LOGIN_OK\n");
+                puts_fd(1, "RAD_UID_ROOT_OK\n");
                 sc(SYS_SETGID, gid, 0, 0, 0, 0, 0);
                 sc(SYS_SETUID, uid, 0, 0, 0, 0, 0);
                 char *shell_argv[2];

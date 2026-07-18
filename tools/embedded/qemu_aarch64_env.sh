@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-radix_resolve_qemu_system_aarch64() {
+rad_resolve_qemu_system_aarch64() {
     local root="${1:?missing repo root}"
     local qemu="${QEMU_SYSTEM_AARCH64:-}"
 

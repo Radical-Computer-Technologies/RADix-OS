@@ -121,17 +121,17 @@ write_cstr:
 
 .section .rodata
 radsh_boot_msg:
-    .asciz "RADIX_AARCH64_USER_RADSH_BOOT_OK\n"
+    .asciz "RAD_AARCH64_USER_RADSH_BOOT_OK\n"
 fork_msg:
-    .asciz "RADIX_AARCH64_USER_FORK_OK\n"
+    .asciz "RAD_AARCH64_USER_FORK_OK\n"
 fork_child_msg:
-    .asciz "RADIX_AARCH64_USER_FORK_CHILD_OK\n"
+    .asciz "RAD_AARCH64_USER_FORK_CHILD_OK\n"
 fork_wait_msg:
-    .asciz "RADIX_AARCH64_USER_FORK_WAIT_OK\n"
+    .asciz "RAD_AARCH64_USER_FORK_WAIT_OK\n"
 fd_inherit_msg:
-    .asciz "RADIX_AARCH64_USER_FORK_FD_INHERIT_OK\n"
+    .asciz "RAD_AARCH64_USER_FORK_FD_INHERIT_OK\n"
 cow_parent_msg:
-    .asciz "RADIX_AARCH64_USER_COW_PARENT_ISOLATED_OK\n"
+    .asciz "RAD_AARCH64_USER_COW_PARENT_ISOLATED_OK\n"
 script_path:
     .asciz "/bin/test.sh"
 script_arg0:

@@ -17,7 +17,7 @@ guest.
 The minimal IPv4 path now includes Ethernet II dispatch, ARP request/reply and
 cache learning, IPv4 checksum validation, UDP transmit/receive, ICMP echo
 reply, static default-gateway routing, IPv4 DNS A-record lookup, and
-SNTP/NTP sampling. RADPx uses this path for host UDP echo verification and can
+SNTP/NTP sampling. RADPx-OS uses this path for host UDP echo verification and can
 query either the deterministic host-side test responder or public NTP servers.
 
 The socket layer currently supports:
@@ -80,24 +80,24 @@ socket lifecycle.
 
 The x86 Slint VM smoke gate checks:
 
-- `RADIX_VIRTIO_NET_FOUND`
-- `RADIX_NET_DEVICE_REGISTERED`
-- `RADIX_VIRTIO_NET_TX_RING_OK`
-- `RADIX_VIRTIO_NET_RX_RING_OK`
-- `RADIX_ETH_TX_OK`
-- `RADIX_ARP_OK`
-- `RADIX_IPV4_OK`
-- `RADIX_UDP_OK`
-- `RADIX_UDP_RX_OK`
-- `RADIX_NET_UDP_TX_OK`
-- `RADIX_NET_UDP_RX_OK`
-- `RADIX_NET_HOST_UDP_ECHO_OK`
-- `RADIX_NTP_QUERY_OK`
-- `RADIX_NTP_RESPONSE_OK`
-- `RADIX_NTP_TIME_SAMPLE_OK`
-- `RADIX_SOCKET_DGRAM_OK`
-- `RADIX_TCP_SOCKET_OK`
-- `RADIX_TCP_CONNECT_OK`
-- `RADIX_TCP_LISTEN_ACCEPT_OK`
-- `RADIX_TCP_STREAM_IO_OK`
-- `RADIX_TCP_SHUTDOWN_OK`
+- `RAD_VIRTIO_NET_FOUND`
+- `RAD_NET_DEVICE_REGISTERED`
+- `RAD_VIRTIO_NET_TX_RING_OK`
+- `RAD_VIRTIO_NET_RX_RING_OK`
+- `RAD_ETH_TX_OK`
+- `RAD_ARP_OK`
+- `RAD_IPV4_OK`
+- `RAD_UDP_OK`
+- `RAD_UDP_RX_OK`
+- `RAD_NET_UDP_TX_OK`
+- `RAD_NET_UDP_RX_OK`
+- `RAD_NET_HOST_UDP_ECHO_OK`
+- `RAD_NTP_QUERY_OK`
+- `RAD_NTP_RESPONSE_OK`
+- `RAD_NTP_TIME_SAMPLE_OK`
+- `RAD_SOCKET_DGRAM_OK`
+- `RAD_TCP_SOCKET_OK`
+- `RAD_TCP_CONNECT_OK`
+- `RAD_TCP_LISTEN_ACCEPT_OK`
+- `RAD_TCP_STREAM_IO_OK`
+- `RAD_TCP_SHUTDOWN_OK`

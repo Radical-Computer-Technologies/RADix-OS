@@ -1,4 +1,4 @@
-#include <radixkernel/radixkernel.h>
+#include <radkernel/radkernel.h>
 #include <radboot.h>
 #include <RADCore/RADCore.h>
 #include <RADDsp/RADDsp.h>
@@ -23,7 +23,7 @@ int main() {
     sleep_ms(100);
 
     rad_boot_info_t boot{};
-    radboot_prepare_rp235x(&boot, PICO_BOARD, RADIX_KERNEL_SD_MODE);
+    radboot_prepare_rp235x(&boot, PICO_BOARD, RAD_KERNEL_SD_MODE);
 
     rad_kernel_config_t config{};
     config.backend_name = "rp235x_pico";

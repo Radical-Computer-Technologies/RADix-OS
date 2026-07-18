@@ -6,7 +6,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#if defined(RADIX_GUEST_STRESS_DIRECT)
+#if defined(RAD_GUEST_STRESS_DIRECT)
 static long sc(long n, long a, long b, long c, long d, long e, long f) {
     register long rax asm("rax") = n;
     register long rdi asm("rdi") = a;
@@ -55,7 +55,7 @@ static int stress_poll_empty(int timeout_ms) {
 #endif
 
 static void event(const char *name) {
-#if defined(RADIX_GUEST_STRESS_DIRECT)
+#if defined(RAD_GUEST_STRESS_DIRECT)
     sc(1, 1, (long)name, (long)cstrlen(name), 0, 0, 0);
     sc(1, 1, (long)"\n", 1, 0, 0, 0);
 #else
@@ -71,8 +71,8 @@ static long millis(void) {
 }
 
 static int fail(const char *name) {
-    event("RADIX_SCHED_WAKE_STRESS_FAIL");
-#if defined(RADIX_GUEST_STRESS_DIRECT)
+    event("RAD_SCHED_WAKE_STRESS_FAIL");
+#if defined(RAD_GUEST_STRESS_DIRECT)
     sc(1, 1, (long)"sleep-stress-fail:", 18, 0, 0, 0);
     sc(1, 1, (long)name, (long)cstrlen(name), 0, 0, 0);
     sc(1, 1, (long)"\n", 1, 0, 0, 0);
@@ -85,27 +85,27 @@ static int fail(const char *name) {
 }
 
 int main(void) {
-    event("RADIX_SLEEP_STRESS_START");
+    event("RAD_SLEEP_STRESS_START");
     const long start = millis();
-    event("RADIX_SLEEP_STRESS_TIME_START_OK");
+    event("RAD_SLEEP_STRESS_TIME_START_OK");
     struct timespec ts;
     ts.tv_sec = 0;
     ts.tv_nsec = 5000000L;
     if (stress_nanosleep(&ts) != 0) return fail("nanosleep");
-    event("RADIX_SLEEP_STRESS_NANOSLEEP_RETURN_OK");
+    event("RAD_SLEEP_STRESS_NANOSLEEP_RETURN_OK");
     const long elapsed = millis() - start;
     if (elapsed < 0 || elapsed > 5000) return fail("elapsed");
-    event("RADIX_SLEEP_STRESS_ELAPSED_OK");
+    event("RAD_SLEEP_STRESS_ELAPSED_OK");
 
     const long poll_start = millis();
     const int ready = stress_poll_empty(5);
     const long poll_elapsed = millis() - poll_start;
     if (ready != 0 || poll_elapsed < 0 || poll_elapsed > 5000) return fail("poll-timeout");
-    event("RADIX_SLEEP_STRESS_POLL_RETURN_OK");
+    event("RAD_SLEEP_STRESS_POLL_RETURN_OK");
 
-    event("RADIX_USER_NANOSLEEP_OK");
-    event("RADIX_USER_POLL_TIMEOUT_OK");
-    event("RADIX_SCHED_WAKE_STRESS_OK");
+    event("RAD_USER_NANOSLEEP_OK");
+    event("RAD_USER_POLL_TIMEOUT_OK");
+    event("RAD_SCHED_WAKE_STRESS_OK");
     event("sleep-stress-ok");
     return 0;
 }

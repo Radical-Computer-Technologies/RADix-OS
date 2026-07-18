@@ -27,7 +27,7 @@ static void event(const char *text) {
 int main(void) {
     WINDOW *screen = initscr();
     if (!screen || !stdscr) {
-        event("RADIX_LIBNCURSES_RSO_INIT_FAIL");
+        event("RAD_LIBNCURSES_RSO_INIT_FAIL");
         return 1;
     }
 
@@ -37,7 +37,7 @@ int main(void) {
     start_color();
     init_pair(1, COLOR_GREEN, COLOR_BLACK);
     clear();
-    mvaddstr(1, 2, "RADPx dynamic ncurses");
+    mvaddstr(1, 2, "RADPx-OS dynamic ncurses");
     mvaddstr(3, 4, "libncurses.rso");
     move(3, 4);
     refresh();
@@ -48,7 +48,7 @@ int main(void) {
     const int enter = getch();
     if (down != KEY_DOWN || enter != '\n') {
         endwin();
-        event("RADIX_LIBNCURSES_RSO_INPUT_FAIL");
+        event("RAD_LIBNCURSES_RSO_INPUT_FAIL");
         return 1;
     }
 
@@ -56,7 +56,7 @@ int main(void) {
     mvaddstr(5, 2, "ok");
     refresh();
     endwin();
-    event("RADIX_LIBNCURSES_RSO_OK");
-    event("RADIX_TUI_STRESS_DYN_OK");
+    event("RAD_LIBNCURSES_RSO_OK");
+    event("RAD_TUI_STRESS_DYN_OK");
     return 0;
 }

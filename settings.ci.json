@@ -4,10 +4,10 @@
   "project_name": "RADPx-OS CI",
   "systems": [
     {
-      "id": "radix-x86-64-grub-terminal-ci",
-      "type": "os.radix",
+      "id": "rad-x86-64-grub-terminal-ci",
+      "type": "os.rad",
       "name": "CI x86_64 GRUB terminal smoke",
-      "provider": "radix-os",
+      "provider": "radpx-os",
       "depends_on": [],
       "toolchain": {
         "architecture": "x86_64",
@@ -37,12 +37,12 @@
           "terminal.ncurses"
         ],
         "rkconfig": {
-          "hostname": "radix",
-          "root_password": "radix",
+          "hostname": "rad",
+          "root_password": "rad",
           "rootfs_size_mb": 256,
           "terminal_scale": "auto",
-          "terminal_font": "radix-default",
-          "terminal_theme": "radix-dark",
+          "terminal_font": "rad-default",
+          "terminal_theme": "rad-dark",
           "terminal_autocomplete": true,
           "terminal_posix_compat": true,
           "terminal_ncurses": true,
@@ -56,13 +56,13 @@
         },
         "build_dir": "build/embedded/x86_64_grub_terminal",
         "smoke_script": "tools/embedded/x86_64_grub_slint_smoke.sh",
-        "artifact_dir": "artifacts/radix/x86_64-grub-terminal",
+        "artifact_dir": "artifacts/rad/x86_64-grub-terminal",
         "log_dir": ".radmeta/ci/terminal/logs",
         "artifact_names": {
-          "kernel": "radixkernel-x86-64-grub-terminal",
-          "iso": "radixkernel-x86-64-grub-terminal.iso",
-          "rootfs": "radix-rootfs.ext4",
-          "fat32": "radix-fat32.img",
+          "kernel": "radkernel-x86-64-grub-terminal",
+          "iso": "radkernel-x86-64-grub-terminal.iso",
+          "rootfs": "rad-rootfs.ext4",
+          "fat32": "rad-fat32.img",
           "serial_log": "x86-64-grub-terminal-smoke.log"
         },
         "qemu_timeout": "90s",
@@ -74,19 +74,19 @@
           "repository": "../RadicalPackages",
           "suite": "experimental",
           "packages": [
-            "radix-core",
+            "rad-core",
             "radlib",
-            "radix-ncurses",
-            "radix-vim-tiny"
+            "rad-ncurses",
+            "rad-vim-tiny"
           ]
         }
       }
     },
     {
-      "id": "radix-zuboard-1cg-qemu-ci",
-      "type": "os.radix",
+      "id": "rad-zuboard-1cg-qemu-ci",
+      "type": "os.rad",
       "name": "CI ZuBoard 1CG QEMU serial smoke",
-      "provider": "radix-os",
+      "provider": "radpx-os",
       "depends_on": [],
       "toolchain": {
         "architecture": "aarch64",
@@ -104,7 +104,7 @@
         "qemu_sdhci_base": "0xff160000u",
         "qemu_image_size_mb": 512,
         "qemu_smoke": true,
-        "qemu_smoke_script": "tools/embedded/radix_zuboard_1cg/qemu_marker_smoke.sh",
+        "qemu_smoke_script": "tools/embedded/rad_zuboard_1cg/qemu_marker_smoke.sh",
         "qemu_smoke_timeout_seconds": 180,
         "run_vivado": false,
         "run_firmware_tools": false,
@@ -122,8 +122,8 @@
         ],
         "rootfs_size_mb": 256,
         "sd_image_boot_mb": 64,
-        "build_dir": "tools/embedded/radix_zuboard_1cg",
-        "artifact_dir": "artifacts/radix/zuboard-1cg-qemu",
+        "build_dir": "tools/embedded/rad_zuboard_1cg",
+        "artifact_dir": "artifacts/rad/zuboard-1cg-qemu",
         "log_dir": ".radmeta/ci/zuboard-qemu/logs",
         "jobs": 2
       }

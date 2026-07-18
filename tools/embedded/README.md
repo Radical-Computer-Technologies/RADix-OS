@@ -1,7 +1,7 @@
 # RADLib Embedded Setup
 
 These scripts set up local embedded build environments without installing
-toolchains globally. RADixKernel currently has smoke paths for RP235x Pico
+toolchains globally. RADKernel currently has smoke paths for RP235x Pico
 SDK targets and Circle Pi Zero 2 W targets.
 
 ## Install the Pi Zero 2 W 64-bit toolchain
@@ -48,17 +48,17 @@ That builds:
 Use `--realtime` when validating lower-latency interrupt behavior for audio or
 control paths. Use `--c++20` only when an application needs C++20 features.
 
-## Build the standalone RADPx Pi Zero 2 W payload
+## Build the standalone RADPx-OS Pi Zero 2 W payload
 
-The new Pi bring-up path separates Circle from the RADPx runtime. Raspberry Pi
+The new Pi bring-up path separates Circle from the RADPx-OS runtime. Raspberry Pi
 firmware remains the real first-stage boot path; Circle is being narrowed into
 an optional second-stage loader for kernel selection, maintenance, reflash, and
-validated handoff. The RADPx-owned payload is built as `RADIXKRN.IMG` and does
+validated handoff. The RADPx-OS-owned payload is built as `RADKRN.IMG` and does
 not link Circle:
 
 ```bash
-make -C tools/embedded/radix_pi_zero2w
-tools/embedded/radix_pi_zero2w_smoke.sh
+make -C tools/embedded/rad_pi_zero2w
+tools/embedded/rad_pi_zero2w_smoke.sh
 ```
 
 This payload currently brings up the RAD-owned BCM283x backend skeleton:
@@ -70,23 +70,23 @@ engine, DWC OTG USB host enumeration, hardware HID input, AArch64 page-table
 implementation, and Slint rendering on Pi hardware are the next Pi-specific
 driver work.
 
-## Build the standalone RADPx ZUBoard 1CG serial payload
+## Build the standalone RADPx-OS ZUBoard 1CG serial payload
 
 The ZuBoard path targets the Avnet/Tria ZUBoard 1CG Zynq UltraScale+ MPSoC
 board. The first payload is intentionally serial-only and expects FSBL, PMU
 firmware, and U-Boot to initialize clocks, DDR, and MIO before U-Boot enters
-RADPx with `bootelf`.
+RADPx-OS with `bootelf`.
 
 ```bash
-make -C tools/embedded/radix_zuboard_1cg
+make -C tools/embedded/rad_zuboard_1cg
 ```
 
 The target emits:
 
-- `tools/embedded/radix_zuboard_1cg/radix-zuboard.elf`
-- `tools/embedded/radix_zuboard_1cg/radix-zuboard.img`
+- `tools/embedded/rad_zuboard_1cg/rad-zuboard.elf`
+- `tools/embedded/rad_zuboard_1cg/rad-zuboard.img`
 
-RadBuild template `radix-os-zuboard-serial` stages those files with a boot
+RadBuild template `radpx-os-zuboard-serial` stages those files with a boot
 script, the reference XSA from `../ZUBoard-1CG_RT` when available, generated
 XSCT firmware scripts, a Bootgen BIF, a FAT boot partition image, an ext4 rootfs
 image, and a combined SD image. The current kernel backend is
@@ -96,9 +96,9 @@ device, MBR partitions, and an ext4 rootfs login path.
 For QEMU smoke testing, build the QEMU profile and run the helper script:
 
 ```bash
-radbuild build os --system radix-zuboard-1cg-qemu
-RADIX_QEMU_BUILD=0 RADIX_QEMU_TIMEOUT=45 \
-  tools/embedded/radix_zuboard_1cg/run-qemu.sh
+radbuild build os --system rad-zuboard-1cg-qemu
+RAD_QEMU_BUILD=0 RAD_QEMU_TIMEOUT=45 \
+  tools/embedded/rad_zuboard_1cg/run-qemu.sh
 ```
 
 The script uses QEMU's `xlnx-zcu102` machine model, passes the QEMU SDHCI base
@@ -150,8 +150,8 @@ package an ISO when GRUB and mtools are installed:
 
 ```bash
 cmake -S tools/embedded/x86_grub -B build/embedded/x86_grub
-cmake --build build/embedded/x86_grub --target radixkernel_x86_grub -j2
-cmake --build build/embedded/x86_grub --target radixkernel_x86_grub_iso -j2
+cmake --build build/embedded/x86_grub --target radkernel_x86_grub -j2
+cmake --build build/embedded/x86_grub --target radkernel_x86_grub_iso -j2
 ```
 
 ISO packaging requires `grub-mkrescue`, `xorriso`, and `mformat` from mtools.
@@ -185,11 +185,11 @@ support is unavailable. In Virt-Manager, use legacy BIOS boot with the normal
 emulated keyboard; QEMU will usually expose host USB keyboards to the guest as
 the legacy i8042/PS/2 keyboard this target currently supports. The ISO now links
 Slint's Rust/C++ runtime as a static freestanding software renderer and verifies
-`RADIX_SLINT_BOOT_SHELL_OK`, `RADIX_SLINT_TERMINAL_LOADING_OK`, and
-`RADIX_SLINT_TERMINAL_READY_OK`, `RADIX_SLINT_WM_OK`, and
-`RADIX_SLINT_APP_TERMINAL_WINDOW_OK` during the VM smoke.
+`RAD_SLINT_BOOT_SHELL_OK`, `RAD_SLINT_TERMINAL_LOADING_OK`, and
+`RAD_SLINT_TERMINAL_READY_OK`, `RAD_SLINT_WM_OK`, and
+`RAD_SLINT_APP_TERMINAL_WINDOW_OK` during the VM smoke.
 
-The first RADPx POSIX substrate is also present in this target. It initializes
+The first RADPx-OS POSIX substrate is also present in this target. It initializes
 pid 1, integer file descriptors with `0/1/2` bound to `/dev/console`, installs a
 GDT/TSS/IDT, provides an `int 0x80` syscall entry path, inventories multiboot
 memory into a simple physical page allocator, and boots a tiny freestanding
@@ -202,17 +202,17 @@ smoke. User init now runs from a dedicated x86_64 page table with
 supervisor-only kernel identity mappings, user-mapped ELF segments, a
 user-mapped stack, and a guard page below that stack.
 
-The VM smoke builds `radix-rootfs.ext2`, attaches it as `/dev/vda`, mounts it at
-`/`, loads `/bin/init`, enters CPL3, and checks `RADIX_X86_CPU_OK`,
-`RADIX_CPP_RUNTIME_OK`, `RADIX_MODULE_LIFECYCLE_OK`, `RADIX_INT80_OK`,
-`RADIX_POSIX_ABI_OK`, `RADIX_VM_READY`, `RADIX_VM_PAGE_ALLOC_OK`,
-`RADIX_USER_VM_ISOLATED_OK`, `RADIX_USER_ENTRY_MAP_OK`, `RADIX_USER_COPY_OK`,
-`RADIX_USER_SYSCALLS_OK`, `RADIX_USER_INVALID_PTR_OK`,
-`RADIX_INPUT_POINTER_OK`, `RADIX_INPUT_POINTER_EVENT_OK`,
-`RADIX_VIRTIO_BLK_READ_OK`, `RADIX_EXT2_MOUNT_OK`, `RADIX_ROOTFS_INIT_FOUND`,
-`RADIX_USERMODE_ENTER_OK`, `RADIX_USER_INIT_OK`, `RADIX_USERMODE_EXIT_OK`,
-`RADIX_SLINT_BOOT_SHELL_OK`, `RADIX_SLINT_TERMINAL_LOADING_OK`, and
-`RADIX_SLINT_TERMINAL_READY_OK`. The remaining pieces for a fuller POSIX
+The VM smoke builds `rad-rootfs.ext2`, attaches it as `/dev/vda`, mounts it at
+`/`, loads `/bin/init`, enters CPL3, and checks `RAD_X86_CPU_OK`,
+`RAD_CPP_RUNTIME_OK`, `RAD_MODULE_LIFECYCLE_OK`, `RAD_INT80_OK`,
+`RAD_POSIX_ABI_OK`, `RAD_VM_READY`, `RAD_VM_PAGE_ALLOC_OK`,
+`RAD_USER_VM_ISOLATED_OK`, `RAD_USER_ENTRY_MAP_OK`, `RAD_USER_COPY_OK`,
+`RAD_USER_SYSCALLS_OK`, `RAD_USER_INVALID_PTR_OK`,
+`RAD_INPUT_POINTER_OK`, `RAD_INPUT_POINTER_EVENT_OK`,
+`RAD_VIRTIO_BLK_READ_OK`, `RAD_EXT2_MOUNT_OK`, `RAD_ROOTFS_INIT_FOUND`,
+`RAD_USERMODE_ENTER_OK`, `RAD_USER_INIT_OK`, `RAD_USERMODE_EXIT_OK`,
+`RAD_SLINT_BOOT_SHELL_OK`, `RAD_SLINT_TERMINAL_LOADING_OK`, and
+`RAD_SLINT_TERMINAL_READY_OK`. The remaining pieces for a fuller POSIX
 userland are broader syscall coverage, page-fault driven COW, fork
 address-space cloning, APIC support, interrupts for virtio queues, writes to
 block devices, and a libc-backed init/shell.
@@ -230,7 +230,7 @@ The default target uses Circle `RASPPI=3` with the `aarch64-none-elf-` toolchain
 which is the Circle 64-bit configuration for Raspberry Pi 3-class SoCs including
 Pi Zero 2 W.
 
-## Build RADixKernel Smoke Targets
+## Build RADKernel Smoke Targets
 
 The preferred entrypoint is RADLib's Python/JSON build harness:
 

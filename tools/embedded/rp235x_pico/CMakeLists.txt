@@ -20,15 +20,15 @@ endif()
 
 include("${PICO_SDK_PATH}/pico_sdk_init.cmake")
 
-project(radixkernel_rp235x_smoke C CXX ASM)
+project(radkernel_rp235x_smoke C CXX ASM)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-set(RADIX_OS_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../.." CACHE PATH "Path to RADPx-OS")
+set(RADPX_OS_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../.." CACHE PATH "Path to RADPx-OS")
 if(NOT RADLIB_ROOT)
-    get_filename_component(RADIX_OS_PARENT "${RADIX_OS_ROOT}/.." ABSOLUTE)
-    set(RADLIB_ROOT "${RADIX_OS_PARENT}/RADLib" CACHE PATH "Path to RADLib")
+    get_filename_component(RADPX_OS_PARENT "${RADPX_OS_ROOT}/.." ABSOLUTE)
+    set(RADLIB_ROOT "${RADPX_OS_PARENT}/RADLib" CACHE PATH "Path to RADLib")
 endif()
 
 add_compile_definitions(
@@ -40,11 +40,11 @@ add_compile_definitions(
 
 pico_sdk_init()
 
-set(RADIX_KERNEL_BUILD_STATIC ON CACHE BOOL "" FORCE)
-set(RADIX_KERNEL_BACKEND rp235x_pico CACHE STRING "" FORCE)
+set(RAD_KERNEL_BUILD_STATIC ON CACHE BOOL "" FORCE)
+set(RAD_KERNEL_BACKEND rp235x_pico CACHE STRING "" FORCE)
 set(RADLIB_EMBEDDED ON CACHE BOOL "" FORCE)
 
-add_subdirectory("${RADIX_OS_ROOT}/RADixKernel" "${CMAKE_BINARY_DIR}/RADixKernel")
+add_subdirectory("${RADPX_OS_ROOT}/RADKernel" "${CMAKE_BINARY_DIR}/RADKernel")
 add_subdirectory("${RADLIB_ROOT}/RADCore" "${CMAKE_BINARY_DIR}/RADCore")
 add_subdirectory("${RADLIB_ROOT}/RADDsp" "${CMAKE_BINARY_DIR}/RADDsp")
 add_subdirectory("${RADLIB_ROOT}/RADSettings" "${CMAKE_BINARY_DIR}/RADSettings")
@@ -52,18 +52,18 @@ add_subdirectory("${RADLIB_ROOT}/RADLogging" "${CMAKE_BINARY_DIR}/RADLogging")
 add_subdirectory("${RADLIB_ROOT}/RADSerial" "${CMAKE_BINARY_DIR}/RADSerial")
 add_subdirectory("${RADLIB_ROOT}/RADDevice" "${CMAKE_BINARY_DIR}/RADDevice")
 
-add_executable(radixkernel_rp235x_smoke
+add_executable(radkernel_rp235x_smoke
     main.cpp
 )
 
-target_include_directories(radixkernel_rp235x_smoke PRIVATE
-    "${RADIX_OS_ROOT}/RADixKernel/headers"
-    "${RADIX_OS_ROOT}/RADixKernel/boot"
+target_include_directories(radkernel_rp235x_smoke PRIVATE
+    "${RADPX_OS_ROOT}/RADKernel/headers"
+    "${RADPX_OS_ROOT}/RADKernel/boot"
 )
 
-target_link_libraries(radixkernel_rp235x_smoke
+target_link_libraries(radkernel_rp235x_smoke
     PRIVATE
-        RADixKernel
+        RADKernel
         RADCore
         RADDsp
         RADSettings
@@ -76,6 +76,6 @@ target_link_libraries(radixkernel_rp235x_smoke
         hardware_dma
 )
 
-pico_enable_stdio_usb(radixkernel_rp235x_smoke 0)
-pico_enable_stdio_uart(radixkernel_rp235x_smoke 1)
-pico_add_extra_outputs(radixkernel_rp235x_smoke)
+pico_enable_stdio_usb(radkernel_rp235x_smoke 0)
+pico_enable_stdio_uart(radkernel_rp235x_smoke 1)
+pico_add_extra_outputs(radkernel_rp235x_smoke)

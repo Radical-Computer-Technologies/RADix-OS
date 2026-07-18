@@ -1,7 +1,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <radix/syscalls.h>
+#include <rad/syscalls.h>
 
 #include "auth.h"
 #include "rkconfig.h"
@@ -83,33 +83,33 @@ enum {
 #define RAD_SOCK_DGRAM 2
 #define RAD_IPPROTO_UDP 17
 
-#ifndef RADIX_RKCONFIG_NET_IPV4_A
-#define RADIX_RKCONFIG_NET_IPV4_A 10
-#define RADIX_RKCONFIG_NET_IPV4_B 0
-#define RADIX_RKCONFIG_NET_IPV4_C 2
-#define RADIX_RKCONFIG_NET_IPV4_D 15
+#ifndef RAD_RKCONFIG_NET_IPV4_A
+#define RAD_RKCONFIG_NET_IPV4_A 10
+#define RAD_RKCONFIG_NET_IPV4_B 0
+#define RAD_RKCONFIG_NET_IPV4_C 2
+#define RAD_RKCONFIG_NET_IPV4_D 15
 #endif
 
-#ifndef RADIX_RKCONFIG_NET_NTP_A
-#define RADIX_RKCONFIG_NET_NTP_A 216
-#define RADIX_RKCONFIG_NET_NTP_B 239
-#define RADIX_RKCONFIG_NET_NTP_C 35
-#define RADIX_RKCONFIG_NET_NTP_D 0
+#ifndef RAD_RKCONFIG_NET_NTP_A
+#define RAD_RKCONFIG_NET_NTP_A 216
+#define RAD_RKCONFIG_NET_NTP_B 239
+#define RAD_RKCONFIG_NET_NTP_C 35
+#define RAD_RKCONFIG_NET_NTP_D 0
 #endif
 
-#ifndef RADIX_RKCONFIG_NET_NTP_HOST
-#define RADIX_RKCONFIG_NET_NTP_HOST "time.google.com"
+#ifndef RAD_RKCONFIG_NET_NTP_HOST
+#define RAD_RKCONFIG_NET_NTP_HOST "time.google.com"
 #endif
 
-#ifndef RADIX_RKCONFIG_NET_NTP_PORT
-#define RADIX_RKCONFIG_NET_NTP_PORT 123
+#ifndef RAD_RKCONFIG_NET_NTP_PORT
+#define RAD_RKCONFIG_NET_NTP_PORT 123
 #endif
 
-#ifndef RADIX_RKCONFIG_NET_DNS_A
-#define RADIX_RKCONFIG_NET_DNS_A 10
-#define RADIX_RKCONFIG_NET_DNS_B 0
-#define RADIX_RKCONFIG_NET_DNS_C 2
-#define RADIX_RKCONFIG_NET_DNS_D 3
+#ifndef RAD_RKCONFIG_NET_DNS_A
+#define RAD_RKCONFIG_NET_DNS_A 10
+#define RAD_RKCONFIG_NET_DNS_B 0
+#define RAD_RKCONFIG_NET_DNS_C 2
+#define RAD_RKCONFIG_NET_DNS_D 3
 #endif
 
 enum {
@@ -225,7 +225,7 @@ typedef struct {
 } radsh_log_entry_t;
 
 static long sc(long n, long a, long b, long c, long d, long e, long f) {
-    return radix_syscall6(n, a, b, c, d, e, f);
+    return rad_syscall6(n, a, b, c, d, e, f);
 }
 
 static size_t s_len(const char *s) {
@@ -439,12 +439,12 @@ static int cmd_ls(int argc, char **argv, int outfd) {
         }
     }
     sc(SYS_CLOSE, fd, 0, 0, 0, 0, 0);
-    if (seen) marker_fd("RADIX_USER_RADSH_LS_OK");
+    if (seen) marker_fd("RAD_USER_RADSH_LS_OK");
     if (n == 0 && !seen) {
         puts_fd(outfd, "ls: empty directory listing: ");
         puts_fd(outfd, path);
         puts_fd(outfd, "\n");
-        marker_fd("RADIX_USER_RADSH_LS_EMPTY");
+        marker_fd("RAD_USER_RADSH_LS_EMPTY");
     }
     return n < 0 ? (int)n : 0;
 }
@@ -603,13 +603,13 @@ static int cmd_radservice(int argc, char **argv, int outfd) {
 static int cmd_logread(int argc, char **argv, int outfd) {
     char path[128];
     if (argc < 2) {
-        s_copy(path, sizeof(path), "/var/log/radix/init.log");
+        s_copy(path, sizeof(path), "/var/log/rad/init.log");
     } else if (s_eq(argv[1], "kernel")) {
-        s_copy(path, sizeof(path), "/var/log/radix/rkernel.log");
+        s_copy(path, sizeof(path), "/var/log/rad/rkernel.log");
     } else if (s_eq(argv[1], "init")) {
-        s_copy(path, sizeof(path), "/var/log/radix/init.log");
+        s_copy(path, sizeof(path), "/var/log/rad/init.log");
     } else {
-        s_copy(path, sizeof(path), "/var/log/radix/");
+        s_copy(path, sizeof(path), "/var/log/rad/");
         s_cat(path, sizeof(path), argv[1]);
         s_cat(path, sizeof(path), ".log");
     }
@@ -646,9 +646,9 @@ static void trim_line(char *text) {
 }
 
 static void read_hostname(char *buffer, size_t size) {
-    if (read_file_text("/etc/hostname", buffer, size) <= 0) s_copy(buffer, size, "radix");
+    if (read_file_text("/etc/hostname", buffer, size) <= 0) s_copy(buffer, size, "rad");
     trim_line(buffer);
-    if (!buffer[0]) s_copy(buffer, size, "radix");
+    if (!buffer[0]) s_copy(buffer, size, "rad");
 }
 
 static void read_username(char *buffer, size_t size) {
@@ -702,14 +702,14 @@ static int cmd_passwd(int outfd) {
     }
     password[pos] = 0;
     char hash[65];
-    radix_auth_password_hash("runtime-root", password, hash);
+    rad_auth_password_hash("runtime-root", password, hash);
     char text[256];
     s_copy(text, sizeof(text), "root:0:0:runtime-root:");
     s_cat(text, sizeof(text), hash);
     s_cat(text, sizeof(text), ":/home/root:/bin/rash\n");
     int status = write_file_text("/etc/passwords", text);
     if (status == 0) {
-        line_fd(outfd, "RADIX_PASSWD_UPDATE_OK");
+        line_fd(outfd, "RAD_PASSWD_UPDATE_OK");
         line_fd(outfd, "password updated");
     }
     return status;
@@ -805,7 +805,7 @@ static int cmd_pkill(int argc, char **argv, int outfd) {
 
 static int cmd_clear(void) {
     puts_fd(1, "\x1b[2J\x1b[H");
-    marker_fd("RADIX_RASH_CLEAR_OK");
+    marker_fd("RAD_RASH_CLEAR_OK");
     return 0;
 }
 
@@ -815,7 +815,7 @@ static int cmd_tui_smoke(void) {
     sc(SYS_IOCTL, 0, RAD_DEVICE_IOCTL_TTY_GET_MODE, (long)&old_mode, 0, 0, 0);
     sc(SYS_IOCTL, 0, RAD_DEVICE_IOCTL_TTY_SET_MODE, (long)&raw_mode, 0, 0, 0);
     puts_fd(1, "\x1b[2J\x1b[H\x1b[95m+------------------------------+\n");
-    puts_fd(1, "| \x1b[97mRADix TUI smoke menu\x1b[95m        |\n");
+    puts_fd(1, "| \x1b[97mRAD TUI smoke menu\x1b[95m        |\n");
     puts_fd(1, "| \x1b[92m> Terminal theme\x1b[95m             |\n");
     puts_fd(1, "|   Package selection          |\n");
     puts_fd(1, "|   ncurses readiness          |\n");
@@ -829,8 +829,8 @@ static int cmd_tui_smoke(void) {
     }
     sc(SYS_IOCTL, 0, RAD_DEVICE_IOCTL_TTY_SET_MODE, (long)&old_mode, 0, 0, 0);
     puts_fd(1, "\x1b[2J\x1b[H");
-    marker_fd("RADIX_TTY_RAW_MODE_OK");
-    marker_fd("RADIX_TUI_SMOKE_OK");
+    marker_fd("RAD_TTY_RAW_MODE_OK");
+    marker_fd("RAD_TUI_SMOKE_OK");
     return 0;
 }
 
@@ -977,7 +977,7 @@ static int cmd_tput(int argc, char **argv, int outfd) {
         puts_fd(outfd, ";");
         print_num(outfd, (uint64_t)col);
         puts_fd(outfd, "H");
-        marker_fd("RADIX_TPUT_CUP_OK");
+        marker_fd("RAD_TPUT_CUP_OK");
         return 0;
     }
     if (s_eq(argv[1], "civis")) {
@@ -1171,10 +1171,10 @@ static int dns_lookup_a_radsh(const char *name, radsh_ipv4_t *out) {
     zero_mem(&dns, sizeof(dns));
     dns.family = RAD_AF_INET;
     dns.port = 53;
-    dns.address.bytes[0] = RADIX_RKCONFIG_NET_DNS_A;
-    dns.address.bytes[1] = RADIX_RKCONFIG_NET_DNS_B;
-    dns.address.bytes[2] = RADIX_RKCONFIG_NET_DNS_C;
-    dns.address.bytes[3] = RADIX_RKCONFIG_NET_DNS_D;
+    dns.address.bytes[0] = RAD_RKCONFIG_NET_DNS_A;
+    dns.address.bytes[1] = RAD_RKCONFIG_NET_DNS_B;
+    dns.address.bytes[2] = RAD_RKCONFIG_NET_DNS_C;
+    dns.address.bytes[3] = RAD_RKCONFIG_NET_DNS_D;
     long sent = sc(SYS_SENDTO, fd, (long)query, qlen, 0, (long)&dns, sizeof(dns));
     if (sent != (long)qlen) {
         sc(SYS_CLOSE, fd, 0, 0, 0, 0, 0);
@@ -1282,8 +1282,8 @@ static int cmd_ntpdate(int argc, char **argv, int outfd) {
         query_only = 1;
         ++argi;
     }
-    const char *host = argc > argi ? argv[argi++] : RADIX_RKCONFIG_NET_NTP_HOST;
-    long port_value = argc > argi ? to_long(argv[argi], RADIX_RKCONFIG_NET_NTP_PORT) : RADIX_RKCONFIG_NET_NTP_PORT;
+    const char *host = argc > argi ? argv[argi++] : RAD_RKCONFIG_NET_NTP_HOST;
+    long port_value = argc > argi ? to_long(argv[argi], RAD_RKCONFIG_NET_NTP_PORT) : RAD_RKCONFIG_NET_NTP_PORT;
     if (port_value <= 0 || port_value > 65535) return -2;
 
     radsh_ipv4_t server_ip;
@@ -1311,10 +1311,10 @@ static int cmd_ntpdate(int argc, char **argv, int outfd) {
     zero_mem(&local, sizeof(local));
     local.family = RAD_AF_INET;
     local.port = 49124;
-    local.address.bytes[0] = RADIX_RKCONFIG_NET_IPV4_A;
-    local.address.bytes[1] = RADIX_RKCONFIG_NET_IPV4_B;
-    local.address.bytes[2] = RADIX_RKCONFIG_NET_IPV4_C;
-    local.address.bytes[3] = RADIX_RKCONFIG_NET_IPV4_D;
+    local.address.bytes[0] = RAD_RKCONFIG_NET_IPV4_A;
+    local.address.bytes[1] = RAD_RKCONFIG_NET_IPV4_B;
+    local.address.bytes[2] = RAD_RKCONFIG_NET_IPV4_C;
+    local.address.bytes[3] = RAD_RKCONFIG_NET_IPV4_D;
     long bind_status = sc(SYS_BIND, fd, (long)&local, sizeof(local), 0, 0, 0);
     if (bind_status < 0) {
         sc(SYS_CLOSE, fd, 0, 0, 0, 0, 0);
@@ -1400,7 +1400,7 @@ static int cmd_ntpdate(int argc, char **argv, int outfd) {
     puts_fd(outfd, " unix "); print_num(outfd, unix_seconds);
     puts_fd(outfd, query_only ? " query" : " synced");
     puts_fd(outfd, "\n");
-    marker_fd("RADIX_RASH_NTPDATE_OK");
+    marker_fd("RAD_RASH_NTPDATE_OK");
     return 0;
 }
 
@@ -1470,7 +1470,7 @@ static int run_command(int argc, char **argv, int outfd, int infd) {
     if (s_eq(argv[0], "id")) return cmd_id(outfd);
     if (s_eq(argv[0], "whoami")) { char user[32]; read_username(user, sizeof(user)); line_fd(outfd, user); return 0; }
     if (s_eq(argv[0], "hostname")) { char host[64]; read_hostname(host, sizeof(host)); line_fd(outfd, host); return 0; }
-    if (s_eq(argv[0], "uname")) { line_fd(outfd, "RADPx"); return 0; }
+    if (s_eq(argv[0], "uname")) { line_fd(outfd, "RADPx-OS"); return 0; }
     if (s_eq(argv[0], "date")) return cmd_date(outfd);
     if (s_eq(argv[0], "net")) return cmd_net(outfd);
     if (s_eq(argv[0], "ntpdate")) return cmd_ntpdate(argc, argv, outfd);
@@ -1498,7 +1498,7 @@ static int run_command(int argc, char **argv, int outfd, int infd) {
         line_fd(outfd, "HOME=/home/root");
         line_fd(outfd, "USER=root");
         line_fd(outfd, "SHELL=/bin/rash");
-        line_fd(outfd, "TERM=radix");
+        line_fd(outfd, "TERM=rad");
         return 0;
     }
     if (s_eq(argv[0], "true")) return 0;
@@ -1578,7 +1578,7 @@ static int execute_line(char *line) {
     if (right_in != pipefd[0] && right_in != 0) sc(SYS_CLOSE, right_in, 0, 0, 0, 0, 0);
     if (right_out != 1) sc(SYS_CLOSE, right_out, 0, 0, 0, 0, 0);
     sc(SYS_CLOSE, pipefd[0], 0, 0, 0, 0, 0);
-    marker_fd("RADIX_RASH_PIPE_OK");
+    marker_fd("RAD_RASH_PIPE_OK");
     return right_status;
 }
 
@@ -1590,7 +1590,7 @@ static int run_script_file(const char *path) {
     sc(SYS_CLOSE, fd, 0, 0, 0, 0, 0);
     if (n < 0) return (int)n;
     text[n] = 0;
-    line_fd(1, "RADIX_USER_ARGV_ENVP_OK");
+    line_fd(1, "RAD_USER_ARGV_ENVP_OK");
     int last_status = 0;
     char *line = text;
     while (*line) {
@@ -1604,55 +1604,55 @@ static int run_script_file(const char *path) {
         }
         line = next;
     }
-    line_fd(1, "RADIX_USER_RADSH_EXIT_OK");
+    line_fd(1, "RAD_USER_RADSH_EXIT_OK");
     return last_status;
 }
 
 static int selftest(void) {
     if (sc(SYS_GETPID, 0, 0, 0, 0, 0, 0) < 1) {
-        line_fd(1, "RADIX_USER_RADSH_GETPID_FAIL");
+        line_fd(1, "RAD_USER_RADSH_GETPID_FAIL");
         return 1;
     }
     char cwd[64];
     if (sc(SYS_GETCWD, (long)cwd, sizeof(cwd), 0, 0, 0, 0) < 0) {
-        line_fd(1, "RADIX_USER_RADSH_GETCWD_FAIL");
+        line_fd(1, "RAD_USER_RADSH_GETCWD_FAIL");
         return 1;
     }
     long dir = sc(SYS_OPEN, (long)"/bin", O_READ | O_DIRECTORY, 0, 0, 0, 0);
     if (dir < 0) {
-        line_fd(1, "RADIX_USER_RADSH_OPENDIR_FAIL");
+        line_fd(1, "RAD_USER_RADSH_OPENDIR_FAIL");
         return 1;
     }
     radsh_dirent_t ent;
     long dents = sc(SYS_GETDENTS, dir, (long)&ent, 1, 0, 0, 0);
     if (dents < 0) {
-        line_fd(1, "RADIX_USER_RADSH_GETDENTS_FAIL");
+        line_fd(1, "RAD_USER_RADSH_GETDENTS_FAIL");
         return 1;
     }
     if (dents == 0) {
-        line_fd(1, "RADIX_USER_RADSH_GETDENTS_EMPTY_FAIL");
+        line_fd(1, "RAD_USER_RADSH_GETDENTS_EMPTY_FAIL");
         return 1;
     }
     sc(SYS_CLOSE, dir, 0, 0, 0, 0, 0);
-    line_fd(1, "RADIX_USER_RADSH_GETDENTS_OK");
-    line_fd(1, "RADIX_USER_LINUX_SYSCALL_ABI_OK");
-    line_fd(1, "RADIX_USER_RADSH_BOOT_OK");
-    line_fd(1, "RADIX_USER_RADSH_COMMANDS_OK");
-    if (sc(SYS_GETUID, 0, 0, 0, 0, 0, 0) == 0) line_fd(1, "RADIX_UID_ROOT_OK");
+    line_fd(1, "RAD_USER_RADSH_GETDENTS_OK");
+    line_fd(1, "RAD_USER_LINUX_SYSCALL_ABI_OK");
+    line_fd(1, "RAD_USER_RADSH_BOOT_OK");
+    line_fd(1, "RAD_USER_RADSH_COMMANDS_OK");
+    if (sc(SYS_GETUID, 0, 0, 0, 0, 0, 0) == 0) line_fd(1, "RAD_UID_ROOT_OK");
     static char cow = 'P';
     long child = sc(SYS_FORK, 0, 0, 0, 0, 0, 0);
     if (child == 0) {
         cow = 'C';
-        line_fd(1, "RADIX_USER_FORK_CHILD_OK");
-        line_fd(1, "RADIX_USER_FORK_FD_INHERIT_OK");
+        line_fd(1, "RAD_USER_FORK_CHILD_OK");
+        line_fd(1, "RAD_USER_FORK_FD_INHERIT_OK");
         sc(SYS_EXIT, 7, 0, 0, 0, 0, 0);
     }
     if (child < 0) return 1;
-    line_fd(1, "RADIX_USER_FORK_OK");
-    line_fd(1, "RADIX_USER_FORK_WAIT_OK");
-    line_fd(1, "RADIX_USER_PROCESS_WAIT_OK");
+    line_fd(1, "RAD_USER_FORK_OK");
+    line_fd(1, "RAD_USER_FORK_WAIT_OK");
+    line_fd(1, "RAD_USER_PROCESS_WAIT_OK");
     if (cow != 'P') return 1;
-    line_fd(1, "RADIX_USER_COW_PARENT_ISOLATED_OK");
+    line_fd(1, "RAD_USER_COW_PARENT_ISOLATED_OK");
     char *args[2];
     args[0] = "/bin/test.sh";
     args[1] = 0;
@@ -1804,7 +1804,7 @@ static int append_to_line(char *line, size_t size, size_t *pos, const char *text
 }
 
 static int complete_line(char *line, size_t size, size_t *pos) {
-#if RADIX_RKCONFIG_TERMINAL_AUTOCOMPLETE
+#if RAD_RKCONFIG_TERMINAL_AUTOCOMPLETE
     size_t start = *pos;
     while (start > 0 && line[start - 1] != ' ' && line[start - 1] != '\t') --start;
     int command_token = 1;
@@ -1833,12 +1833,12 @@ static int complete_line(char *line, size_t size, size_t *pos) {
         for (size_t i = prefix_len; i < common && j + 1 < sizeof(suffix); ++i) suffix[j++] = items[0].text[i];
         suffix[j] = 0;
         if (!append_to_line(line, size, pos, suffix)) return 0;
-        marker_fd(command_token ? "RADIX_RASH_AUTOCOMPLETE_OK" : "RADIX_RASH_AUTOCOMPLETE_PATH_OK");
+        marker_fd(command_token ? "RAD_RASH_AUTOCOMPLETE_OK" : "RAD_RASH_AUTOCOMPLETE_PATH_OK");
     }
     if (count == 1) {
         if (items[0].is_directory) append_to_line(line, size, pos, "/");
         else if (command_token) append_to_line(line, size, pos, " ");
-        marker_fd(command_token ? "RADIX_RASH_AUTOCOMPLETE_OK" : "RADIX_RASH_AUTOCOMPLETE_PATH_OK");
+        marker_fd(command_token ? "RAD_RASH_AUTOCOMPLETE_OK" : "RAD_RASH_AUTOCOMPLETE_PATH_OK");
         return 1;
     }
     if (common <= prefix_len) {
@@ -1894,7 +1894,7 @@ static int read_interactive_line(char *line, size_t size, char history[8][256], 
                 s_copy(line, size, history[*history_cursor]);
                 pos = s_len(line);
                 redraw_prompt_line(line);
-                marker_fd("RADIX_RASH_HISTORY_OK");
+                marker_fd("RAD_RASH_HISTORY_OK");
             } else if (seq2 == 'B' && history_count > 0) {
                 if (*history_cursor + 1 < history_count) {
                     ++(*history_cursor);
@@ -1931,16 +1931,16 @@ int radsh_main(long argc, char **argv, char **envp) {
         if (s_eq(base, "tui-smoke")) return cmd_tui_smoke();
     }
     if (argc > 1) return run_script_file(argv[1]);
-    line_fd(1, "RADPx rash ready");
-    line_fd(1, "RADIX_TERMINAL_ANSI_OK");
-    marker_fd("RADIX_TERMINAL_THEME_OK");
-    marker_fd("RADIX_TERMINAL_FONT_PSF_OK");
-#if RADIX_RKCONFIG_TERMINAL_AUTOCOMPLETE
-    marker_fd("RADIX_RKCONFIG_AUTOCOMPLETE_OK");
+    line_fd(1, "RADPx-OS rash ready");
+    line_fd(1, "RAD_TERMINAL_ANSI_OK");
+    marker_fd("RAD_TERMINAL_THEME_OK");
+    marker_fd("RAD_TERMINAL_FONT_PSF_OK");
+#if RAD_RKCONFIG_TERMINAL_AUTOCOMPLETE
+    marker_fd("RAD_RKCONFIG_AUTOCOMPLETE_OK");
     {
         int autocomplete_probe_count = 0;
         collect_path_completions("/bi", g_completion_probe_items, &autocomplete_probe_count);
-        if (autocomplete_probe_count > 0) marker_fd("RADIX_RASH_AUTOCOMPLETE_PATH_OK");
+        if (autocomplete_probe_count > 0) marker_fd("RAD_RASH_AUTOCOMPLETE_PATH_OK");
     }
 #endif
     char line[256];
@@ -1953,7 +1953,7 @@ int radsh_main(long argc, char **argv, char **envp) {
     sc(SYS_IOCTL, 0, RAD_DEVICE_IOCTL_TTY_SET_MODE, (long)&raw_mode, 0, 0, 0);
     radsh_winsize_t winsize;
     if (sc(SYS_IOCTL, 0, RAD_DEVICE_IOCTL_TTY_GET_WINSIZE, (long)&winsize, 0, 0, 0) >= 0) {
-        marker_fd("RADIX_TTY_IOCTL_WINSIZE_OK");
+        marker_fd("RAD_TTY_IOCTL_WINSIZE_OK");
     }
     for (;;) {
         write_prompt();

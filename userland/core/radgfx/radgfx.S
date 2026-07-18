@@ -127,11 +127,11 @@ shm_name:
 compositor_path:
     .asciz "/dev/compositor0"
 pattern_message:
-    .ascii "RADIX_SHM_USER_PATTERN_OK\n"
+    .ascii "RAD_SHM_USER_PATTERN_OK\n"
 pattern_message_end:
 done_message:
-    .ascii "RADIX_SHM_PROCESS_SUBMIT_OK\n"
+    .ascii "RAD_SHM_PROCESS_SUBMIT_OK\n"
 done_message_end:
 fail_message:
-    .ascii "RADIX_SHM_PROCESS_FAIL\n"
+    .ascii "RAD_SHM_PROCESS_FAIL\n"
 fail_message_end:
