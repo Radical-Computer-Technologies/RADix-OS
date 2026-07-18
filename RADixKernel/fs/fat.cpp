@@ -1,4 +1,4 @@
-#include "x86_fat.h"
+#include "fat.h"
 
 #include <stddef.h>
 #include <stdint.h>

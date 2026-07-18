@@ -2,9 +2,9 @@
 #include <radixkernel/radixkernel.h>
 
 #include "x86_cpu.h"
-#include "x86_ext2.h"
-#include "x86_ext4.h"
-#include "x86_fat.h"
+#include "ext2.h"
+#include "ext4.h"
+#include "fat.h"
 #include "x86_storage.h"
 #include "x86_user.h"
 #include "x86_vm.h"

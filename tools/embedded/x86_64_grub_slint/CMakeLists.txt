@@ -189,6 +189,7 @@ set(RADIX_UPSTREAM_VIM_SOURCE "$ENV{RADIX_UPSTREAM_VIM_SOURCE}" CACHE PATH "Path
 
 set(RADIX_OS_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../.." CACHE PATH "Path to RADix-OS")
 set(RADIX_X86_PLATFORM_SOURCE_DIR "${RADIX_OS_ROOT}/RADixKernel/platforms/x86_64")
+set(RADIX_FS_SOURCE_DIR "${RADIX_OS_ROOT}/RADixKernel/fs")
 set(RADIX_SERVICE_MANAGER_SOURCE_DIR "${RADIX_OS_ROOT}/services/RADServiceManager")
 set(RADIX_NETWORK_SERVICE_SOURCE_DIR "${RADIX_OS_ROOT}/services/RADNetwork")
 set(RADIX_DNS_RESOLVER_SOURCE_DIR "${RADIX_OS_ROOT}/services/RADDNSResolver")
@@ -283,9 +284,9 @@ add_executable(radixkernel_x86_64_grub_slint
     "${RADIX_X86_PLATFORM_SOURCE_DIR}/x86_cpu.cpp"
     "${RADIX_X86_PLATFORM_SOURCE_DIR}/x86_vm.cpp"
     "${RADIX_X86_PLATFORM_SOURCE_DIR}/x86_storage.cpp"
-    "${RADIX_X86_PLATFORM_SOURCE_DIR}/x86_ext2.cpp"
-    "${RADIX_X86_PLATFORM_SOURCE_DIR}/x86_ext4.cpp"
-    "${RADIX_X86_PLATFORM_SOURCE_DIR}/x86_fat.cpp"
+    "${RADIX_FS_SOURCE_DIR}/ext2.cpp"
+    "${RADIX_FS_SOURCE_DIR}/ext4.cpp"
+    "${RADIX_FS_SOURCE_DIR}/fat.cpp"
     "${RADIX_X86_PLATFORM_SOURCE_DIR}/x86_user.cpp"
     "${RADIX_X86_PLATFORM_SOURCE_DIR}/hal_x86_64.cpp"
     "${RADIX_X86_PLATFORM_SOURCE_DIR}/runtime.cpp"
@@ -297,6 +298,7 @@ add_executable(radixkernel_x86_64_grub_slint
 target_include_directories(radixkernel_x86_64_grub_slint PRIVATE
     "${RADIX_OS_ROOT}"
     "${RADIX_X86_PLATFORM_SOURCE_DIR}"
+    "${RADIX_FS_SOURCE_DIR}"
     "${RADIX_OS_ROOT}/RADixKernel/headers"
     "${RADIX_OS_ROOT}/RADixKernel/boot"
     "${RADIX_RKCONFIG_DIR}"

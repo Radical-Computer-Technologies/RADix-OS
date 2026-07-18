@@ -146,8 +146,8 @@ radixkernel_runtime.o: $(RADIX_OS_ROOT)/RADixKernel/core/RADixKernel_runtime.cpp
 radixkernel_overlay.o: $(RADIX_OS_ROOT)/RADixKernel/subsystems/RADixOverlayRuntime.cpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
 
-radixkernel_ext4.o: $(RADIX_OS_ROOT)/RADixKernel/platforms/x86_64/x86_ext4.cpp
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -I$(RADIX_OS_ROOT)/RADixKernel/platforms/x86_64 -c -o $@ $<
+radixkernel_ext4.o: $(RADIX_OS_ROOT)/RADixKernel/fs/ext4.cpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -I$(RADIX_OS_ROOT)/RADixKernel/fs -c -o $@ $<
 
 radixkernel_hal_zynqmp.o: $(RADIX_OS_ROOT)/RADixKernel/platforms/a53/zynqmp/radixkernel_hal_zynqmp.cpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<

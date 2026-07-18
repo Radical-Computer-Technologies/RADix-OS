@@ -1,4 +1,4 @@
-#include "x86_ext2.h"
+#include "ext2.h"
 
 #include <radixkernel/radixkernel.h>
 
