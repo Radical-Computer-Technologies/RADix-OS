@@ -10,6 +10,7 @@ extern "C" uintptr_t radix_zuboard_boot_argument;
 extern "C" void radix_zuboard_entry(rad_boot_handoff_t *incoming_handoff);
 extern "C" void rad_zynqmp_bind_handoff(const rad_boot_handoff_t *handoff);
 extern "C" rad_status_t rad_zynqmp_preempt_init(void);
+extern "C" rad_status_t rad_zynqmp_gem_rx_irq_selftest(void);
 extern "C" rad_status_t rad_zynqmp_smp_release(void);
 extern "C" uint64_t rad_hal_time_micros(void);
 extern "C" void rad_hal_worker_wake(void);
@@ -225,6 +226,9 @@ extern "C" void radix_zuboard_entry(rad_boot_handoff_t *incoming_handoff) {
     rad_a53_note_boot_normalized(0u, static_cast<uintptr_t>(radix_zuboard_boot_argument), 1u);
     rad_a53_platform_init();
     if (rad_zynqmp_preempt_init() != RAD_STATUS_OK) marker("RADIX_ZUBOARD_TIMER_IRQ_FAIL");
+    // Now that the GIC + CPU interrupts are live, bring up interrupt-driven GEM RX
+    // and validate it (loopback frame -> RX-complete IRQ through GIC SPI 57).
+    if (rad_zynqmp_gem_rx_irq_selftest() != RAD_STATUS_OK) marker("RADIX_GEM_RX_IRQ_FAIL");
     const int smp_online = rad_zynqmp_smp_release() == RAD_STATUS_OK;
 
     marker("RADIX_ZYNQMP_ENTRY_OK");

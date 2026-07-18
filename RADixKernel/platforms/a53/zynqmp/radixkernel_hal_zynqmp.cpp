@@ -534,6 +534,21 @@ extern "C" rad_status_t rad_hal_irq_disable(uint32_t irq) {
     return RAD_STATUS_OK;
 }
 
+// Configure a shared peripheral interrupt (INTID >= 32) in the GICv2 distributor:
+// priority, CPU target mask, and level-sensitive trigger. SGIs/PPIs (INTID < 32)
+// are banked and configured with the timer; this is for SPIs such as the Cadence
+// GEM (INTID 57 on QEMU's xlnx-zynqmp). rad_irq_enable() still writes ISENABLER.
+extern "C" rad_status_t rad_zynqmp_gic_configure_spi(uint32_t intid, uint8_t priority, uint8_t cpu_target) {
+    if (intid < 32u || intid >= 1020u) return RAD_STATUS_INVALID_ARGUMENT;
+    write8(gicd(0x400u + intid), priority);   // GICD_IPRIORITYR[intid]
+    write8(gicd(0x800u + intid), cpu_target);  // GICD_ITARGETSR[intid]  (CPU mask)
+    // GICD_ICFGR: 2 bits per INTID; clearing the high bit selects level-sensitive.
+    const uintptr_t icfgr = gicd(0xc00u + 4u * (intid / 16u));
+    const uint32_t shift = 2u * (intid % 16u);
+    write32(icfgr, read32(icfgr) & ~(0x2u << shift));
+    return RAD_STATUS_OK;
+}
+
 // Strong scheduler hooks: this target preempts (bcm283x must not claim this,
 // so these live in the zynqmp HAL rather than the shared a53 platform file).
 extern "C" int rad_arch_preemption_supported(void) {

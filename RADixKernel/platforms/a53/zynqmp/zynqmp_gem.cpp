@@ -42,9 +42,21 @@ constexpr uintptr_t RegRxQBase = 0x018u;  // RX buffer-descriptor queue base
 constexpr uintptr_t RegTxQBase = 0x01cu;  // TX buffer-descriptor queue base
 constexpr uintptr_t RegRxStatus = 0x020u; // RX status (write-1-to-clear)
 constexpr uintptr_t RegTxStatus = 0x014u; // TX status (write-1-to-clear)
-constexpr uintptr_t RegIntDisable = 0x02cu; // Interrupt disable
+constexpr uintptr_t RegIntStatus = 0x024u; // Interrupt status (write-1-to-clear)
+constexpr uintptr_t RegIntEnable = 0x028u; // Interrupt enable  (write-1-to-set)
+constexpr uintptr_t RegIntDisable = 0x02cu; // Interrupt disable (write-1-to-mask)
 constexpr uintptr_t RegSpAddr1Lo = 0x088u;  // Specific address 1, low  (MAC[0..3])
 constexpr uintptr_t RegSpAddr1Hi = 0x08cu;  // Specific address 1, high (MAC[4..5])
+
+// GEM interrupt bits (ISR/IER/IDR share the layout). Bit 1 = frame received.
+constexpr uint32_t GemIntRxComplete = 1u << 1u;
+// RX status: bit 1 = frame received (write-1-to-clear).
+constexpr uint32_t RxStatusFrameReceived = 1u << 1u;
+// GEM0 GIC interrupt ID. QEMU's xlnx-zynqmp uses gem_intr[0]=57 as an SPI index
+// (gic_spi[57]); SPIs start at INTID 32, so the actual GIC INTID is 57 + 32 = 89.
+constexpr uint32_t GemIntid = 89u;
+
+extern "C" rad_status_t rad_zynqmp_gic_configure_spi(uint32_t intid, uint8_t priority, uint8_t cpu_target);
 
 // NWCTRL bits.
 constexpr uint32_t NwCtrlLoopbackLocal = 1u << 1u;
@@ -106,6 +118,13 @@ alignas(64) GemDescriptor g_tx_ring[TxRingCount];
 alignas(64) uint8_t g_rx_buffers[RxRingCount][RxBufferBytes];
 alignas(64) uint8_t g_tx_buffer[FrameMax];
 GemDevice g_gem;
+
+// RX interrupt state. The handler runs in IRQ context and only masks + flags;
+// the consumer (gem_receive_frame) drains descriptors and re-arms. So no
+// descriptor state is touched from IRQ context -> no races with the poller.
+volatile uint32_t g_gem_rx_irq_enabled = 0u; // driver armed the RX-complete IRQ
+volatile uint32_t g_gem_rx_irq_seen = 0u;    // at least one RX IRQ has fired
+volatile uint64_t g_gem_rx_irq_count = 0u;
 
 // ---------------------------------------------------------------------------
 // MMIO + DMA cache maintenance helpers.
@@ -213,6 +232,11 @@ intptr_t gem_receive_frame(GemDevice *device, void *data, size_t length) {
 
     ++device->rx_index;
     ++device->rx_packets;
+    // A descriptor was freed. If interrupt-driven RX is armed, the handler masked
+    // RX-complete when it fired; re-enable it so the next inbound frame
+    // re-interrupts (level-sensitive: if one is already pending it fires again
+    // immediately, handler re-masks, no storm).
+    if (g_gem_rx_irq_enabled) gem_write(device, RegIntEnable, GemIntRxComplete);
     return static_cast<intptr_t>(count);
 }
 
@@ -371,6 +395,23 @@ void gem_stack_traffic_selftest(GemDevice *device) {
     if (device->rx_packets > rx0) rad_debug_marker("RADIX_GEM_STACK_RX_OK");
 }
 
+// RX-complete interrupt handler (GIC SPI 57). Runs in IRQ context, so it stays
+// minimal and never touches the descriptor ring (the poller owns that -- keeping
+// them apart avoids any IRQ/thread race). It acknowledges the GEM interrupt,
+// masks RX-complete so nothing re-fires before the frame is drained, and records
+// liveness. gem_receive_frame re-arms RX-complete once it frees a descriptor.
+void gem_rx_irq_handler(uint32_t, void *arg) {
+    auto *device = static_cast<GemDevice *>(arg);
+    const uint32_t status = gem_read(device, RegIntStatus);
+    gem_write(device, RegIntStatus, status); // write-1-clear the asserted bits
+    if (status & GemIntRxComplete) {
+        gem_write(device, RegIntDisable, GemIntRxComplete);      // mask until drained
+        gem_write(device, RegRxStatus, RxStatusFrameReceived);   // clear RX status
+        g_gem_rx_irq_seen = 1u;
+        __atomic_add_fetch(&g_gem_rx_irq_count, 1u, __ATOMIC_RELAXED);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // rad_device_ops_t.ioctl contract (mirrors x86 net_ioctl).
 // ---------------------------------------------------------------------------
@@ -452,6 +493,53 @@ rad_status_t gem_net_ioctl(void *context, uint32_t request, void *argument) {
 // Public entry point: probe, self-test, and register "/dev/net0".
 // Called from rad_hal_register_default_devices during kernel bring-up.
 // ---------------------------------------------------------------------------
+// Bring up interrupt-driven RX and validate it end to end. Called from the board
+// boot AFTER the GIC and CPU interrupts are live (rad_zynqmp_preempt_init). Routes
+// GEM0's SPI to CPU0, registers the handler, arms RX-complete at the GEM, then
+// local-loopbacks a frame so a receive raises a real interrupt through the GIC.
+// Leaves the RX interrupt armed (the poller re-arms after each drain), so RX is
+// interrupt-driven from here on with the polled path as fallback.
+extern "C" rad_status_t rad_zynqmp_gem_rx_irq_selftest(void) {
+    GemDevice *device = &g_gem;
+    if (!device->ready) return RAD_STATUS_NOT_INITIALIZED;
+    rad_zynqmp_gic_configure_spi(GemIntid, 0xa0u, 0x01u); // prio below timer, CPU0
+    const rad_status_t reg = rad_irq_register(GemIntid, "gem0-rx", gem_rx_irq_handler, device);
+    if (reg != RAD_STATUS_OK) return reg;
+    (void)rad_irq_enable(GemIntid);
+    g_gem_rx_irq_seen = 0u;
+    g_gem_rx_irq_enabled = 1u;
+    gem_write(device, RegIntStatus, 0xffffffffu);       // clear any stale status
+    gem_write(device, RegIntEnable, GemIntRxComplete);  // arm RX-complete
+
+    // Deterministic trigger: local-loopback a tagged frame back into our own MAC.
+    gem_write(device, RegNwCtrl, gem_read(device, RegNwCtrl) | NwCtrlLoopbackLocal);
+    uint8_t frame[64];
+    memset(frame, 0, sizeof(frame));
+    memset(&frame[0], 0xff, 6);
+    memcpy(&frame[6], device->mac.bytes, 6);
+    frame[12] = 0x88; frame[13] = 0xb5;
+    static const char kTag[] = "RADIX-GEM-RXIRQ";
+    memcpy(&frame[14], kTag, sizeof(kTag));
+    (void)gem_send_frame(device, frame, sizeof(frame));
+
+    rad_status_t result = RAD_STATUS_TIMEOUT;
+    for (uint32_t i = 0; i < 200000u && !g_gem_rx_irq_seen; ++i) {
+        asm volatile("" ::: "memory");
+        rad_hal_sleep_us(1);
+    }
+    gem_write(device, RegNwCtrl, gem_read(device, RegNwCtrl) & ~NwCtrlLoopbackLocal);
+    if (g_gem_rx_irq_seen) {
+        rad_debug_marker("RADIX_GEM_RX_IRQ_OK");
+        result = RAD_STATUS_OK;
+    }
+    // Drain the loopback frame (also re-arms RX-complete for steady-state use).
+    uint8_t scratch[FrameMax];
+    while (gem_receive_frame(device, scratch, sizeof(scratch)) >= 0) {}
+    device->rx_packets = 0u;
+    device->tx_packets = 0u;
+    return result;
+}
+
 extern "C" rad_status_t rad_zynqmp_gem_init(void) {
     GemDevice *device = &g_gem;
     memset(device, 0, sizeof(*device));

@@ -27,6 +27,9 @@ RADIX_AARCH64_MMU_ON_OK
 RADIX_AARCH64_EXCEPTION_VECTORS_OK
 # Parity Stage 2a (2026-07-17): GICv2 + CNTP generic timer at 250 Hz.
 RADIX_TIMER_IRQ_OK
+# Interrupt-driven GEM RX: once the GIC + CPU IRQs are live, a local-loopback
+# frame raises RX-complete through GIC SPI (INTID 89) to the handler.
+RADIX_GEM_RX_IRQ_OK
 RADIX_EXT4_MOUNT_OK
 RADIX_ZUBOARD_EXT4_ROOT_OK
 RADIX_ROOTFS_INIT_FOUND
