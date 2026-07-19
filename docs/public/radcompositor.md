@@ -1,6 +1,6 @@
 # RADCompositor {#radcompositor}
 
-RADCompositor is an experimental Crimson 0.2.0 service for Slint-backed desktop
+RADCompositor is an experimental Crimson 0.1.4 service for Slint-backed desktop
 composition. It is intentionally RADLib/RADPx-OS-owned: Slint renders each UI
 surface, but RADPx-OS owns the screen, window placement, z-order, input routing,
 and final framebuffer writes.

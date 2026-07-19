@@ -1,6 +1,6 @@
 # Experimental Networking {#networking}
 
-RADPx-OS Crimson 0.2.0 includes an experimental networking path for the x86 VM
+RADPx-OS Crimson 0.1.4 includes an experimental networking path for the x86 VM
 target. The goal of this surface is to prove the kernel interfaces for network
 devices, packet receive, POSIX-inspired datagram sockets, host-verified UDP,
 SNTP/NTP sampling, and the first TCP stream socket lifecycle before adding a

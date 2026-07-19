@@ -91,7 +91,7 @@ RadBuild can consume packagegroups from that repository during image creation:
 ```json
 {
   "radpm": {
-    "repository": "https://github.com/Radical-Computer-Technologies/RadicalPackages/releases/download/radpx-os-0.2.0-beta.1",
+    "repository": "https://github.com/Radical-Computer-Technologies/RadicalPackages/releases/download/radpx-os-0.1.4-beta.1",
     "suite": "experimental",
     "packagegroups": ["rad-terminal-base", "rad-networking"],
     "packages": [],
