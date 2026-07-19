@@ -56,15 +56,15 @@ while IFS= read -r marker; do
     require_marker "$marker"
 done < "$GATE"
 
-# DEFERRED -- these are userland-PRINTED strings (init.S/radsh.S write them to
-# stdout), not kernel markers. They gate on the x86 image because its userland
-# stdout reaches the serial log; on the Pi the /dev/console device-write path does
-# not yet surface on the UART (kernel rad_debug_marker output does), so init/radsh
-# console text -- and a visible interactive shell (RAD_LOGIN_OK) -- do not appear.
-# Wiring the /dev/console device writes to the PL011 UART unlocks:
-#   RAD_AARCH64_USER_INIT_OK RAD_AARCH64_USER_SYSCALLS_OK
-#   RAD_AARCH64_USER_INVALID_PTR_OK RAD_AARCH64_USER_RADSH_BOOT_OK
-#   RAD_AARCH64_USER_FORK_CHILD_OK RAD_AARCH64_USER_FORK_WAIT_OK
-#   RAD_AARCH64_USER_SH_SCRIPT_OK RAD_AARCH64_USER_RADSH_EXIT_OK RAD_LOGIN_OK
+# DEFERRED -- the remaining ZuBoard markers not covered here need infrastructure
+# the Pi payload does not carry (it is a kernel-only image, no rootfs / no NIC):
+#   RAD_SERVICE_ROOTFS_OK / RAD_ZUBOARD_EXT4_ROOT_OK -- need an ext4 SD rootfs
+#     image (the Pi boots kernel-only with an embedded /bin; wiring a radbuild Pi
+#     SD image is the follow-up).
+#   RAD_LOGIN_OK -- the embedded init execs radsh directly; the full login.elf
+#     flow needs the rootfs userland.
+#   RAD_NET_HOST_UDP_ECHO_OK / RAD_NTP_* -- need a hardware NIC + SLIRP host
+#     responder; raspi3b has no GEM-equivalent (in-guest UDP/TCP L4 loopback is
+#     covered above and is NIC-independent).
 
 echo "RADPx-OS Pi Zero 2 W payload smoke passed ($(grep -cvE '^\s*(#|$)' "$GATE") markers): $LOG"

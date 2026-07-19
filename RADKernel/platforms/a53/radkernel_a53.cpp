@@ -301,13 +301,17 @@ void copy_string(char *dst, size_t dst_size, const char *src) {
 }
 
 int marker_like_line(const char *text) {
+    // Userland emits progress markers by writing "RAD_*" lines to stdout, which
+    // the WRITE syscall path re-emits as kernel debug markers. (Historically the
+    // prefix was "RADIX_"; the rebrand moved every marker to "RAD_" but left this
+    // scanner matching the old prefix, so userland-printed markers silently
+    // stopped surfacing -- both are accepted here.)
     return text
         && text[0] == 'R'
         && text[1] == 'A'
         && text[2] == 'D'
-        && text[3] == 'I'
-        && text[4] == 'X'
-        && text[5] == '_';
+        && (text[3] == '_'
+            || (text[3] == 'I' && text[4] == 'X' && text[5] == '_'));
 }
 
 int elf_ident_ok(const uint8_t *image, size_t size) {
