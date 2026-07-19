@@ -5,9 +5,9 @@
   "systems": [
     {
       "id": "rad-x86-64-grub-terminal",
-      "type": "os.radix",
+      "type": "os.radpx",
       "name": "RADPx-OS x86_64 GRUB terminal VM image",
-      "provider": "radix-os",
+      "provider": "radpx-os",
       "depends_on": [],
       "toolchain": {
         "architecture": "x86_64",

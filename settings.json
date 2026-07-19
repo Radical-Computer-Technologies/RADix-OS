@@ -5,9 +5,9 @@
   "systems": [
     {
       "id": "rad-x86-64-grub-terminal",
-      "type": "os.radix",
+      "type": "os.radpx",
       "name": "RADPx-OS x86_64 GRUB terminal VM image",
-      "provider": "radix-os",
+      "provider": "radpx-os",
       "depends_on": [],
       "toolchain": {
         "architecture": "x86_64",
@@ -79,9 +79,9 @@
     },
     {
       "id": "rad-x86-64-grub-wm",
-      "type": "os.radix",
+      "type": "os.radpx",
       "name": "RADPx-OS x86_64 GRUB RADCompositor WM image",
-      "provider": "radix-os",
+      "provider": "radpx-os",
       "depends_on": [],
       "toolchain": {
         "architecture": "x86_64",
@@ -156,9 +156,9 @@
     },
     {
       "id": "rad-zuboard-1cg-serial",
-      "type": "os.radix",
+      "type": "os.radpx",
       "name": "RADPx-OS ZUBoard 1CG ext4 rootfs serial image",
-      "provider": "radix-os",
+      "provider": "radpx-os",
       "depends_on": [],
       "toolchain": {
         "architecture": "aarch64",
@@ -222,9 +222,9 @@
     },
     {
       "id": "rad-zuboard-1cg-qemu",
-      "type": "os.radix",
+      "type": "os.radpx",
       "name": "RADPx-OS ZUBoard 1CG QEMU serial image",
-      "provider": "radix-os",
+      "provider": "radpx-os",
       "depends_on": [],
       "toolchain": {
         "architecture": "aarch64",
