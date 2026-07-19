@@ -476,6 +476,41 @@ void gem_socket_dgram_selftest() {
         rad_debug_marker("RAD_NTP_RESPONSE_OK");
         rad_debug_marker("RAD_NTP_TIME_SAMPLE_OK");
     }
+
+    // In-guest TCP stream self-test (mirrors x86 x86_storage.cpp): bind/listen a
+    // TCP server on the guest IP, connect a client, accept, stream a payload, and
+    // shut down -- all local through the portable socket->TCP->IPv4 stack, no host
+    // responder. Emits RAD_TCP_SOCKET/CONNECT/LISTEN_ACCEPT/STREAM_IO/SHUTDOWN_OK.
+    const int32_t tcp_server = rad_socket_create(RAD_AF_INET, RAD_SOCK_STREAM, RAD_IPPROTO_TCP);
+    const int32_t tcp_client = rad_socket_create(RAD_AF_INET, RAD_SOCK_STREAM, RAD_IPPROTO_TCP);
+    rad_sockaddr_in_t tcp_addr{};
+    tcp_addr.family = RAD_AF_INET;
+    tcp_addr.port = 9100u;
+    tcp_addr.address = rad_ipv4_address_t{{10u, 0u, 2u, 15u}};
+    static const char tcp_payload[] = "rad-a53-tcp";
+    char tcp_received[32]{};
+    if (tcp_server >= 0 && tcp_client >= 0
+        && rad_socket_bind(tcp_server, &tcp_addr, sizeof(tcp_addr)) == RAD_STATUS_OK
+        && rad_socket_listen(tcp_server, 4) == RAD_STATUS_OK
+        && rad_socket_connect(tcp_client, &tcp_addr, sizeof(tcp_addr)) == RAD_STATUS_OK) {
+        rad_debug_marker("RAD_TCP_SOCKET_OK");
+        rad_debug_marker("RAD_TCP_CONNECT_OK");
+        rad_sockaddr_in_t tcp_peer{};
+        size_t tcp_peer_len = sizeof(tcp_peer);
+        const int32_t accepted = rad_socket_accept(tcp_server, &tcp_peer, &tcp_peer_len);
+        if (accepted >= 0) {
+            rad_debug_marker("RAD_TCP_LISTEN_ACCEPT_OK");
+            if (rad_socket_send(tcp_client, tcp_payload, sizeof(tcp_payload), 0) == static_cast<intptr_t>(sizeof(tcp_payload))
+                && rad_socket_recv(accepted, tcp_received, sizeof(tcp_received), 0) == static_cast<intptr_t>(sizeof(tcp_payload))
+                && memcmp(tcp_received, tcp_payload, sizeof(tcp_payload)) == 0) {
+                rad_debug_marker("RAD_TCP_STREAM_IO_OK");
+            }
+            if (rad_socket_shutdown(tcp_client, 2) == RAD_STATUS_OK) rad_debug_marker("RAD_TCP_SHUTDOWN_OK");
+            rad_fd_close(accepted);
+        }
+    }
+    if (tcp_client >= 0) rad_fd_close(tcp_client);
+    if (tcp_server >= 0) rad_fd_close(tcp_server);
 }
 
 // RX-complete interrupt handler (GIC SPI 57). Runs in IRQ context, so it stays

@@ -56,6 +56,55 @@ void marker(const char *text) {
     rad_debug_marker(text);
 }
 
+// Kernel-infra parity self-tests (mirror x86 kernel.cpp): all use the portable
+// module/work/wait-queue APIs, so a53 gates the same markers.
+unsigned g_a53_module_probe_inits = 0;
+unsigned g_a53_module_probe_exits = 0;
+rad_status_t module_probe_init(void*) { ++g_a53_module_probe_inits; return RAD_STATUS_OK; }
+void module_probe_exit(void*) { ++g_a53_module_probe_exits; }
+unsigned g_a53_deferred_work_ran = 0;
+void deferred_work_handler(void*) { ++g_a53_deferred_work_ran; }
+
+void a53_kernel_infra_self_test() {
+    // Module lifecycle: register a probe module, see it listed as initialized, unregister.
+    rad_module_descriptor_t d{};
+    d.size = sizeof(d);
+    d.name = "rad_a53_probe";
+    d.bus = "a53";
+    d.compatible = "rad,a53-probe";
+    d.init = module_probe_init;
+    d.exit = module_probe_exit;
+    rad_module_info_t mods[4]{};
+    const rad_status_t reg = rad_module_register(&d);
+    const size_t n = rad_module_list(mods, 4);
+    int listed = 0;
+    for (size_t i = 0; i < n && i < 4; ++i) {
+        if (strcmp(mods[i].name, "rad_a53_probe") == 0
+            && mods[i].state == RAD_MODULE_INITIALIZED
+            && mods[i].last_status == RAD_STATUS_OK) listed = 1;
+    }
+    const rad_status_t unreg = rad_module_unregister("rad_a53_probe");
+    if (reg == RAD_STATUS_OK && unreg == RAD_STATUS_OK && listed
+        && g_a53_module_probe_inits == 1 && g_a53_module_probe_exits == 1) {
+        marker("RAD_MODULE_LIFECYCLE_OK");
+    }
+    // Deferred work: submit a handler, poll it to completion.
+    size_t ran = 0;
+    if (rad_work_submit("a53-boot-self-test", deferred_work_handler, nullptr) == RAD_STATUS_OK
+        && rad_work_poll(8, &ran) == RAD_STATUS_OK && ran > 0 && g_a53_deferred_work_ran == 1) {
+        marker("RAD_DEFERRED_WORK_OK");
+    }
+    // Wait queue: create, wake, wait, destroy.
+    rad_wait_queue_t q = nullptr;
+    const rad_status_t cr = rad_wait_queue_create(&q);
+    const rad_status_t wk = cr == RAD_STATUS_OK ? rad_wait_queue_wake_one(q) : RAD_STATUS_ERROR;
+    const rad_status_t wt = cr == RAD_STATUS_OK ? rad_wait_queue_wait(q, 1) : RAD_STATUS_ERROR;
+    if (q) rad_wait_queue_destroy(q);
+    if (cr == RAD_STATUS_OK && wk == RAD_STATUS_OK && wt == RAD_STATUS_OK) {
+        marker("RAD_WAIT_QUEUE_OK");
+    }
+}
+
 const BinEntry *find_bin_entry(const char *path) {
     const char *name = path && path[0] == '/' ? path + 1 : path;
     if (!name || !*name) return nullptr;
@@ -284,6 +333,8 @@ extern "C" void rad_zuboard_entry(rad_boot_handoff_t *incoming_handoff) {
     // service registration so the a53 gates RAD_BASE_TERMINAL_OK like x86.
     marker("RAD_BASE_TERMINAL_OK");
     rad_service_start("base-terminal");
+    // Kernel-infra parity: module lifecycle, deferred work, wait queue.
+    a53_kernel_infra_self_test();
 
     // Preemption witness: a time-based busy task long enough to span several
     // 4 ms timer periods; if scheduler ticks advanced while it ran, the
