@@ -53,6 +53,7 @@ RAD_AARCH64_USER_PROCESS_SPAWN_OK
 RAD_LOGIN_SPAWN_OK
 RAD_ZUBOARD_SERIAL_LOGIN_READY
 RAD_ZUBOARD_SERIAL_READY
+RAD_BASE_TERMINAL_OK
 # Stage A (2026-07-16): real EL0 entry, radinit as PID1 through service scan.
 RAD_CONTEXT_DISPATCH_OK
 RAD_AARCH64_USERMODE_ENTER_OK
@@ -68,6 +69,7 @@ RAD_PID1_PPID0_OK
 RAD_USER_INIT_OK
 RAD_RADINIT_JSON_OK
 RAD_RADINIT_SERVICE_ORDER_OK
+RAD_RADINIT_SERVICE_START_OK
 # Parity Stage 3a (2026-07-17): rash --selftest oneshot (order 5) runs before
 # the login session -- POSIX surface, fork/COW isolation, then execve of
 # /bin/test.sh through the shebang into /bin/sh (rash script mode).

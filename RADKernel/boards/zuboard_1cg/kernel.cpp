@@ -279,6 +279,11 @@ extern "C" void rad_zuboard_entry(rad_boot_handoff_t *incoming_handoff) {
         if (rad_a53_process_self_test() == RAD_STATUS_OK) marker("RAD_ZUBOARD_A53_PROCESS_PARITY_OK");
     }
     marker("RAD_ZUBOARD_SERIAL_READY");
+    // Base-terminal parity: the a53 base terminal is the serial console (no
+    // framebuffer). Mirror x86's kernel-level base-terminal bring-up marker +
+    // service registration so the a53 gates RAD_BASE_TERMINAL_OK like x86.
+    marker("RAD_BASE_TERMINAL_OK");
+    rad_service_start("base-terminal");
 
     // Preemption witness: a time-based busy task long enough to span several
     // 4 ms timer periods; if scheduler ticks advanced while it ran, the
