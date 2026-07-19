@@ -433,6 +433,49 @@ void gem_socket_dgram_selftest() {
     }
     rad_fd_close(client);
     rad_fd_close(server);
+
+    // Host UDP-echo + NTP legs over GEM (mirrors x86 x86_storage.cpp): send to a
+    // host responder on the SLIRP gateway 10.0.2.2 (echo 12301, NTP 12300). These
+    // egress/ingress through GEM and only complete when run under the net smoke
+    // that starts host_udp_ntp_responder.py; a plain boot just skips the markers.
+    const int32_t echo_client = rad_socket_create(RAD_AF_INET, RAD_SOCK_DGRAM, RAD_IPPROTO_UDP);
+    if (echo_client >= 0) {
+        rad_sockaddr_in_t host{};
+        host.family = RAD_AF_INET;
+        host.port = 12301u;
+        host.address = rad_ipv4_address_t{{10u, 0u, 2u, 2u}};
+        static const char echo_payload[] = "rad-host-udp";
+        char echo_received[64]{};
+        rad_sockaddr_in_t echo_from{};
+        size_t echo_from_len = sizeof(echo_from);
+        if (rad_socket_sendto(echo_client, echo_payload, sizeof(echo_payload), 0u, &host, sizeof(host))
+                == static_cast<intptr_t>(sizeof(echo_payload))) {
+            rad_debug_marker("RAD_NET_UDP_TX_OK");
+            const uint64_t start = rad_time_millis();
+            while (rad_time_millis() - start < 1500u) {
+                const intptr_t got = rad_socket_recvfrom(echo_client, echo_received, sizeof(echo_received),
+                    0u, &echo_from, &echo_from_len);
+                if (got == static_cast<intptr_t>(sizeof(echo_payload))
+                    && memcmp(echo_received, echo_payload, sizeof(echo_payload)) == 0) {
+                    rad_debug_marker("RAD_NET_UDP_RX_OK");
+                    rad_debug_marker("RAD_NET_HOST_UDP_ECHO_OK");
+                    break;
+                }
+                rad_sleep_ms(1);
+            }
+        }
+        rad_fd_close(echo_client);
+    }
+    rad_ntp_query_t ntp{};
+    ntp.size = sizeof(ntp);
+    ntp.server = rad_ipv4_address_t{{10u, 0u, 2u, 2u}};
+    ntp.port = 12300u;
+    ntp.timeout_ms = 1500u;
+    if (rad_net_ntp_query(&ntp) == RAD_STATUS_OK && ntp.status.valid) {
+        rad_debug_marker("RAD_NTP_QUERY_OK");
+        rad_debug_marker("RAD_NTP_RESPONSE_OK");
+        rad_debug_marker("RAD_NTP_TIME_SAMPLE_OK");
+    }
 }
 
 // RX-complete interrupt handler (GIC SPI 57). Runs in IRQ context, so it stays

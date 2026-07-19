@@ -27,6 +27,22 @@ fi
 
 mkdir -p "$(dirname "$LOG_FILE")"
 
+# Host UDP-echo + NTP responder (guest reaches it at the SLIRP gateway
+# 10.0.2.2:12301/12300) so the GEM host-net legs (RAD_NET_HOST_UDP_ECHO_OK /
+# RAD_NTP_*) can complete -- mirrors the x86 smoke's responder.
+RESPONDER="$REPO_ROOT/tools/embedded/x86_64_grub_slint/host_udp_ntp_responder.py"
+RESPONDER_LOG="${TMPDIR:-/tmp}/rad-zuboard-net-responder.log"
+if [ -f "$RESPONDER" ]; then
+    python3 "$RESPONDER" --ntp-port "${RAD_HOST_NTP_PORT:-12300}" \
+        --echo-port "${RAD_HOST_UDP_ECHO_PORT:-12301}" >"$RESPONDER_LOG" 2>&1 &
+    RESPONDER_PID=$!
+    trap 'kill "$RESPONDER_PID" >/dev/null 2>&1 || true' EXIT
+    for _ in 1 2 3 4 5 6; do
+        grep -q RAD_HOST_NET_RESPONDER_READY "$RESPONDER_LOG" 2>/dev/null && break
+        sleep 0.5
+    done
+fi
+
 boot_and_check() {
     set +e
     "$SCRIPT_DIR/run-qemu.sh" </dev/null 2>&1 | tee "$LOG_FILE"
