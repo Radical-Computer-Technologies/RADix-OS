@@ -221,6 +221,16 @@ char g_terminal_visible_text[MaxShellText];
 int32_t g_terminal_scroll_lines = 0;
 int g_terminal_auto_scroll = 1;
 int g_slint_started = 0;
+uint64_t g_ram_budget_hint = 0;
+rad_compositor_tier_t g_active_tier = RAD_COMPOSITOR_TIER_HEADLESS;
+int g_tier_marker_sent = 0;
+
+void emit_tier_marker(rad_compositor_tier_t tier) {
+    g_active_tier = tier;
+    if (g_tier_marker_sent) return;
+    g_tier_marker_sent = 1;
+    rad_debug_marker(rad_compositor_tier_marker(tier));
+}
 int g_boot_marker_sent = 0;
 int g_loading_marker_sent = 0;
 int g_ready_marker_sent = 0;
@@ -1161,16 +1171,37 @@ void run_compositor_alpha_smoke() {
 
 } // namespace
 
+extern "C" void rad_slint_shell_set_ram_budget(uint64_t ram_budget_bytes) {
+    g_ram_budget_hint = ram_budget_bytes;
+}
+
+extern "C" rad_compositor_tier_t rad_slint_shell_tier(void) {
+    return g_active_tier;
+}
+
 extern "C" rad_status_t rad_slint_shell_start(rad_framebuffer_t framebuffer, const char *terminal_text) {
     if (g_slint_started) return RAD_STATUS_OK;
-    if (!framebuffer) return RAD_STATUS_INVALID_ARGUMENT;
+    if (!framebuffer) {
+        // No framebuffer at all: headless target. Report the tier and let boot
+        // proceed without a window manager.
+        emit_tier_marker(RAD_COMPOSITOR_TIER_HEADLESS);
+        return RAD_STATUS_INVALID_ARGUMENT;
+    }
 
     rad_framebuffer_info_t info{};
     rad_status_t status = rad_framebuffer_get_info(framebuffer, &info);
     if (status != RAD_STATUS_OK) return status;
     if (!info.pixels || info.pixel_format != RAD_PIXEL_FORMAT_XRGB8888 || info.width == 0 || info.height == 0) {
+        // Present but unusable framebuffer: also headless from the shell's view.
+        emit_tier_marker(RAD_COMPOSITOR_TIER_HEADLESS);
         return RAD_STATUS_NOT_SUPPORTED;
     }
+
+    // Resolve the capability tier now that we have a usable framebuffer. XRGB8888
+    // is 32bpp; the RAM budget is a per-platform hint (0 = unknown/ample -> FULL).
+    const rad_compositor_tier_t tier = rad_compositor_select_tier(
+        1, info.width, info.height, 32u, g_ram_budget_hint);
+    emit_tier_marker(tier);
 
     memset(g_desktop_pixels, 0, sizeof(g_desktop_pixels));
     memset(g_terminal_pixels, 0, sizeof(g_terminal_pixels));

@@ -44,6 +44,7 @@ add_executable(rad_os_shell
     main.cpp
     "${RADPX_OS_ROOT}/services/RADCompositor/RADCompositorModel.cpp"
     "${RADPX_OS_ROOT}/services/RADCompositor/RADCompositorCore.cpp"
+    "${RADPX_OS_ROOT}/services/RADCompositor/RADCompositorTier.cpp"
 )
 
 target_compile_features(rad_os_shell PRIVATE cxx_std_20)

@@ -271,6 +271,7 @@ if(RAD_X86_UI_PROFILE STREQUAL "wm")
     set(RAD_X86_UI_SOURCES
         "${RADPX_OS_ROOT}/services/RADCompositor/SlintShell.cpp"
         "${RADPX_OS_ROOT}/services/RADCompositor/RADCompositorCore.cpp"
+        "${RADPX_OS_ROOT}/services/RADCompositor/RADCompositorTier.cpp"
     )
     set(RAD_X86_UI_INCLUDE_DIRS "${RADPX_OS_ROOT}/services/RADCompositor")
     set(RAD_X86_UI_DEFINITIONS SLINT_FEATURE_FREESTANDING SLINT_BACKEND=1 RAD_X86_UI_PROFILE_WM=1)

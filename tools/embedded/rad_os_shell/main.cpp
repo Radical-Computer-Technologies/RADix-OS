@@ -4,6 +4,7 @@
 
 #include "RADCompositorModel.h"
 #include "RADCompositorCore.h"
+#include "RADCompositorTier.h"
 #include "RADDesktop.h"
 
 #include <cstdlib>
@@ -465,8 +466,21 @@ int main(int argc, char **argv) {
     for (uint32_t pixel : framebuffer) {
         checksum |= pixel;
     }
+    // Phase 0: capability-tier policy is shared with the kernel shell. Exercise all
+    // three tiers deterministically (no framebuffer -> HEADLESS; small FB + 512 MB ->
+    // LEAN like the Pi Zero 2 W; capable FB + ample/unknown RAM -> FULL).
+    const bool tierHeadlessOk =
+        rad_compositor_select_tier(0, 0, 0, 0, 0) == RAD_COMPOSITOR_TIER_HEADLESS;
+    const bool tierLeanOk =
+        rad_compositor_select_tier(1, 1280, 720, 32, 512ull * 1024 * 1024) == RAD_COMPOSITOR_TIER_LEAN;
+    const bool tierFullOk =
+        rad_compositor_select_tier(1, 1920, 1080, 32, 0) == RAD_COMPOSITOR_TIER_FULL;
+
     if (self_test) {
         std::cout << "RAD OS Slint shell rendered checksum=0x" << std::hex << checksum << "\n";
+        if (tierHeadlessOk) std::cout << rad_compositor_tier_marker(RAD_COMPOSITOR_TIER_HEADLESS) << "\n";
+        if (tierLeanOk) std::cout << rad_compositor_tier_marker(RAD_COMPOSITOR_TIER_LEAN) << "\n";
+        if (tierFullOk) std::cout << rad_compositor_tier_marker(RAD_COMPOSITOR_TIER_FULL) << "\n";
         if (terminalLoadingObserved) std::cout << "RAD_SLINT_TERMINAL_LOADING_OK\n";
         if (terminalReadyObserved) std::cout << "RAD_SLINT_TERMINAL_READY_OK\n";
         if (windowManagerObserved) std::cout << "RAD_SLINT_WM_OK\n";

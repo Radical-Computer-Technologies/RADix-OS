@@ -79,6 +79,9 @@ if [[ "${ui_profile}" == "wm" && -d "${slint_sdk}" && "${RADLIB_SKIP_HOST_SLINT_
     grep -q "RAD_COMPOSITOR_COPY_FORWARD_OK" "${log_dir}/rad-os-shell-slint-smoke.log"
     grep -q "RAD_COMPOSITOR_EXPOSED_DAMAGE_OK" "${log_dir}/rad-os-shell-slint-smoke.log"
     grep -q "RAD_COMPOSITOR_EMPTY_FRAME_SKIP_OK" "${log_dir}/rad-os-shell-slint-smoke.log"
+    grep -q "RAD_COMPOSITOR_TIER_HEADLESS_OK" "${log_dir}/rad-os-shell-slint-smoke.log"
+    grep -q "RAD_COMPOSITOR_TIER_LEAN_OK" "${log_dir}/rad-os-shell-slint-smoke.log"
+    grep -q "RAD_COMPOSITOR_TIER_FULL_OK" "${log_dir}/rad-os-shell-slint-smoke.log"
 else
     echo "Skipping hosted Slint smoke for ${ui_profile} profile."
 fi
@@ -203,6 +206,8 @@ if [[ "${ui_profile}" == "wm" ]]; then
     if grep -q "RAD_X86_UI_PROFILE_WM_OK" "${qemu_log}"; then
         grep -q "RAD_SLINT_BOOT_SHELL_OK" "${qemu_log}"
         grep -q "RAD_SLINT_WM_OK" "${qemu_log}"
+        # x86 has a capable framebuffer and ample RAM -> FULL tier.
+        grep -q "RAD_COMPOSITOR_TIER_FULL_OK" "${qemu_log}"
     else
         echo "WM VM reached base terminal before timeout; hosted Slint smoke covers UI markers."
     fi
