@@ -51,6 +51,39 @@ struct KernelMmioRange {
 KernelMmioRange g_kernel_mmio_ranges[MaxKernelMmioRanges];
 size_t g_kernel_mmio_range_count = 0;
 
+// Recursive spinlock protecting the shared physical-page tracker (g_page_state /
+// g_page_refs). Without it, two cores forking / COW-faulting / mmap-ing at once could
+// both claim the same free page (a TOCTOU on g_page_state) and double-allocate it, or
+// race the shared refcounts -- SMP-only heap/page corruption. Recursive so the COW and
+// fork paths can hold it across their own alloc/free calls.
+extern "C" uint32_t x86_cpu_current_core(void);
+volatile int g_page_spin = 0;
+volatile uint32_t g_page_lock_owner = 0xffffffffu;
+volatile int g_page_lock_depth = 0;
+
+void page_tracker_lock(void) {
+    const uint32_t core = x86_cpu_current_core();
+    if (g_page_lock_depth > 0 && g_page_lock_owner == core) {
+        ++g_page_lock_depth;
+        return;
+    }
+    while (__atomic_test_and_set(&g_page_spin, __ATOMIC_ACQUIRE)) {
+        asm volatile("pause");
+    }
+    g_page_lock_owner = core;
+    g_page_lock_depth = 1;
+}
+
+void page_tracker_unlock(void) {
+    if (g_page_lock_depth > 1) {
+        --g_page_lock_depth;
+        return;
+    }
+    g_page_lock_owner = 0xffffffffu;
+    g_page_lock_depth = 0;
+    __atomic_clear(&g_page_spin, __ATOMIC_RELEASE);
+}
+
 uint64_t align_down(uint64_t value, uint64_t alignment) {
     return value & ~(alignment - 1u);
 }
@@ -139,8 +172,13 @@ int replace_owned_page(x86_address_space_t *space, uint64_t old_page, uint64_t n
 int retain_page(uint64_t physical_address) {
     if (physical_address % PageSize) return 0;
     const uint64_t page = physical_address / PageSize;
-    if (page >= MaxTrackedPages || g_page_state[page] != PageReserved || g_page_refs[page] == 0) return 0;
+    page_tracker_lock();
+    if (page >= MaxTrackedPages || g_page_state[page] != PageReserved || g_page_refs[page] == 0) {
+        page_tracker_unlock();
+        return 0;
+    }
     ++g_page_refs[page];
+    page_tracker_unlock();
     return 1;
 }
 
@@ -297,29 +335,38 @@ extern "C" void x86_vm_init(const rad_boot_info_t *boot, x86_vm_summary_t *summa
 }
 
 extern "C" uint64_t x86_vm_alloc_page(void) {
+    page_tracker_lock();
     for (uint64_t page = 0; page < MaxTrackedPages; ++page) {
         if (g_page_state[page] != PageFree) continue;
         g_page_state[page] = PageReserved;
         g_page_refs[page] = 1;
         if (g_summary.free_pages > 0) --g_summary.free_pages;
         ++g_summary.reserved_pages;
+        page_tracker_unlock();
         return page * PageSize;
     }
+    page_tracker_unlock();
     return 0;
 }
 
 extern "C" void x86_vm_free_page(uint64_t physical_address) {
     if (physical_address % PageSize) return;
     const uint64_t page = physical_address / PageSize;
-    if (page >= MaxTrackedPages || g_page_state[page] != PageReserved) return;
+    page_tracker_lock();
+    if (page >= MaxTrackedPages || g_page_state[page] != PageReserved) {
+        page_tracker_unlock();
+        return;
+    }
     if (g_page_refs[page] > 1) {
         --g_page_refs[page];
+        page_tracker_unlock();
         return;
     }
     g_page_refs[page] = 0;
     g_page_state[page] = PageFree;
     ++g_summary.free_pages;
     if (g_summary.reserved_pages > 0) --g_summary.reserved_pages;
+    page_tracker_unlock();
 }
 
 extern "C" int x86_vm_retain_page(uint64_t physical_address) {
@@ -430,10 +477,18 @@ extern "C" int x86_vm_handle_page_fault(uint64_t fault_address, uint64_t error_c
     if (!leaf || ((*leaf & PteCow) == 0)) return 0;
     const uint64_t old_phys = *leaf & PteAddressMask;
     const uint64_t old_page = old_phys / PageSize;
-    if (old_page >= MaxTrackedPages || g_page_refs[old_page] == 0) return 0;
+    // The shared-refcount decision and the resulting alloc/copy/free must be atomic
+    // against another core COW-faulting the same shared page. The page tracker lock is
+    // recursive, so the nested x86_vm_alloc_page/free_page below are safe.
+    page_tracker_lock();
+    if (old_page >= MaxTrackedPages || g_page_refs[old_page] == 0) {
+        page_tracker_unlock();
+        return 0;
+    }
     if (g_page_refs[old_page] == 1) {
         *leaf = (*leaf | PteWrite) & ~PteCow;
         invalidate_page(va);
+        page_tracker_unlock();
         rad_debug_marker("RAD_USER_COW_PAGE_FAULT_OK");
         if (x86_cpu_current_core() > 0 && !__atomic_exchange_n(&g_ap_cow_seen, 1, __ATOMIC_ACQ_REL)) {
             rad_debug_marker("RAD_USER_AP_FORK_COW_OK");
@@ -441,17 +496,22 @@ extern "C" int x86_vm_handle_page_fault(uint64_t fault_address, uint64_t error_c
         return 1;
     }
     const uint64_t new_phys = x86_vm_alloc_page();
-    if (!new_phys) return 0;
+    if (!new_phys) {
+        page_tracker_unlock();
+        return 0;
+    }
     memcpy(reinterpret_cast<void*>(static_cast<uintptr_t>(new_phys)),
         reinterpret_cast<const void*>(static_cast<uintptr_t>(old_phys)),
         PageSize);
     if (!replace_owned_page(space, old_phys, new_phys)) {
         x86_vm_free_page(new_phys);
+        page_tracker_unlock();
         return 0;
     }
     x86_vm_free_page(old_phys);
     *leaf = new_phys | ((*leaf | PteWrite) & ~(PteAddressMask | PteCow));
     invalidate_page(va);
+    page_tracker_unlock();
     rad_debug_marker("RAD_USER_COW_PAGE_FAULT_OK");
     if (x86_cpu_current_core() > 0 && !__atomic_exchange_n(&g_ap_cow_seen, 1, __ATOMIC_ACQ_REL)) {
         rad_debug_marker("RAD_USER_AP_FORK_COW_OK");
