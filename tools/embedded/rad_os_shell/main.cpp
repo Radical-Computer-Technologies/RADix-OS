@@ -287,7 +287,7 @@ int main(int argc, char **argv) {
         }
         if (desktop.terminalLaunching()) terminalLoadingObserved = true;
         if (desktop.terminalState() == RADCompositor::TerminalAppState::Running) terminalReadyObserved = true;
-        if (!desktop.windows().empty() && !desktop.apps().empty()) windowManagerObserved = true;
+        if (desktop.windowCount() != 0 && desktop.appCount() != 0) windowManagerObserved = true;
         if (desktop.applicationsMenuOpen()) menuOpenObserved = true;
     };
     auto launchTerminal = [&]() {
