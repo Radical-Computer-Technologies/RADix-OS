@@ -390,11 +390,18 @@ extern "C" void x86_exception_report(uint64_t vector, uint64_t error, uint64_t r
         (cs & 3u) == 3u ? "user" : "kernel");
     x86_serial_write(buffer);
     if (vector == 14) {
-        snprintf(buffer, sizeof(buffer), " cr2=0x%llx present=%u write=%u user=%u\n",
+        uint64_t pf_rsp = 0;
+        asm volatile("mov %%rsp, %0" : "=r"(pf_rsp));
+        const uint32_t pf_core = x86_cpu_current_core();
+        const uint64_t pf_rsp0 = pf_core < MaxX86Cores ? g_tss[pf_core].rsp0 : 0u;
+        snprintf(buffer, sizeof(buffer), " cr2=0x%llx present=%u write=%u user=%u rsp=0x%llx tss_rsp0=0x%llx core=%u\n",
             static_cast<unsigned long long>(read_cr2()),
             static_cast<unsigned>((error >> 0) & 1u),
             static_cast<unsigned>((error >> 1) & 1u),
-            static_cast<unsigned>((error >> 2) & 1u));
+            static_cast<unsigned>((error >> 2) & 1u),
+            static_cast<unsigned long long>(pf_rsp),
+            static_cast<unsigned long long>(pf_rsp0),
+            static_cast<unsigned>(pf_core));
         x86_serial_write(buffer);
     } else {
         // Diagnostic for non-page-fault traps (e.g. #GP): report the current

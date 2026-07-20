@@ -735,6 +735,18 @@ void unlock_runtime() {
     __atomic_clear(&g_state.runtime_lock, __ATOMIC_RELEASE);
 }
 
+// Dedicated spinlock for the pty master ring buffer. The graphical shell drains a pty
+// master on one core while a user process appends to it from another; without this the
+// unsynchronised master_size updates corrupt the ring (and can write past it). Kept
+// separate from runtime_lock so it never nests with it in a conflicting order.
+volatile int g_pty_master_lock = 0;
+void lock_pty_master() {
+    while (__atomic_test_and_set(&g_pty_master_lock, __ATOMIC_ACQUIRE)) { /* spin */ }
+}
+void unlock_pty_master() {
+    __atomic_clear(&g_pty_master_lock, __ATOMIC_RELEASE);
+}
+
 void lock_provider(VfsProviderRecord *provider) {
     if (!provider) return;
     while (__atomic_test_and_set(&provider->io_lock, __ATOMIC_ACQUIRE)) {
@@ -1164,8 +1176,10 @@ void append_tty_output(TtyRecord *tty, const void *data, size_t size) {
     if (tty->pty_id) {
         for (size_t i = 0; i < RAD_KERNEL_MAX_PTYS; ++i) {
             if (g_state.ptys[i].used && g_state.ptys[i].id == tty->pty_id) {
+                lock_pty_master();
                 buffer_append(g_state.ptys[i].master_buffer, sizeof(g_state.ptys[i].master_buffer),
                     &g_state.ptys[i].master_size, data, size);
+                unlock_pty_master();
                 break;
             }
         }
@@ -6739,7 +6753,9 @@ void rad_pty_close(rad_pty_t pty) {
 rad_status_t rad_pty_read_master(rad_pty_t pty, void *buffer, size_t size, size_t *bytes_read) {
     PtyRecord *record = pty ? find_pty(pty->index) : nullptr;
     if (!record || (!buffer && size)) return RAD_STATUS_INVALID_ARGUMENT;
+    lock_pty_master();
     size_t count = buffer_take(static_cast<char*>(buffer), size, record->master_buffer, &record->master_size);
+    unlock_pty_master();
     if (bytes_read) *bytes_read = count;
     return RAD_STATUS_OK;
 }
