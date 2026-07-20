@@ -262,6 +262,8 @@ int main(int argc, char **argv) {
     bool terminalScrollObserved = false;
     bool terminalCloseObserved = false;
     bool terminalRelaunchObserved = false;
+    bool secondWindowObserved = false;
+    bool focusSwitchObserved = false;
     CompositorSelfTestResult compositorSelfTest{};
     if (self_test) compositorSelfTest = run_compositor_self_test();
 
@@ -377,6 +379,25 @@ int main(int argc, char **argv) {
         }
         launchTerminal();
         terminalRelaunchObserved = desktop.terminalState() == RADCompositor::TerminalAppState::Running;
+
+        // Multi-window: register + launch a second app and verify the freestanding
+        // Model tracks multiple open windows with independent focus/z-order.
+        desktop.registerApp("rad.sysinfo", "System");
+        const uint32_t sysId = desktop.launchApp("rad.sysinfo");
+        desktop.setWindowState(sysId, RADCompositor::WindowState::Running);
+        refreshShell();
+        secondWindowObserved = desktop.openWindowCount() >= 2;
+        bool termFocused = false, sysFocused = false;
+        if (const RADCompositor::Window *term = desktop.terminalWindow()) {
+            desktop.focusWindow(term->id);
+            const RADCompositor::Window *f = desktop.focusedWindow();
+            termFocused = f && f->id == term->id && f->focused;
+        }
+        desktop.focusWindow(sysId);
+        const RADCompositor::Window *f2 = desktop.focusedWindow();
+        sysFocused = f2 && f2->id == sysId && f2->focused;
+        focusSwitchObserved = secondWindowObserved && termFocused && sysFocused;
+        refreshShell();
     }
     ui->show();
     RADUi::run();
@@ -398,6 +419,8 @@ int main(int argc, char **argv) {
         if (terminalScrollObserved) std::cout << "RAD_SLINT_TERMINAL_SCROLL_OK\n";
         if (terminalCloseObserved) std::cout << "RAD_SLINT_TERMINAL_CLOSE_OK\n";
         if (terminalRelaunchObserved) std::cout << "RAD_SLINT_TERMINAL_RELAUNCH_OK\n";
+        if (secondWindowObserved) std::cout << "RAD_SLINT_WINDOW_OPEN_OK\n";
+        if (focusSwitchObserved) std::cout << "RAD_SLINT_FOCUS_SWITCH_OK\n";
         if (compositorSelfTest.surfaceCreate) std::cout << "RAD_COMPOSITOR_SURFACE_CREATE_OK\n";
         if (compositorSelfTest.offscreenRender) std::cout << "RAD_COMPOSITOR_OFFSCREEN_RENDER_OK\n";
         if (compositorSelfTest.blit) std::cout << "RAD_COMPOSITOR_BLIT_OK\n";

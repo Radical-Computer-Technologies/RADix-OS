@@ -63,6 +63,8 @@ if [[ "${ui_profile}" == "wm" && -d "${slint_sdk}" && "${RADLIB_SKIP_HOST_SLINT_
     grep -q "RAD_SLINT_TERMINAL_SCROLL_OK" "${log_dir}/rad-os-shell-slint-smoke.log"
     grep -q "RAD_SLINT_TERMINAL_CLOSE_OK" "${log_dir}/rad-os-shell-slint-smoke.log"
     grep -q "RAD_SLINT_TERMINAL_RELAUNCH_OK" "${log_dir}/rad-os-shell-slint-smoke.log"
+    grep -q "RAD_SLINT_WINDOW_OPEN_OK" "${log_dir}/rad-os-shell-slint-smoke.log"
+    grep -q "RAD_SLINT_FOCUS_SWITCH_OK" "${log_dir}/rad-os-shell-slint-smoke.log"
     grep -q "RAD_COMPOSITOR_SURFACE_CREATE_OK" "${log_dir}/rad-os-shell-slint-smoke.log"
     grep -q "RAD_COMPOSITOR_OFFSCREEN_RENDER_OK" "${log_dir}/rad-os-shell-slint-smoke.log"
     grep -q "RAD_COMPOSITOR_BLIT_OK" "${log_dir}/rad-os-shell-slint-smoke.log"
