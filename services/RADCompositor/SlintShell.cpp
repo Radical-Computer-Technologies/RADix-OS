@@ -244,6 +244,8 @@ int g_terminal_close_marker_sent = 0;
 int g_terminal_relaunch_marker_sent = 0;
 int g_terminal_scroll_marker_sent = 0;
 int g_compositor_surface_marker_sent = 0;
+int g_surface_alloc_marker_sent = 0;
+int g_surface_budget_marker_sent = 0;
 int g_compositor_offscreen_marker_sent = 0;
 int g_compositor_blit_marker_sent = 0;
 int g_compositor_hit_marker_sent = 0;
@@ -269,15 +271,22 @@ rad_pty_t g_terminal_pty = nullptr;
 int32_t g_terminal_pid = 0;
 rad_task_t g_terminal_task = nullptr;
 EmbeddedDesktopShellModel g_desktop;
-uint32_t g_desktop_surface_width = MaxSurfaceWidth;
-uint32_t g_desktop_surface_height = MaxSurfaceHeight;
+uint32_t g_desktop_surface_width = 0;
+uint32_t g_desktop_surface_height = 0;
 
-alignas(16) uint32_t g_desktop_pixels[MaxSurfaceWidth * MaxSurfaceHeight];
-alignas(16) uint32_t g_terminal_pixels[MaxSurfaceWidth * MaxSurfaceHeight];
-alignas(16) uint32_t g_present_front_pixels[MaxSurfaceWidth * MaxSurfaceHeight];
-alignas(16) uint32_t g_present_back_pixels[MaxSurfaceWidth * MaxSurfaceHeight];
-uint32_t *g_present_front = g_present_front_pixels;
-uint32_t *g_present_back = g_present_back_pixels;
+// Phase 2: the desktop/terminal/present buffers are allocator-backed and sized to
+// the real framebuffer (capped by the capability tier), not four static
+// 1920x1080x4 arrays (~33 MB). g_surface_stride is the shared row stride in pixels;
+// all four buffers use it so the compositor and present paths stay consistent.
+uint32_t g_surface_stride = 0;
+uint32_t g_surface_alloc_height = 0;
+size_t g_surface_buffer_pixels = 0;       // g_surface_stride * g_surface_alloc_height
+uint32_t *g_desktop_pixels = nullptr;
+uint32_t *g_terminal_pixels = nullptr;
+uint32_t *g_present_front_pixels = nullptr;
+uint32_t *g_present_back_pixels = nullptr;
+uint32_t *g_present_front = nullptr;
+uint32_t *g_present_back = nullptr;
 rad_compositor_t g_compositor{};
 uint32_t g_desktop_surface_id = 0;
 uint32_t g_terminal_surface_id = 0;
@@ -462,6 +471,41 @@ void update_cursor_position(const rad_input_event_t& event) {
 uint32_t clamp_surface_extent(uint32_t value, uint32_t maximum) {
     if (value == 0) return 1u;
     return value > maximum ? maximum : value;
+}
+
+// Per-tier resolution caps. LEAN targets (Pi Zero 2 W, 512 MB) cap at 720p so the
+// four surface buffers stay small; FULL uses the max supported surface.
+void tier_surface_caps(rad_compositor_tier_t tier, uint32_t *max_w, uint32_t *max_h) {
+    if (tier == RAD_COMPOSITOR_TIER_LEAN) { *max_w = 1280u; *max_h = 720u; }
+    else { *max_w = MaxSurfaceWidth; *max_h = MaxSurfaceHeight; }
+}
+
+// Allocate the four surface/present buffers at the given stride and height from the
+// kernel allocator. Returns false (freeing any partial allocation) on failure.
+bool alloc_surface_buffers(uint32_t stride, uint32_t height) {
+    const size_t count = static_cast<size_t>(stride) * static_cast<size_t>(height);
+    const size_t bytes = count * sizeof(uint32_t);
+    g_desktop_pixels = static_cast<uint32_t*>(rad_memory_alloc(bytes));
+    g_terminal_pixels = static_cast<uint32_t*>(rad_memory_alloc(bytes));
+    g_present_front_pixels = static_cast<uint32_t*>(rad_memory_alloc(bytes));
+    g_present_back_pixels = static_cast<uint32_t*>(rad_memory_alloc(bytes));
+    if (!g_desktop_pixels || !g_terminal_pixels || !g_present_front_pixels || !g_present_back_pixels) {
+        rad_memory_free(g_desktop_pixels);
+        rad_memory_free(g_terminal_pixels);
+        rad_memory_free(g_present_front_pixels);
+        rad_memory_free(g_present_back_pixels);
+        g_desktop_pixels = nullptr;
+        g_terminal_pixels = nullptr;
+        g_present_front_pixels = nullptr;
+        g_present_back_pixels = nullptr;
+        return false;
+    }
+    g_surface_stride = stride;
+    g_surface_alloc_height = height;
+    g_surface_buffer_pixels = count;
+    g_present_front = g_present_front_pixels;
+    g_present_back = g_present_back_pixels;
+    return true;
 }
 
 rad_status_t compositor_device_ioctl(void*, uint32_t request, void *argument) {
@@ -776,12 +820,12 @@ public:
             const DesktopWindow *terminal = g_desktop.terminalWindow();
             const uint32_t width = terminal && terminal->bounds.width > 0 ? static_cast<uint32_t>(terminal->bounds.width) : 640u;
             const uint32_t height = terminal && terminal->bounds.height > 0 ? static_cast<uint32_t>(terminal->bounds.height) : 380u;
-            auto window = std::make_unique<RadSlintWindowAdapter>(SlintSurfaceRole::Terminal, g_terminal_surface_id, g_terminal_pixels, width, height, MaxSurfaceWidth);
+            auto window = std::make_unique<RadSlintWindowAdapter>(SlintSurfaceRole::Terminal, g_terminal_surface_id, g_terminal_pixels, width, height, g_surface_stride);
             terminal_window_ = window.get();
             next_role_ = SlintSurfaceRole::Desktop;
             return window;
         }
-        auto window = std::make_unique<RadSlintWindowAdapter>(SlintSurfaceRole::Desktop, g_desktop_surface_id, g_desktop_pixels, g_desktop_surface_width, g_desktop_surface_height, MaxSurfaceWidth);
+        auto window = std::make_unique<RadSlintWindowAdapter>(SlintSurfaceRole::Desktop, g_desktop_surface_id, g_desktop_pixels, g_desktop_surface_width, g_desktop_surface_height, g_surface_stride);
         desktop_window_ = window.get();
         return window;
     }
@@ -825,11 +869,11 @@ public:
             any_rendered = any_rendered || rendered;
             if (terminal_window_->window().has_active_animations()) terminal_window_->request_redraw();
         }
-        rad_compositor_set_framebuffers(&g_compositor, g_present_front, MaxSurfaceWidth, g_present_back, MaxSurfaceWidth);
+        rad_compositor_set_framebuffers(&g_compositor, g_present_front, g_surface_stride, g_present_back, g_surface_stride);
         queue_cursor_damage();
         if (rad_compositor_compose_frame(&g_compositor) != RAD_STATUS_OK) return RAD_STATUS_ERROR;
         if (g_compositor.last_present_rect_count > 0 || g_cursor_dirty) {
-            draw_cursor(g_present_back, MaxSurfaceWidth);
+            draw_cursor(g_present_back, g_surface_stride);
         }
         if (g_compositor.last_present_rect_count == 0) {
             marker_once(&g_compositor_empty_marker_sent, "RAD_COMPOSITOR_EMPTY_FRAME_SKIP_OK");
@@ -841,7 +885,7 @@ public:
                 rad_framebuffer_present_t present{};
                 present.size = sizeof(present);
                 present.pixels = g_present_back;
-                present.stride_bytes = MaxSurfaceWidth * sizeof(uint32_t);
+                present.stride_bytes = g_surface_stride * sizeof(uint32_t);
                 present.rect.x = static_cast<uint32_t>(dirty.x);
                 present.rect.y = static_cast<uint32_t>(dirty.y);
                 present.rect.width = static_cast<uint32_t>(dirty.width);
@@ -1203,23 +1247,43 @@ extern "C" rad_status_t rad_slint_shell_start(rad_framebuffer_t framebuffer, con
         1, info.width, info.height, 32u, g_ram_budget_hint);
     emit_tier_marker(tier);
 
-    memset(g_desktop_pixels, 0, sizeof(g_desktop_pixels));
-    memset(g_terminal_pixels, 0, sizeof(g_terminal_pixels));
-    memset(g_present_front_pixels, 0x1f, sizeof(g_present_front_pixels));
-    memset(g_present_back_pixels, 0x1f, sizeof(g_present_back_pixels));
-    g_present_front = g_present_front_pixels;
-    g_present_back = g_present_back_pixels;
-    g_desktop_surface_width = clamp_surface_extent(info.width, MaxSurfaceWidth);
-    g_desktop_surface_height = clamp_surface_extent(info.height, MaxSurfaceHeight);
+    // Size the surfaces to the actual framebuffer, capped by the tier, and allocate
+    // them from the kernel heap instead of reserving four max-resolution static
+    // arrays. The row stride is the (capped) framebuffer width, shared by all four.
+    uint32_t max_w = MaxSurfaceWidth;
+    uint32_t max_h = MaxSurfaceHeight;
+    tier_surface_caps(tier, &max_w, &max_h);
+    g_desktop_surface_width = clamp_surface_extent(info.width, max_w);
+    g_desktop_surface_height = clamp_surface_extent(info.height, max_h);
+    if (!alloc_surface_buffers(g_desktop_surface_width, g_desktop_surface_height)) {
+        rad_debug_marker("RAD_COMPOSITOR_SURFACE_ALLOC_FAIL");
+        return RAD_STATUS_NO_MEMORY;
+    }
+    marker_once(&g_surface_alloc_marker_sent, "RAD_COMPOSITOR_SURFACE_ALLOC_OK");
+    // Budget gate: the four buffers must fit the tier's byte ceiling.
+    const size_t surface_total_bytes = 4u * g_surface_buffer_pixels * sizeof(uint32_t);
+    const size_t budget_ceiling_bytes =
+        (tier == RAD_COMPOSITOR_TIER_LEAN) ? (24u * 1024u * 1024u) : (64u * 1024u * 1024u);
+    if (surface_total_bytes <= budget_ceiling_bytes) {
+        marker_once(&g_surface_budget_marker_sent, "RAD_COMPOSITOR_BUDGET_OK");
+    } else {
+        rad_debug_marker("RAD_COMPOSITOR_BUDGET_EXCEEDED");
+    }
+
+    const size_t surface_bytes = g_surface_buffer_pixels * sizeof(uint32_t);
+    memset(g_desktop_pixels, 0, surface_bytes);
+    memset(g_terminal_pixels, 0, surface_bytes);
+    memset(g_present_front_pixels, 0x1f, surface_bytes);
+    memset(g_present_back_pixels, 0x1f, surface_bytes);
     g_desktop.setDesktopExtent(g_desktop_surface_width, g_desktop_surface_height);
     g_cursor_x = static_cast<int32_t>(g_desktop_surface_width / 2u);
     g_cursor_y = static_cast<int32_t>(g_desktop_surface_height / 2u);
     g_drawn_cursor_x = g_cursor_x;
     g_drawn_cursor_y = g_cursor_y;
     g_cursor_dirty = 1;
-    status = rad_compositor_init(&g_compositor, g_present_back, g_desktop_surface_width, g_desktop_surface_height, MaxSurfaceWidth);
+    status = rad_compositor_init(&g_compositor, g_present_back, g_desktop_surface_width, g_desktop_surface_height, g_surface_stride);
     if (status != RAD_STATUS_OK) return status;
-    rad_compositor_set_framebuffers(&g_compositor, g_present_front, MaxSurfaceWidth, g_present_back, MaxSurfaceWidth);
+    rad_compositor_set_framebuffers(&g_compositor, g_present_front, g_surface_stride, g_present_back, g_surface_stride);
     register_compositor_device();
     rad_compositor_surface_config_t desktop_config{};
     desktop_config.size = sizeof(desktop_config);
@@ -1229,7 +1293,7 @@ extern "C" rad_status_t rad_slint_shell_start(rad_framebuffer_t framebuffer, con
     desktop_config.height = static_cast<int32_t>(g_desktop_surface_height);
     desktop_config.z = 0;
     desktop_config.pixels = g_desktop_pixels;
-    desktop_config.stride_pixels = MaxSurfaceWidth;
+    desktop_config.stride_pixels = g_surface_stride;
     status = rad_compositor_create_surface(&g_compositor, &desktop_config, &g_desktop_surface_id);
     if (status != RAD_STATUS_OK) return status;
     const DesktopWindow *terminal_window = g_desktop.terminalWindow();
@@ -1243,7 +1307,7 @@ extern "C" rad_status_t rad_slint_shell_start(rad_framebuffer_t framebuffer, con
     terminal_config.height = terminal_window ? terminal_window->bounds.height : 380;
     terminal_config.z = 10;
     terminal_config.pixels = g_terminal_pixels;
-    terminal_config.stride_pixels = MaxSurfaceWidth;
+    terminal_config.stride_pixels = g_surface_stride;
     status = rad_compositor_create_surface(&g_compositor, &terminal_config, &g_terminal_surface_id);
     if (status != RAD_STATUS_OK) return status;
     rad_compositor_focus_surface(&g_compositor, g_terminal_surface_id);

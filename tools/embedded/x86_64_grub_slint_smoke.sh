@@ -203,11 +203,16 @@ fi
 
 if [[ "${ui_profile}" == "wm" ]]; then
     grep -q "RAD x86_64 GRUB Slint handoff" "${qemu_log}"
+    # The shell resolves its capability tier and allocates its (screen-sized,
+    # allocator-backed) surfaces before compositing, so these print on every WM
+    # boot regardless of how far the Slint render subsequently gets. x86 has a
+    # capable framebuffer and ample RAM -> FULL tier.
+    grep -q "RAD_COMPOSITOR_TIER_FULL_OK" "${qemu_log}"
+    grep -q "RAD_COMPOSITOR_SURFACE_ALLOC_OK" "${qemu_log}"
+    grep -q "RAD_COMPOSITOR_BUDGET_OK" "${qemu_log}"
     if grep -q "RAD_X86_UI_PROFILE_WM_OK" "${qemu_log}"; then
         grep -q "RAD_SLINT_BOOT_SHELL_OK" "${qemu_log}"
         grep -q "RAD_SLINT_WM_OK" "${qemu_log}"
-        # x86 has a capable framebuffer and ample RAM -> FULL tier.
-        grep -q "RAD_COMPOSITOR_TIER_FULL_OK" "${qemu_log}"
     else
         echo "WM VM reached base terminal before timeout; hosted Slint smoke covers UI markers."
     fi
