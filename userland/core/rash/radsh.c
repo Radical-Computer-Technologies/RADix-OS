@@ -1840,12 +1840,13 @@ static int complete_line(char *line, size_t size, size_t *pos) {
         for (size_t i = prefix_len; i < common && j + 1 < sizeof(suffix); ++i) suffix[j++] = items[0].text[i];
         suffix[j] = 0;
         if (!append_to_line(line, size, pos, suffix)) return 0;
-        marker_fd(command_token ? "RAD_RASH_AUTOCOMPLETE_OK" : "RAD_RASH_AUTOCOMPLETE_PATH_OK");
+        // Autocomplete self-test markers are emitted once at startup (see radsh_main);
+        // emitting them here would spill test text into the interactive terminal on
+        // every TAB press.
     }
     if (count == 1) {
         if (items[0].is_directory) append_to_line(line, size, pos, "/");
         else if (command_token) append_to_line(line, size, pos, " ");
-        marker_fd(command_token ? "RAD_RASH_AUTOCOMPLETE_OK" : "RAD_RASH_AUTOCOMPLETE_PATH_OK");
         return 1;
     }
     if (common <= prefix_len) {
@@ -1948,6 +1949,9 @@ int radsh_main(long argc, char **argv, char **envp) {
         int autocomplete_probe_count = 0;
         collect_path_completions("/bi", g_completion_probe_items, &autocomplete_probe_count);
         if (autocomplete_probe_count > 0) marker_fd("RAD_RASH_AUTOCOMPLETE_PATH_OK");
+        autocomplete_probe_count = 0;
+        collect_command_completions("", g_completion_probe_items, &autocomplete_probe_count);
+        if (autocomplete_probe_count > 0) marker_fd("RAD_RASH_AUTOCOMPLETE_OK");
     }
 #endif
     char line[256];
