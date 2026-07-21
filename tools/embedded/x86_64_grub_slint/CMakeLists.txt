@@ -259,10 +259,17 @@ if(RAD_X86_UI_PROFILE STREQUAL "wm")
     if(NOT EXISTS "${SLINT_SOURCE_DIR}/api/cpp/CMakeLists.txt")
         message(FATAL_ERROR "Slint source tree not found at ${SLINT_SOURCE_DIR}; clone Slint into .radbuild/slint-src")
     endif()
+    # -C opt-level=2 is REQUIRED, not just an optimization: the unoptimized (cargo dev)
+    # Slint build produces enormous Rust stack frames, and a deep freestanding render
+    # (RadDesktopSurface::create / text layout / render_by_line) overflows the kernel boot
+    # stack. Because a single >4KB frame steps over the lone 4KB stack guard page, the
+    # overflow silently corrupts adjacent memory instead of trapping -> intermittent wild
+    # #GP/#PF and Slint panics at shifting locations. opt-level=2 shrinks the frames so the
+    # render fits the stack. RUSTFLAGS -C opt-level wins over the dev profile's opt-level=0.
     if(DEFINED ENV{RUSTFLAGS})
-        set(ENV{RUSTFLAGS} "$ENV{RUSTFLAGS} -C panic=abort")
+        set(ENV{RUSTFLAGS} "$ENV{RUSTFLAGS} -C panic=abort -C opt-level=2")
     else()
-        set(ENV{RUSTFLAGS} "-C panic=abort")
+        set(ENV{RUSTFLAGS} "-C panic=abort -C opt-level=2")
     endif()
     add_subdirectory("${SLINT_SOURCE_DIR}/api/cpp" "${CMAKE_BINARY_DIR}/slint-cpp")
     if(TARGET slint_cpp-static)
