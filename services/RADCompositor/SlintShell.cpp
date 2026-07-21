@@ -1440,5 +1440,8 @@ extern "C" void rad_slint_shell_poll(void) {
 }
 
 extern "C" int rad_slint_shell_ready(void) {
-    return g_slint_started && g_ready_marker_sent;
+    // Ready once the DESKTOP is composited (WM up), not once the terminal is ready: the
+    // terminal is no longer auto-launched, so gating on the terminal-ready marker would
+    // keep the kernel main loop falling back to the base framebuffer terminal forever.
+    return g_slint_started && g_wm_marker_sent;
 }
