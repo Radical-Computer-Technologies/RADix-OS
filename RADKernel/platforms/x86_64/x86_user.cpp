@@ -1037,12 +1037,17 @@ void user_process_task(void *context) {
                 rad_debug_marker("RAD_USER_EXECVE_OK");
                 rad_debug_marker("RAD_USER_EXECVE_REENTER_OK");
             } else {
-                process->exit_code = static_cast<int32_t>(status);
+                // The old address space was already torn down at the top of this block and
+                // the reload failed, so exit with the conventional command-not-found code
+                // (not the raw negative rad_status_t, which posix_wait_exit_status would
+                // mangle into a nonsense WEXITSTATUS).
+                process->exit_code = 127;
                 process->exiting = 1;
+                process->exec_pending = 0;
             }
         }
     } while (process->exec_pending && !process->exiting);
-    x86_vm_destroy_address_space(&process->address_space);
+    if (process->address_space.pml4) x86_vm_destroy_address_space(&process->address_space);
     rad_process_exit(process->exit_code);
     rad_process_set_current_pid(process->parent_pid >= 0 ? process->parent_pid : 0);
     process->used = 0;
@@ -1427,6 +1432,19 @@ extern "C" long x86_syscall_dispatch(unsigned long number, unsigned long arg0, u
         if (copied_args != RAD_STATUS_OK) {
             rad_debug_marker("RAD_USER_EXECVE_ARGS_FAIL");
             return copied_args;
+        }
+        // Pre-flight the target: the deferred exec below returns UserExitMagic and never
+        // comes back to userland, so a failure discovered there can only force-exit the
+        // process with no diagnostic. Detect the common "not found / not a runnable file"
+        // case here and return -1 to the caller instead, so the shell's own execve()
+        // fallback prints "command not found" and exits 127 cleanly.
+        {
+            rad_vfs_stat_t exec_stat{};
+            const rad_status_t exec_stat_status = rad_vfs_stat(path, &exec_stat);
+            if (exec_stat_status != RAD_STATUS_OK || exec_stat.is_directory || exec_stat.size == 0) {
+                rad_debug_marker("RAD_USER_EXECVE_LOAD_NOT_FOUND");
+                return RAD_STATUS_NOT_FOUND;
+            }
         }
         strncpy(process->exec_path, path, sizeof(process->exec_path) - 1u);
         process->exec_path[sizeof(process->exec_path) - 1u] = '\0';
