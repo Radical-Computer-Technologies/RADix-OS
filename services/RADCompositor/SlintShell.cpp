@@ -977,12 +977,6 @@ public:
             if (desktop_window_->window().has_active_animations()) desktop_window_->request_redraw();
         }
         if (terminal_window_) {
-            // Keep the terminal live while it is open: re-render + re-damage it every frame
-            // so it is always composited from current pixels. Otherwise, once radsh goes idle
-            // (no output, no input) the surface stops being redrawn and the desktop's periodic
-            // whole-screen damage recomposites its region without fresh terminal content --
-            // the window blanks to the compositor clear colour until the next keystroke.
-            if (g_desktop.terminalOpen()) terminal_window_->request_redraw();
             const rad_status_t status = terminal_window_->render_if_needed(&rendered);
             if (status != RAD_STATUS_OK) return status;
             any_rendered = any_rendered || rendered;
@@ -1592,6 +1586,12 @@ extern "C" rad_status_t rad_slint_shell_start(rad_framebuffer_t framebuffer, con
 
 extern "C" void rad_slint_shell_set_terminal_text(const char *terminal_text) {
     if (!g_slint_started) return;
+    // When the WM terminal owns a live radsh PTY, its text comes solely from draining that
+    // PTY (drain_terminal_pty). The kernel main loop still calls this with the base-terminal
+    // boot transcript whenever it is dirty; applying it here would overwrite radsh's output
+    // with stale/empty transcript text every frame, making the terminal flicker to black.
+    // radsh owns the buffer while it is running, so ignore the transcript feed.
+    if (g_terminal_pty) return;
     copy_terminal_text(terminal_text);
     if (g_desktop.terminalOpen()) g_desktop.terminalReady();
     set_shell_state();
