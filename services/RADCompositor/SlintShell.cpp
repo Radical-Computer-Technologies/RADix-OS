@@ -964,6 +964,17 @@ private:
         terminal_window_->update_size(pending_terminal_width_, pending_terminal_height_);
     }
 
+    void surface_origin(uint32_t surface_id, int32_t *x, int32_t *y) {
+        *x = 0;
+        *y = 0;
+        if (surface_id == g_terminal_surface_id) {
+            if (const DesktopWindow *w = g_desktop.terminalWindow()) {
+                *x = w->bounds.x;
+                *y = w->bounds.y;
+            }
+        }
+    }
+
     void dispatch_polled_event(const rad_input_event_t& event) {
         if (event.type == RAD_INPUT_EVENT_KEY) {
             RadSlintWindowAdapter *target = terminal_window_ ? terminal_window_ : desktop_window_;
@@ -974,28 +985,56 @@ private:
             apply_pending_terminal_resize();
             return;
         }
-        if (event.type == RAD_INPUT_EVENT_POINTER_BUTTON && !event.pressed) {
-            g_desktop.endPointerGesture();
-        }
-        rad_compositor_input_result_t result{};
-        if (rad_compositor_dispatch_input(&g_compositor, &event, &result) != RAD_STATUS_OK || !result.hit) return;
-        RadSlintWindowAdapter *target = adapter_for_surface(result.surface_id);
-        if (!target) return;
-        marker_once(&g_compositor_hit_marker_sent, "RAD_COMPOSITOR_HIT_TEST_OK");
-        if (event.type == RAD_INPUT_EVENT_POINTER_MOTION
-            || event.type == RAD_INPUT_EVENT_POINTER_BUTTON
-            || event.type == RAD_INPUT_EVENT_POINTER_SCROLL) {
+        const bool is_press = event.type == RAD_INPUT_EVENT_POINTER_BUTTON && event.pressed;
+        const bool is_release = event.type == RAD_INPUT_EVENT_POINTER_BUTTON && !event.pressed;
+
+        RadSlintWindowAdapter *target = nullptr;
+        int32_t local_x = 0;
+        int32_t local_y = 0;
+
+        if (pointer_grab_active_ && !is_press) {
+            // A button is held: deliver motion/release to the grabbed surface even when the
+            // cursor has moved off it. Without this a fast drag that outruns the window
+            // stops (the motion hit-tests onto the desktop and the drag gesture dies).
+            target = adapter_for_surface(pointer_grab_surface_);
+            int32_t ox = 0, oy = 0;
+            surface_origin(pointer_grab_surface_, &ox, &oy);
+            local_x = g_cursor_x - ox;
+            local_y = g_cursor_y - oy;
+        } else {
+            rad_compositor_input_result_t result{};
+            if (rad_compositor_dispatch_input(&g_compositor, &event, &result) != RAD_STATUS_OK || !result.hit) {
+                if (is_release) { g_desktop.endPointerGesture(); pointer_grab_active_ = false; }
+                return;
+            }
+            target = adapter_for_surface(result.surface_id);
+            if (!target) {
+                if (is_release) { g_desktop.endPointerGesture(); pointer_grab_active_ = false; }
+                return;
+            }
+            local_x = result.local_x;
+            local_y = result.local_y;
+            marker_once(&g_compositor_hit_marker_sent, "RAD_COMPOSITOR_HIT_TEST_OK");
             marker_once(&g_compositor_input_marker_sent, "RAD_COMPOSITOR_INPUT_TRANSLATE_OK");
-            if (event.type == RAD_INPUT_EVENT_POINTER_BUTTON && event.pressed) {
-                rad_compositor_focus_surface(&g_compositor, result.surface_id);
+            if (is_press) {
+                pointer_grab_active_ = true;
+                pointer_grab_surface_ = result.surface_id;
+                // Only RAISE window surfaces on click. The desktop surface holds the
+                // wallpaper + topbar + applications menu and is full-screen opaque;
+                // raising it above the terminal window (as clicking the menu button did)
+                // hid the window entirely. The desktop stays at the bottom.
                 if (result.surface_id == g_terminal_surface_id) {
+                    rad_compositor_focus_surface(&g_compositor, result.surface_id);
                     if (const DesktopWindow *window = g_desktop.terminalWindow()) g_desktop.focusWindow(window->id);
                     set_shell_state();
                 }
             }
         }
+
+        if (!target) return;
+        if (is_release) { g_desktop.endPointerGesture(); pointer_grab_active_ = false; }
         dispatching_input_ = true;
-        target->dispatch_input_event(event, result.local_x, result.local_y);
+        target->dispatch_input_event(event, local_x, local_y);
         dispatching_input_ = false;
         apply_pending_terminal_resize();
     }
@@ -1048,6 +1087,8 @@ private:
     int terminal_bounds_valid_ = 0;
     bool dispatching_input_ = false;
     bool ready_for_input_ = false;   // set true after the first render lays out the tree
+    bool pointer_grab_active_ = false;   // a button is held: route motion/release to this
+    uint32_t pointer_grab_surface_ = 0;  // surface even when the cursor leaves its bounds
     bool pending_terminal_resize_ = false;
     uint32_t pending_terminal_width_ = 0;
     uint32_t pending_terminal_height_ = 0;
