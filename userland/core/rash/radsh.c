@@ -1518,6 +1518,9 @@ static int run_command(int argc, char **argv, int outfd, int infd) {
         if (infd != 0) sc(SYS_DUP2, infd, 0, 0, 0, 0, 0);
         if (outfd != 1) sc(SYS_DUP2, outfd, 1, 0, 0, 0, 0);
         sc(SYS_EXECVE, (long)path, (long)argv, 0, 0, 0, 0);
+        // execve returned -> the program was not found / could not load. Tell the user.
+        puts_fd(2, argv[0]);
+        puts_fd(2, ": command not found\n");
         sc(SYS_EXIT, 127, 0, 0, 0, 0, 0);
     }
     if (child > 0) {

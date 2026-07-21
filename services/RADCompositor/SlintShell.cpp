@@ -378,21 +378,118 @@ void scroll_terminal(int32_t lines) {
     request_terminal_surface_redraw();
 }
 
+// --- minimal terminal line discipline ------------------------------------------------
+// The window renders raw pty bytes, so radsh's control codes (colors, CR line-redraws,
+// backspace) have to be interpreted here or they show as garbage and never clear a line.
+// State: committed lines (each ending '\n') + the in-progress current line with a cursor.
+char g_term_committed[MaxShellText];
+size_t g_term_committed_len = 0;
+char g_term_line[1024];
+size_t g_term_line_len = 0;
+size_t g_term_cursor = 0;
+int g_term_esc = 0;          // 0 normal, 1 saw ESC, 2 inside CSI
+char g_term_csi[16];
+size_t g_term_csi_len = 0;
+
+bool term_line_is_marker() {
+    // radsh writes self-test markers (RAD_TERMINAL_ANSI_OK, ...) to stdout; drop them from
+    // the visible terminal. They still reach the serial log via the pty mirror for the smoke.
+    if (g_term_line_len < 5 || g_term_line[0] != 'R' || g_term_line[1] != 'A'
+        || g_term_line[2] != 'D' || g_term_line[3] != '_') return false;
+    for (size_t i = 0; i < g_term_line_len; ++i) {
+        const char ch = g_term_line[i];
+        if (!((ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_')) return false;
+    }
+    return true;
+}
+
+void term_commit_line() {
+    if (!term_line_is_marker()) {
+        const size_t need = g_term_line_len + 1u;
+        if (need < sizeof(g_term_committed)) {
+            while (g_term_committed_len + need >= sizeof(g_term_committed) && g_term_committed_len > 0) {
+                size_t k = 0;
+                while (k < g_term_committed_len && g_term_committed[k] != '\n') ++k;
+                if (k < g_term_committed_len) ++k;
+                if (k == 0) { g_term_committed_len = 0; break; }
+                memmove(g_term_committed, g_term_committed + k, g_term_committed_len - k);
+                g_term_committed_len -= k;
+            }
+            memcpy(g_term_committed + g_term_committed_len, g_term_line, g_term_line_len);
+            g_term_committed_len += g_term_line_len;
+            g_term_committed[g_term_committed_len++] = '\n';
+        }
+    }
+    g_term_line_len = 0;
+    g_term_cursor = 0;
+}
+
+void term_put_visible(char c) {
+    if (g_term_cursor < sizeof(g_term_line) - 1u) {
+        g_term_line[g_term_cursor++] = c;
+        if (g_term_cursor > g_term_line_len) g_term_line_len = g_term_cursor;
+    }
+}
+
+void term_feed_byte(char c) {
+    if (g_term_esc == 1) {                       // after ESC: only CSI ("[") is handled
+        g_term_esc = (c == '[') ? 2 : 0;
+        if (g_term_esc == 2) g_term_csi_len = 0;
+        return;
+    }
+    if (g_term_esc == 2) {                        // collecting CSI params until a final letter
+        if ((c >= '0' && c <= '9') || c == ';') {
+            if (g_term_csi_len < sizeof(g_term_csi) - 1u) g_term_csi[g_term_csi_len++] = c;
+            return;
+        }
+        if (c == 'K') {                           // erase-in-line: 2=whole line, else to end
+            if (g_term_csi_len >= 1 && g_term_csi[0] == '2') { g_term_line_len = 0; g_term_cursor = 0; }
+            else { g_term_line_len = g_term_cursor; }
+        }
+        // 'm' (color), 'C'/'D' (cursor), 'J', etc. are ignored.
+        g_term_esc = 0;
+        return;
+    }
+    switch (c) {
+    case '\x1b': g_term_esc = 1; return;
+    case '\n': term_commit_line(); return;
+    case '\r': g_term_cursor = 0; return;
+    case '\b': if (g_term_cursor > 0) --g_term_cursor; return;
+    case '\t': do { term_put_visible(' '); } while ((g_term_cursor % 8u) != 0u && g_term_cursor < sizeof(g_term_line) - 1u); return;
+    default:
+        if (static_cast<unsigned char>(c) < 0x20u) return;  // drop other control bytes
+        term_put_visible(c);
+        return;
+    }
+}
+
+void term_rebuild_visible() {
+    size_t n = g_term_committed_len;
+    if (n > sizeof(g_terminal_text) - 1u) n = sizeof(g_terminal_text) - 1u;
+    memcpy(g_terminal_text, g_term_committed, n);
+    size_t line_copy = g_term_line_len;
+    if (n + line_copy > sizeof(g_terminal_text) - 1u) line_copy = sizeof(g_terminal_text) - 1u - n;
+    memcpy(g_terminal_text + n, g_term_line, line_copy);
+    g_terminal_text[n + line_copy] = '\0';
+}
+
 void copy_terminal_text(const char *text) {
-    if (!text) text = "";
-    strncpy(g_terminal_text, text, sizeof(g_terminal_text) - 1u);
-    g_terminal_text[sizeof(g_terminal_text) - 1u] = '\0';
+    g_term_committed_len = 0;
+    g_term_line_len = 0;
+    g_term_cursor = 0;
+    g_term_esc = 0;
+    g_term_csi_len = 0;
+    if (text) {
+        for (const char *p = text; *p; ++p) term_feed_byte(*p);
+    }
+    term_rebuild_visible();
     update_terminal_visible_text();
 }
 
 void append_terminal_text(const char *text, size_t size) {
     if (!text || !size) return;
-    const size_t current = strlen(g_terminal_text);
-    if (current >= sizeof(g_terminal_text) - 1u) return;
-    size_t copy = size;
-    if (copy > sizeof(g_terminal_text) - 1u - current) copy = sizeof(g_terminal_text) - 1u - current;
-    memcpy(g_terminal_text + current, text, copy);
-    g_terminal_text[current + copy] = '\0';
+    for (size_t i = 0; i < size; ++i) term_feed_byte(text[i]);
+    term_rebuild_visible();
     update_terminal_visible_text();
 }
 
@@ -1166,7 +1263,7 @@ void launch_terminal(const char *terminal_text) {
         if (status == RAD_STATUS_OK) {
             rad_debug_marker("RAD_SLINT_APP_LAUNCH_PROCESS_OK");
             rad_debug_marker("RAD_SLINT_APP_LIVE_PTY_OK");
-            append_terminal_text("RADPx-OS PTY terminal ready\n$ ", 27);
+            // No placeholder banner: radsh prints its own greeting + user@host prompt.
         }
     } else if (rad_shell_launch_terminal_process) {
         status = rad_shell_launch_terminal_process();
