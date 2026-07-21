@@ -1094,7 +1094,12 @@ void page_tracker_lock(void) {
         return;
     }
     while (__atomic_test_and_set(&g_a53_page_spin, __ATOMIC_ACQUIRE)) {
+#if defined(__aarch64__)
         asm volatile("yield");
+#else
+        // Host self-test (rad_os_shell) compiles this file for x86; "yield" is aarch64-only.
+        asm volatile("" ::: "memory");
+#endif
     }
     g_a53_page_lock_owner = core;
     g_a53_page_lock_depth = 1;
