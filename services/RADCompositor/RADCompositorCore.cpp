@@ -136,8 +136,35 @@ void queue_surface_full_damage(rad_compositor_t *compositor, const rad_composito
     rad_compositor_queue_damage(compositor, surface.id, &rect, flags);
 }
 
+bool rect_contains(const rad_compositor_rect_t& outer, const rad_compositor_rect_t& inner) {
+    return inner.x >= outer.x && inner.y >= outer.y
+        && inner.x + inner.width <= outer.x + outer.width
+        && inner.y + inner.height <= outer.y + outer.height;
+}
+
+// Highest z of a visible, opaque surface whose bounds fully contain `rect`. Such a
+// surface fully paints the rect, so everything strictly below it is occluded (drawing
+// it would be immediately overwritten) and the copy-forward for this rect is wasted.
+// Returns INT32_MIN with *found=false when nothing fully covers the rect.
+int32_t opaque_cover_floor_z(const rad_compositor_t *compositor, const rad_compositor_rect_t& rect, bool *found) {
+    int32_t floor_z = INT32_MIN;
+    bool any = false;
+    for (size_t i = 0; i < RAD_COMPOSITOR_MAX_SURFACES; ++i) {
+        const rad_compositor_surface_info_t& s = compositor->surfaces[i];
+        if (!s.id || !s.visible || !s.pixels) continue;
+        if (s.flags & RAD_COMPOSITOR_SURFACE_ALPHA) continue;   // translucent: does not occlude
+        if (!rect_contains(s.bounds, rect)) continue;
+        if (!any || s.z > floor_z) { floor_z = s.z; any = true; }
+    }
+    if (found) *found = any;
+    return floor_z;
+}
+
 void draw_surfaces_for_rect(rad_compositor_t *compositor, const rad_compositor_rect_t& rect) {
-    int32_t last_z = INT32_MIN;
+    bool covered = false;
+    const int32_t floor_z = opaque_cover_floor_z(compositor, rect, &covered);
+    // Start above any fully-covering opaque surface: strictly lower surfaces are occluded.
+    int32_t last_z = covered ? floor_z : INT32_MIN;
     for (;;) {
         const rad_compositor_surface_info_t *next = nullptr;
         for (size_t i = 0; i < RAD_COMPOSITOR_MAX_SURFACES; ++i) {
@@ -308,7 +335,12 @@ rad_status_t rad_compositor_compose_frame(rad_compositor_t *compositor) {
         const uint32_t index = (compositor->damage_head + n) % RAD_COMPOSITOR_MAX_DAMAGE;
         rad_compositor_rect_t clipped{};
         if (!rect_intersect(compositor->damage[index].rect, framebuffer_rect(compositor), &clipped)) continue;
-        copy_forward_rect(compositor, clipped);
+        // A rect fully covered by an opaque surface is entirely repainted below, so the
+        // copy-forward memcpy would be 100% overwritten -- skip it. Identical pixels, less
+        // memory traffic (the dominant per-drag-frame cost).
+        bool covered = false;
+        opaque_cover_floor_z(compositor, clipped, &covered);
+        if (!covered) copy_forward_rect(compositor, clipped);
         draw_surfaces_for_rect(compositor, clipped);
         if (compositor->last_present_rect_count < RAD_COMPOSITOR_MAX_DAMAGE) {
             compositor->last_present_rects[compositor->last_present_rect_count] = clipped;
