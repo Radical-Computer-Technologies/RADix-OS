@@ -39,11 +39,17 @@ testing.
   over `[struct]` models and the `std-widgets` set (`Button`, `LineEdit`,
   `TextEdit`, `ScrollView`) link and run under `-nostdlib`/`-fno-exceptions` via
   a small set of libstdc++ support symbols in the kernel runtime.
-- RADCompositor also exposes dirty-rectangle software composition and an
-  shm-backed producer surface path. Full Slint *userspace* apps (a Wayland-style
-  client/server model where apps are separate processes rendering into shared
-  memory), per-window surface allocation, and hardware page flip are the 0.1.5
-  follow-up.
+- RADCompositor runs a Wayland-style client/server surface path: a userland
+  process allocates a contiguous shared-memory buffer, registers it as a surface
+  over `/dev/compositor0`, and the kernel composites it, routes input to it
+  (per-surface event ring, surface-local coordinates), and reaps it when the
+  process exits. `userland/lib/radcompositor` is the client library and
+  `/bin/radwc-demo` is a working interactive reference client (auto-launched on
+  the x86 WM target). Porting the built-in windows (Terminal, File Explorer,
+  Text Editor) to userland clients and a userland Slint render target, plus
+  per-window surface allocation and hardware page flip, are the remaining 0.1.5
+  work. (A fully-blocking `nanosleep` in a userland task is not yet re-woken on
+  a worker core; clients pace cooperatively for now.)
 - Network APIs now include device/link/send/receive/poll shape, experimental
   IPv4/UDP datagram sockets, local TCP stream socket lifecycle support, and
   legacy virtio-net RX/TX queue ownership markers for the x86 VM target.

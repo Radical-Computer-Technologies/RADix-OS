@@ -71,21 +71,39 @@ and escape sequences, reach the program); the other roles dispatch the key to
 Slint so the Text Editor's `TextEdit` receives input. Escape no longer closes a
 window — it dismisses any open menu/dropdown and otherwise forwards to the PTY.
 
-## Shared-memory IPC and the client/server direction
+## Client/server surfaces (userland apps)
 
-The x86 VM target also exposes POSIX-inspired shared-memory syscalls for the
-first process-boundary compositor path. A userspace producer can create a shm
-object, `mmap` it, write pixels directly into that mapping, open
-`/dev/compositor0`, attach the shm fd as a compositor surface, and queue dirty
-rectangles with compositor ioctls. `/bin/radgfx-smoke` maps a one-page XRGB
-surface and submits damage to prove that userspace pixels reach the compositor
-without copying through a pipe or PTY.
+RADCompositor also runs a Wayland-style client/server path in which an
+application is a **separate userland process** that renders into a shared-memory
+buffer the kernel composites — the direction the shell is moving in for the
+0.1.5 line. The protocol lives on the `/dev/compositor0` device:
 
-The current app windows (Terminal, File Explorer, Text Editor) are trusted
-in-process Slint surfaces. The next architectural step (the 0.1.5 line) is a
-Wayland-style client/server model in which applications run as separate userland
-processes that render into shared-memory surfaces composited by the kernel — the
-shm producer path is the seed of that work.
+- A client allocates a named shm object sized to its window, `mmap`s it, and
+  writes XRGB8888 pixels into that mapping. shm objects are backed by a
+  physically-contiguous block so the compositor can treat the mapping as one
+  linear, strided surface buffer (a full window spans many pages).
+- `RAD_DEVICE_IOCTL_COMPOSITOR_CREATE_SURFACE` registers the shm buffer as a
+  compositor surface; `QUEUE_DAMAGE` commits changed rectangles; `SET_BOUNDS`
+  moves/resizes it; `FOCUS` raises it and requests keyboard focus;
+  `DESTROY_SURFACE` tears it down.
+- The kernel records the owning pid per surface and reaps a client's surfaces
+  when that process exits (queuing exposed damage so the vacated area repaints).
+- Input that hit-tests or focuses onto a client surface is queued to a
+  per-surface ring (with surface-local pointer coordinates) and the client
+  dequeues it with `POLL_INPUT` — the compositor never dispatches it into an
+  in-kernel adapter.
+
+`userland/lib/radcompositor` is a small freestanding C client library over this
+protocol (open surface, commit, set position, focus, poll input, destroy).
+`/bin/radwc-demo` is the reference client: a separate process that opens a
+window surface, draws a live-animated title-barred window, moves on title-bar
+drag, and cycles color on keypress. The shell auto-launches it on the x86 WM
+target (`RAD_WC_DEMO_LAUNCH_OK` / `RAD_COMPOSITOR_IPC_SURFACE_OK`).
+`/bin/radgfx-smoke` is a minimal one-page raw-pixel producer over the same path.
+
+The three built-in app windows (Terminal, File Explorer, Text Editor) are still
+trusted in-process Slint surfaces; porting them to userland clients over this
+protocol (and building a userland Slint target) is the remaining 0.1.5 work.
 
 ## Current limits
 

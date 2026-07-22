@@ -7,6 +7,26 @@ and this project aims to adhere to [Semantic Versioning](https://semver.org/spec
 
 ## [Unreleased]
 
+### Added
+
+- **Client/server compositor path (x86 VM).** A userland process can now be a
+  real windowed application: it allocates a physically-contiguous shared-memory
+  buffer, registers it as a compositor surface over `/dev/compositor0`, and the
+  kernel composites it, routes pointer/keyboard input to it (per-surface event
+  ring with surface-local coordinates), and reaps its surfaces when the process
+  exits. New ioctls: `DESTROY_SURFACE`, `SET_BOUNDS`, `FOCUS`, `POLL_INPUT`.
+- `userland/lib/radcompositor`: a freestanding C client library for the surface
+  protocol. `/bin/radwc-demo`: the reference interactive client (draggable,
+  color-cycles on keypress), auto-launched on the WM target and gated in the
+  x86 WM smoke (`RAD_WC_DEMO_LAUNCH_OK`, `RAD_COMPOSITOR_IPC_SURFACE_OK`).
+- Contiguous multi-page shm backing (`x86_vm_alloc_pages`); `RAD_SHM_MAX_PAGES`
+  16 -> 1024 (4 MiB/surface), `RAD_KERNEL_MAX_SHM_OBJECTS` 8 -> 16.
+
+### Known issues
+
+- A fully-blocking `nanosleep` in a userland task is not re-woken on a worker
+  core; compositor clients pace cooperatively (spin + yield) for now.
+
 ## [0.1.4-beta.2] - 2026-07-22
 
 ### Added

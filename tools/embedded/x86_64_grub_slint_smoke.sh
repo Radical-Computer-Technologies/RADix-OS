@@ -216,6 +216,12 @@ if [[ "${ui_profile}" == "wm" ]]; then
     if grep -q "RAD_X86_UI_PROFILE_WM_OK" "${qemu_log}"; then
         grep -q "RAD_SLINT_BOOT_SHELL_OK" "${qemu_log}"
         grep -q "RAD_SLINT_WM_OK" "${qemu_log}"
+        # Client/server compositor: the shell auto-launches the reference userland
+        # client (radwc-demo), which opens a shared-memory window surface over
+        # /dev/compositor0. These prove the process spawned and its client surface
+        # was accepted and composited by the kernel.
+        grep -q "RAD_WC_DEMO_LAUNCH_OK" "${qemu_log}"
+        grep -q "RAD_COMPOSITOR_IPC_SURFACE_OK" "${qemu_log}"
     else
         echo "WM VM reached base terminal before timeout; hosted Slint smoke covers UI markers."
     fi
