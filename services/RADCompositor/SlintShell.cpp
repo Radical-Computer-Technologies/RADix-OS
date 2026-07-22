@@ -33,6 +33,7 @@ namespace {
 constexpr uint32_t MaxShellText = 8192u;
 constexpr uint32_t TerminalWindowId = 1u;
 constexpr uint32_t FileExplorerWindowId = 2u;
+constexpr uint32_t TextEditorWindowId = 3u;
 constexpr int32_t MinWindowWidth = 180;
 constexpr int32_t MinWindowHeight = 112;
 constexpr uint32_t MaxSurfaceWidth = 1920u;
@@ -41,7 +42,8 @@ constexpr uint32_t MaxSurfaceHeight = 1080u;
 enum class SlintSurfaceRole {
     Desktop,
     Terminal,
-    FileExplorer
+    FileExplorer,
+    TextEditor
 };
 
 enum class TerminalAppState {
@@ -109,6 +111,27 @@ public:
 
     bool fileExplorerLaunching() const {
         return file_explorer_window_.state == DesktopWindowState::Loading;
+    }
+
+    const DesktopWindow *textEditorWindow() const {
+        return &text_editor_window_;
+    }
+
+    bool textEditorOpen() const {
+        return text_editor_window_.state != DesktopWindowState::Closed;
+    }
+
+    bool textEditorLaunching() const {
+        return text_editor_window_.state == DesktopWindowState::Loading;
+    }
+
+    // Id of the currently-focused open window, or 0 if none is focused. Used to route
+    // keyboard events to the focused window's adapter.
+    uint32_t focusedWindowId() const {
+        if (terminal_window_.focused && terminal_window_.state != DesktopWindowState::Closed) return terminal_window_.id;
+        if (file_explorer_window_.focused && file_explorer_window_.state != DesktopWindowState::Closed) return file_explorer_window_.id;
+        if (text_editor_window_.focused && text_editor_window_.state != DesktopWindowState::Closed) return text_editor_window_.id;
+        return 0;
     }
 
     bool focusWindow(uint32_t window_id) {
@@ -181,6 +204,7 @@ public:
         desktop_height_ = height ? height : MaxSurfaceHeight;
         clampWindowToDesktop(terminal_window_);
         clampWindowToDesktop(file_explorer_window_);
+        clampWindowToDesktop(text_editor_window_);
     }
 
     void toggleApplicationsMenu() {
@@ -220,6 +244,21 @@ public:
         focusWindowRecord(&file_explorer_window_);
     }
 
+    void beginTextEditorLaunch() {
+        if (text_editor_window_.state == DesktopWindowState::Closed) {
+            text_editor_window_.bounds = DesktopWindowBounds{ 260, 130, 700, 460 };
+            text_editor_window_.open_seq = next_open_seq_++;
+        }
+        text_editor_window_.state = DesktopWindowState::Loading;
+        focusWindowRecord(&text_editor_window_);
+        applications_menu_open_ = false;
+    }
+
+    void textEditorReady() {
+        text_editor_window_.state = DesktopWindowState::Running;
+        focusWindowRecord(&text_editor_window_);
+    }
+
     // Escape only dismisses transient UI (the applications menu or a dock right-click
     // dropdown). It never closes an app window: when the terminal is focused and nothing
     // transient is open, Escape is forwarded to the PTY (see dispatch_key_event) so vim and
@@ -253,14 +292,22 @@ public:
     }
 
     // Fill `out` with the ids of currently-open windows in open order (first opened first) and
-    // return the count (0..2). Drives the dock icon model + anchors the Close dropdown.
-    int dockOrder(uint32_t out[2]) const {
-        const DesktopWindow *open[2] = { nullptr, nullptr };
+    // return the count (0..3). Drives the dock icon model + anchors the Close dropdown.
+    int dockOrder(uint32_t out[3]) const {
+        const DesktopWindow *open[3] = { nullptr, nullptr, nullptr };
         int n = 0;
         if (terminal_window_.state != DesktopWindowState::Closed) open[n++] = &terminal_window_;
         if (file_explorer_window_.state != DesktopWindowState::Closed) open[n++] = &file_explorer_window_;
-        if (n == 2 && open[0]->open_seq > open[1]->open_seq) {
-            const DesktopWindow *tmp = open[0]; open[0] = open[1]; open[1] = tmp;
+        if (text_editor_window_.state != DesktopWindowState::Closed) open[n++] = &text_editor_window_;
+        // Insertion sort by open_seq (n is at most 3) so icons render in open order.
+        for (int i = 1; i < n; ++i) {
+            const DesktopWindow *key = open[i];
+            int j = i - 1;
+            while (j >= 0 && open[j]->open_seq > key->open_seq) {
+                open[j + 1] = open[j];
+                --j;
+            }
+            open[j + 1] = key;
         }
         for (int i = 0; i < n; ++i) out[i] = open[i]->id;
         return n;
@@ -291,6 +338,7 @@ private:
     DesktopWindow *windowById(uint32_t id) {
         if (id == terminal_window_.id) return &terminal_window_;
         if (id == file_explorer_window_.id) return &file_explorer_window_;
+        if (id == text_editor_window_.id) return &text_editor_window_;
         return nullptr;
     }
 
@@ -300,6 +348,7 @@ private:
     void focusWindowRecord(DesktopWindow *window) {
         terminal_window_.focused = false;
         file_explorer_window_.focused = false;
+        text_editor_window_.focused = false;
         if (!window) return;
         window->focused = true;
         window->z = next_z_++;
@@ -335,6 +384,14 @@ private:
         FileExplorerWindowId,
         "Files",
         DesktopWindowBounds{ 220, 150, 560, 360 },
+        DesktopWindowState::Closed,
+        1,
+        false
+    };
+    DesktopWindow text_editor_window_{
+        TextEditorWindowId,
+        "Editor",
+        DesktopWindowBounds{ 260, 130, 700, 460 },
         DesktopWindowState::Closed,
         1,
         false
@@ -410,6 +467,7 @@ size_t g_surface_buffer_pixels = 0;       // g_surface_stride * g_surface_alloc_
 uint32_t *g_desktop_pixels = nullptr;
 uint32_t *g_terminal_pixels = nullptr;
 uint32_t *g_file_explorer_pixels = nullptr;
+uint32_t *g_text_editor_pixels = nullptr;
 uint32_t *g_present_front_pixels = nullptr;
 uint32_t *g_present_back_pixels = nullptr;
 uint32_t *g_present_front = nullptr;
@@ -418,6 +476,7 @@ rad_compositor_t g_compositor{};
 uint32_t g_desktop_surface_id = 0;
 uint32_t g_terminal_surface_id = 0;
 uint32_t g_file_explorer_surface_id = 0;
+uint32_t g_text_editor_surface_id = 0;
 
 // File explorer listing state. g_explorer_path is the directory currently shown (hardcoded
 // to "/" for now; kept as a buffer so future navigation can rewrite it). g_explorer_entries
@@ -434,9 +493,15 @@ struct ExplorerRow {
 ExplorerRow g_explorer_rows[256];
 int g_explorer_row_count = 0;
 
+// Text editor state. g_editor_path is the file currently loaded/saved; g_editor_document is
+// the latest text (kept in sync from the TextEdit via text_changed so Save persists edits).
+char g_editor_path[256] = "/tmp/untitled.txt";
+char g_editor_document[65536];
+
 slint::ComponentHandle<RadDesktopSurface> *g_desktop_shell = nullptr;
 slint::ComponentHandle<RadTerminalSurface> *g_terminal_shell = nullptr;
 slint::ComponentHandle<RadFileExplorerSurface> *g_file_explorer_shell = nullptr;
+slint::ComponentHandle<RadTextEditorSurface> *g_text_editor_shell = nullptr;
 
 void marker_once(int *flag, const char *marker);
 int32_t clamp_i32(int32_t value, int32_t minimum, int32_t maximum);
@@ -729,17 +794,20 @@ bool alloc_surface_buffers(uint32_t stride, uint32_t height) {
     g_desktop_pixels = static_cast<uint32_t*>(rad_memory_alloc(bytes));
     g_terminal_pixels = static_cast<uint32_t*>(rad_memory_alloc(bytes));
     g_file_explorer_pixels = static_cast<uint32_t*>(rad_memory_alloc(bytes));
+    g_text_editor_pixels = static_cast<uint32_t*>(rad_memory_alloc(bytes));
     g_present_front_pixels = static_cast<uint32_t*>(rad_memory_alloc(bytes));
     g_present_back_pixels = static_cast<uint32_t*>(rad_memory_alloc(bytes));
-    if (!g_desktop_pixels || !g_terminal_pixels || !g_file_explorer_pixels || !g_present_front_pixels || !g_present_back_pixels) {
+    if (!g_desktop_pixels || !g_terminal_pixels || !g_file_explorer_pixels || !g_text_editor_pixels || !g_present_front_pixels || !g_present_back_pixels) {
         rad_memory_free(g_desktop_pixels);
         rad_memory_free(g_terminal_pixels);
         rad_memory_free(g_file_explorer_pixels);
+        rad_memory_free(g_text_editor_pixels);
         rad_memory_free(g_present_front_pixels);
         rad_memory_free(g_present_back_pixels);
         g_desktop_pixels = nullptr;
         g_terminal_pixels = nullptr;
         g_file_explorer_pixels = nullptr;
+        g_text_editor_pixels = nullptr;
         g_present_front_pixels = nullptr;
         g_present_back_pixels = nullptr;
         return false;
@@ -990,7 +1058,10 @@ private:
         }
         const slint::SharedString text = key_text(event);
         if (text.empty()) return;
-        if (event.pressed) {
+        // Only the terminal window translates keys to PTY bytes. The editor (and any other
+        // Slint-driven window) must receive keys through Slint's key dispatch below so its
+        // TextEdit edits text -- forwarding them to the PTY here would type into radsh instead.
+        if (role_ == SlintSurfaceRole::Terminal && event.pressed) {
             char input[2] = {};
             size_t input_size = 0;
             if (event.code == RAD_INPUT_KEY_ENTER) {
@@ -1083,6 +1154,15 @@ public:
             next_role_ = SlintSurfaceRole::Desktop;
             return window;
         }
+        if (next_role_ == SlintSurfaceRole::TextEditor) {
+            const DesktopWindow *editor = g_desktop.textEditorWindow();
+            const uint32_t width = editor && editor->bounds.width > 0 ? static_cast<uint32_t>(editor->bounds.width) : 700u;
+            const uint32_t height = editor && editor->bounds.height > 0 ? static_cast<uint32_t>(editor->bounds.height) : 460u;
+            auto window = std::make_unique<RadSlintWindowAdapter>(SlintSurfaceRole::TextEditor, g_text_editor_surface_id, g_text_editor_pixels, width, height, g_surface_stride);
+            text_editor_window_ = window.get();
+            next_role_ = SlintSurfaceRole::Desktop;
+            return window;
+        }
         auto window = std::make_unique<RadSlintWindowAdapter>(SlintSurfaceRole::Desktop, g_desktop_surface_id, g_desktop_pixels, g_desktop_surface_width, g_desktop_surface_height, g_surface_stride);
         desktop_window_ = window.get();
         return window;
@@ -1111,6 +1191,7 @@ public:
         poll_input_device(pointer_);
         apply_pending_terminal_resize();
         apply_pending_explorer_resize();
+        apply_pending_editor_resize();
         drain_terminal_pty();
         bool rendered = false;
         bool any_rendered = false;
@@ -1131,6 +1212,12 @@ public:
             if (status != RAD_STATUS_OK) return status;
             any_rendered = any_rendered || rendered;
             if (file_explorer_window_->window().has_active_animations()) file_explorer_window_->request_redraw();
+        }
+        if (text_editor_window_) {
+            const rad_status_t status = text_editor_window_->render_if_needed(&rendered);
+            if (status != RAD_STATUS_OK) return status;
+            any_rendered = any_rendered || rendered;
+            if (text_editor_window_->window().has_active_animations()) text_editor_window_->request_redraw();
         }
         rad_compositor_set_framebuffers(&g_compositor, g_present_front, g_surface_stride, g_present_back, g_surface_stride);
         queue_cursor_damage();
@@ -1178,6 +1265,14 @@ public:
 
     void request_explorer_redraw() {
         if (file_explorer_window_) file_explorer_window_->request_redraw();
+    }
+
+    void request_editor_redraw() {
+        if (text_editor_window_) text_editor_window_->request_redraw();
+    }
+
+    void focus_editor_document() {
+        if (g_text_editor_shell) (*g_text_editor_shell)->invoke_focus_document();
     }
 
     void sync_terminal_bounds() {
@@ -1238,6 +1333,34 @@ public:
         }
     }
 
+    void sync_editor_bounds() {
+        if (!text_editor_window_) return;
+        const DesktopWindow *editor = g_desktop.textEditorWindow();
+        if (!editor) return;
+        rad_compositor_rect_t bounds{};
+        bounds.x = editor->bounds.x;
+        bounds.y = editor->bounds.y;
+        bounds.width = editor->bounds.width;
+        bounds.height = editor->bounds.height;
+        const bool bounds_changed = !editor_bounds_valid_
+            || editor_bounds_.x != bounds.x
+            || editor_bounds_.y != bounds.y
+            || editor_bounds_.width != bounds.width
+            || editor_bounds_.height != bounds.height;
+        if (!bounds_changed) return;
+        const bool size_changed = !editor_bounds_valid_
+            || editor_bounds_.width != bounds.width
+            || editor_bounds_.height != bounds.height;
+        rad_compositor_set_surface_bounds(&g_compositor, g_text_editor_surface_id, &bounds);
+        editor_bounds_ = bounds;
+        editor_bounds_valid_ = 1;
+        if (size_changed) {
+            pending_editor_resize_ = true;
+            pending_editor_width_ = static_cast<uint32_t>(bounds.width);
+            pending_editor_height_ = static_cast<uint32_t>(bounds.height);
+        }
+    }
+
 private:
     void apply_pending_terminal_resize() {
         if (!pending_terminal_resize_ || !terminal_window_ || dispatching_input_) return;
@@ -1249,6 +1372,12 @@ private:
         if (!pending_explorer_resize_ || !file_explorer_window_ || dispatching_input_) return;
         pending_explorer_resize_ = false;
         file_explorer_window_->update_size(pending_explorer_width_, pending_explorer_height_);
+    }
+
+    void apply_pending_editor_resize() {
+        if (!pending_editor_resize_ || !text_editor_window_ || dispatching_input_) return;
+        pending_editor_resize_ = false;
+        text_editor_window_->update_size(pending_editor_width_, pending_editor_height_);
     }
 
     void surface_origin(uint32_t surface_id, int32_t *x, int32_t *y) {
@@ -1264,18 +1393,35 @@ private:
                 *x = w->bounds.x;
                 *y = w->bounds.y;
             }
+        } else if (surface_id == g_text_editor_surface_id) {
+            if (const DesktopWindow *w = g_desktop.textEditorWindow()) {
+                *x = w->bounds.x;
+                *y = w->bounds.y;
+            }
         }
     }
 
     void dispatch_polled_event(const rad_input_event_t& event) {
         if (event.type == RAD_INPUT_EVENT_KEY) {
-            RadSlintWindowAdapter *target = terminal_window_ ? terminal_window_ : desktop_window_;
+            // Route keys to the FOCUSED window's adapter so the editor's TextEdit (and any
+            // other Slint-driven window) receives them. Only the terminal adapter forwards
+            // keys to the PTY (gated in dispatch_key_event). Fall back to the terminal
+            // adapter when nothing is focused, preserving the prior behavior.
+            RadSlintWindowAdapter *target = nullptr;
+            switch (g_desktop.focusedWindowId()) {
+            case TerminalWindowId: target = terminal_window_; break;
+            case FileExplorerWindowId: target = file_explorer_window_; break;
+            case TextEditorWindowId: target = text_editor_window_; break;
+            default: break;
+            }
+            if (!target) target = terminal_window_ ? terminal_window_ : desktop_window_;
             if (!target) return;
             dispatching_input_ = true;
             target->dispatch_input_event(event);
             dispatching_input_ = false;
             apply_pending_terminal_resize();
             apply_pending_explorer_resize();
+            apply_pending_editor_resize();
             return;
         }
         const bool is_press = event.type == RAD_INPUT_EVENT_POINTER_BUTTON && event.pressed;
@@ -1319,6 +1465,7 @@ private:
                 uint32_t focus_window_id = 0;
                 if (result.surface_id == g_terminal_surface_id) focus_window_id = TerminalWindowId;
                 else if (result.surface_id == g_file_explorer_surface_id) focus_window_id = FileExplorerWindowId;
+                else if (result.surface_id == g_text_editor_surface_id) focus_window_id = TextEditorWindowId;
                 if (focus_window_id != 0) {
                     rad_compositor_focus_surface(&g_compositor, result.surface_id);
                     g_desktop.focusWindow(focus_window_id);
@@ -1334,6 +1481,7 @@ private:
         dispatching_input_ = false;
         apply_pending_terminal_resize();
         apply_pending_explorer_resize();
+        apply_pending_editor_resize();
     }
 
     void poll_input_device(rad_device_t device) {
@@ -1370,6 +1518,7 @@ private:
         if (desktop_window_ && desktop_window_->surface_id() == surface_id) return desktop_window_;
         if (terminal_window_ && terminal_window_->surface_id() == surface_id) return terminal_window_;
         if (file_explorer_window_ && file_explorer_window_->surface_id() == surface_id) return file_explorer_window_;
+        if (text_editor_window_ && text_editor_window_->surface_id() == surface_id) return text_editor_window_;
         return nullptr;
     }
 
@@ -1382,10 +1531,13 @@ private:
     RadSlintWindowAdapter *desktop_window_ = nullptr;
     RadSlintWindowAdapter *terminal_window_ = nullptr;
     RadSlintWindowAdapter *file_explorer_window_ = nullptr;
+    RadSlintWindowAdapter *text_editor_window_ = nullptr;
     rad_compositor_rect_t terminal_bounds_{};
     int terminal_bounds_valid_ = 0;
     rad_compositor_rect_t explorer_bounds_{};
     int explorer_bounds_valid_ = 0;
+    rad_compositor_rect_t editor_bounds_{};
+    int editor_bounds_valid_ = 0;
     bool dispatching_input_ = false;
     bool ready_for_input_ = false;   // set true after the first render lays out the tree
     bool pointer_grab_active_ = false;   // a button is held: route motion/release to this
@@ -1396,6 +1548,9 @@ private:
     bool pending_explorer_resize_ = false;
     uint32_t pending_explorer_width_ = 0;
     uint32_t pending_explorer_height_ = 0;
+    bool pending_editor_resize_ = false;
+    uint32_t pending_editor_width_ = 0;
+    uint32_t pending_editor_height_ = 0;
 };
 
 RadSlintPlatform *g_platform = nullptr;
@@ -1423,22 +1578,24 @@ const char *shell_status_text() {
 // re-rendered on every set_shell_state.
 void update_dock_icons() {
     if (!g_desktop_shell) return;
-    uint32_t order[2];
+    uint32_t order[3];
     const int n = g_desktop.dockOrder(order);
     std::vector<RadDockIcon> icons;
     for (int i = 0; i < n; ++i) {
         RadDockIcon icon{};
         icon.app_id = static_cast<int>(order[i]);
-        icon.kind = order[i] == TerminalWindowId ? 1 : 2;
+        icon.kind = order[i] == TerminalWindowId ? 1
+                  : order[i] == TextEditorWindowId ? 3 : 2;
         icons.push_back(icon);
     }
     (*g_desktop_shell)->set_dock_icons(std::make_shared<slint::VectorModel<RadDockIcon>>(std::move(icons)));
 }
 
 void set_shell_state(const char *status) {
-    if (!g_desktop_shell || !g_terminal_shell || !g_file_explorer_shell) return;
+    if (!g_desktop_shell || !g_terminal_shell || !g_file_explorer_shell || !g_text_editor_shell) return;
     const DesktopWindow *terminal = g_desktop.terminalWindow();
     const DesktopWindow *explorer = g_desktop.fileExplorerWindow();
+    const DesktopWindow *editor = g_desktop.textEditorWindow();
     (*g_desktop_shell)->set_surface_width(static_cast<float>(g_desktop_surface_width));
     (*g_desktop_shell)->set_surface_height(static_cast<float>(g_desktop_surface_height));
     (*g_desktop_shell)->set_backend(shared_string("x86_64_grub / RADPx-OS"));
@@ -1446,10 +1603,11 @@ void set_shell_state(const char *status) {
     (*g_desktop_shell)->set_applications_open(g_desktop.applicationsMenuOpen());
     (*g_desktop_shell)->set_terminal_open(g_desktop.terminalOpen());
     (*g_desktop_shell)->set_file_explorer_open(g_desktop.fileExplorerOpen());
+    (*g_desktop_shell)->set_text_editor_open(g_desktop.textEditorOpen());
     (*g_desktop_shell)->set_dock_menu_app(g_desktop.dockMenuApp());
     {
         // Anchor the single Close dropdown to the Y of whichever open-app icon is selected.
-        uint32_t order[2];
+        uint32_t order[3];
         const int n = g_desktop.dockOrder(order);
         const int menu_app = g_desktop.dockMenuApp();
         float menu_y = 132.0f;
@@ -1477,6 +1635,17 @@ void set_shell_state(const char *status) {
         (*g_file_explorer_shell)->set_surface_height(static_cast<float>(explorer->bounds.height));
         rad_compositor_set_surface_visible(&g_compositor, g_file_explorer_surface_id, explorer->state != DesktopWindowState::Closed);
         if (g_platform) g_platform->sync_explorer_bounds();
+    }
+    (*g_text_editor_shell)->set_editor_loading(g_desktop.textEditorLaunching());
+    (*g_text_editor_shell)->set_file_path(shared_string(g_editor_path));
+    (*g_text_editor_shell)->set_document_text(shared_string(g_editor_document));
+    if (editor) {
+        (*g_text_editor_shell)->set_editor_window_title(shared_string(editor->title));
+        (*g_text_editor_shell)->set_editor_window_focused(editor->focused);
+        (*g_text_editor_shell)->set_surface_width(static_cast<float>(editor->bounds.width));
+        (*g_text_editor_shell)->set_surface_height(static_cast<float>(editor->bounds.height));
+        rad_compositor_set_surface_visible(&g_compositor, g_text_editor_surface_id, editor->state != DesktopWindowState::Closed);
+        if (g_platform) g_platform->sync_editor_bounds();
     }
 }
 
@@ -1625,6 +1794,111 @@ void close_file_explorer_model_only() {
     g_explorer_entries[0] = '\0';
     update_dock_icons();
     set_shell_state();
+}
+
+void store_editor_path(const char *path) {
+    if (!path) return;
+    const size_t copy = strnlen(path, sizeof(g_editor_path) - 1u);
+    memcpy(g_editor_path, path, copy);
+    g_editor_path[copy] = '\0';
+}
+
+void store_editor_document(const char *text) {
+    if (!text) { g_editor_document[0] = '\0'; return; }
+    const size_t copy = strnlen(text, sizeof(g_editor_document) - 1u);
+    memmove(g_editor_document, text, copy);
+    g_editor_document[copy] = '\0';
+}
+
+void launch_text_editor() {
+    g_desktop.beginTextEditorLaunch();
+    set_shell_state();
+    render_ticks(2);
+    g_desktop.textEditorReady();
+    update_dock_icons();
+    set_shell_state();
+    if (g_platform) {
+        g_platform->request_editor_redraw();
+        g_platform->focus_editor_document();
+    }
+    render_ticks(2);
+    marker_once(&g_wm_marker_sent, "RAD_SLINT_WM_OK");
+}
+
+void close_text_editor_model_only() {
+    g_desktop.closeWindow(TextEditorWindowId);
+    update_dock_icons();
+    set_shell_state();
+}
+
+// Read the file at the editor's current file-path into g_editor_document (capped at ~64 KB)
+// via the kernel VFS, and push it into the TextEdit. Emits RAD_SLINT_EDITOR_OPEN_OK.
+void editor_open_requested() {
+    if (!g_text_editor_shell) return;
+    const slint::SharedString path = (*g_text_editor_shell)->get_file_path();
+    store_editor_path(path.data());
+
+    rad_file_t file = nullptr;
+    if (rad_vfs_open(g_editor_path, RAD_VFS_READ, &file) == RAD_STATUS_OK && file) {
+        size_t total = 0;
+        while (total < sizeof(g_editor_document) - 1u) {
+            size_t got = 0;
+            const rad_status_t status = rad_vfs_read(file, g_editor_document + total,
+                sizeof(g_editor_document) - 1u - total, &got);
+            if (status != RAD_STATUS_OK || got == 0) break;
+            total += got;
+        }
+        g_editor_document[total] = '\0';
+        rad_vfs_close(file);
+    } else {
+        // No such file (or unreadable): start with an empty buffer so the user can create it.
+        g_editor_document[0] = '\0';
+    }
+
+    (*g_text_editor_shell)->set_document_text(shared_string(g_editor_document));
+    if (g_platform) {
+        g_platform->request_editor_redraw();
+        g_platform->focus_editor_document();
+    }
+    set_shell_state();
+    rad_debug_marker("RAD_SLINT_EDITOR_OPEN_OK");
+}
+
+// Write g_editor_document to `path` via the kernel VFS (create/truncate). Emits
+// RAD_SLINT_EDITOR_SAVE_OK.
+void editor_save_requested(slint::SharedString path) {
+    store_editor_path(path.data());
+    // Snapshot the freshest text straight from the TextEdit so a Save without an intervening
+    // edit callback still persists what is on screen.
+    if (g_text_editor_shell) {
+        const slint::SharedString current = (*g_text_editor_shell)->get_document_text();
+        store_editor_document(current.data());
+    }
+
+    rad_file_t file = nullptr;
+    if (rad_vfs_open(g_editor_path, RAD_VFS_WRITE | RAD_VFS_CREATE | RAD_VFS_TRUNCATE, &file) == RAD_STATUS_OK && file) {
+        const size_t len = strnlen(g_editor_document, sizeof(g_editor_document));
+        size_t offset = 0;
+        while (offset < len) {
+            size_t wrote = 0;
+            const rad_status_t status = rad_vfs_write(file, g_editor_document + offset, len - offset, &wrote);
+            if (status != RAD_STATUS_OK || wrote == 0) break;
+            offset += wrote;
+        }
+        rad_vfs_close(file);
+        rad_debug_marker("RAD_SLINT_EDITOR_SAVE_OK");
+    } else {
+        rad_debug_marker("RAD_SLINT_EDITOR_SAVE_FAIL");
+    }
+    set_shell_state();
+}
+
+void editor_text_changed(slint::SharedString text) {
+    store_editor_document(text.data());
+}
+
+void editor_path_changed(slint::SharedString path) {
+    store_editor_path(path.data());
 }
 
 // Kill the terminal's shell process and drop its PTY, and clear the on-screen buffer, so
@@ -1784,8 +2058,8 @@ extern "C" rad_status_t rad_slint_shell_start(rad_framebuffer_t framebuffer, con
         return RAD_STATUS_NO_MEMORY;
     }
     marker_once(&g_surface_alloc_marker_sent, "RAD_COMPOSITOR_SURFACE_ALLOC_OK");
-    // Budget gate: the five buffers must fit the tier's byte ceiling.
-    const size_t surface_total_bytes = 5u * g_surface_buffer_pixels * sizeof(uint32_t);
+    // Budget gate: the six buffers must fit the tier's byte ceiling.
+    const size_t surface_total_bytes = 6u * g_surface_buffer_pixels * sizeof(uint32_t);
     const size_t budget_ceiling_bytes =
         (tier == RAD_COMPOSITOR_TIER_LEAN) ? (24u * 1024u * 1024u) : (64u * 1024u * 1024u);
     if (surface_total_bytes <= budget_ceiling_bytes) {
@@ -1798,6 +2072,7 @@ extern "C" rad_status_t rad_slint_shell_start(rad_framebuffer_t framebuffer, con
     memset(g_desktop_pixels, 0, surface_bytes);
     memset(g_terminal_pixels, 0, surface_bytes);
     memset(g_file_explorer_pixels, 0, surface_bytes);
+    memset(g_text_editor_pixels, 0, surface_bytes);
     memset(g_present_front_pixels, 0x1f, surface_bytes);
     memset(g_present_back_pixels, 0x1f, surface_bytes);
     g_desktop.setDesktopExtent(g_desktop_surface_width, g_desktop_surface_height);
@@ -1851,6 +2126,22 @@ extern "C" rad_status_t rad_slint_shell_start(rad_framebuffer_t framebuffer, con
     if (status != RAD_STATUS_OK) return status;
     // The explorer starts Closed; hide it until launch_file_explorer shows it.
     rad_compositor_set_surface_visible(&g_compositor, g_file_explorer_surface_id, false);
+    const DesktopWindow *editor_window = g_desktop.textEditorWindow();
+    rad_compositor_surface_config_t editor_config{};
+    editor_config.size = sizeof(editor_config);
+    editor_config.app_id = "rad.editor";
+    editor_config.title = "Editor";
+    editor_config.x = editor_window ? editor_window->bounds.x : 260;
+    editor_config.y = editor_window ? editor_window->bounds.y : 130;
+    editor_config.width = editor_window ? editor_window->bounds.width : 700;
+    editor_config.height = editor_window ? editor_window->bounds.height : 460;
+    editor_config.z = 30;
+    editor_config.pixels = g_text_editor_pixels;
+    editor_config.stride_pixels = g_surface_stride;
+    status = rad_compositor_create_surface(&g_compositor, &editor_config, &g_text_editor_surface_id);
+    if (status != RAD_STATUS_OK) return status;
+    // The editor starts Closed; hide it until launch_text_editor shows it.
+    rad_compositor_set_surface_visible(&g_compositor, g_text_editor_surface_id, false);
     rad_compositor_focus_surface(&g_compositor, g_terminal_surface_id);
     marker_once(&g_compositor_surface_marker_sent, "RAD_COMPOSITOR_SURFACE_CREATE_OK");
     marker_once(&g_compositor_z_marker_sent, "RAD_COMPOSITOR_Z_ORDER_OK");
@@ -1865,6 +2156,8 @@ extern "C" rad_status_t rad_slint_shell_start(rad_framebuffer_t framebuffer, con
     g_terminal_shell = new slint::ComponentHandle<RadTerminalSurface>(RadTerminalSurface::create());
     platform->set_next_role(SlintSurfaceRole::FileExplorer);
     g_file_explorer_shell = new slint::ComponentHandle<RadFileExplorerSurface>(RadFileExplorerSurface::create());
+    platform->set_next_role(SlintSurfaceRole::TextEditor);
+    g_text_editor_shell = new slint::ComponentHandle<RadTextEditorSurface>(RadTextEditorSurface::create());
     (*g_desktop_shell)->on_toggle_applications([]() {
         if (!g_desktop_shell) return;
         g_desktop.toggleApplicationsMenu();
@@ -1876,6 +2169,9 @@ extern "C" rad_status_t rad_slint_shell_start(rad_framebuffer_t framebuffer, con
     });
     (*g_desktop_shell)->on_launch_file_explorer([]() {
         launch_file_explorer();
+    });
+    (*g_desktop_shell)->on_launch_text_editor([]() {
+        launch_text_editor();
     });
     // Dock right-click "Close" dropdown: open the per-icon menu, dismiss it, and the
     // Close actions for each app.
@@ -1895,6 +2191,10 @@ extern "C" rad_status_t rad_slint_shell_start(rad_framebuffer_t framebuffer, con
         } else if (app == 2) {
             g_desktop.focusWindow(FileExplorerWindowId);
             rad_compositor_focus_surface(&g_compositor, g_file_explorer_surface_id);
+        } else if (app == 3) {
+            g_desktop.focusWindow(TextEditorWindowId);
+            rad_compositor_focus_surface(&g_compositor, g_text_editor_surface_id);
+            if (g_platform) g_platform->focus_editor_document();
         }
         set_shell_state();
     });
@@ -1902,6 +2202,7 @@ extern "C" rad_status_t rad_slint_shell_start(rad_framebuffer_t framebuffer, con
         g_desktop.closeDockMenu();
         if (app == static_cast<int>(TerminalWindowId)) close_terminal_model_only();
         else if (app == static_cast<int>(FileExplorerWindowId)) close_file_explorer_model_only();
+        else if (app == static_cast<int>(TextEditorWindowId)) close_text_editor_model_only();
         set_shell_state();
     });
     (*g_desktop_shell)->on_escape_pressed([]() {
@@ -1980,10 +2281,51 @@ extern "C" rad_status_t rad_slint_shell_start(rad_framebuffer_t framebuffer, con
     (*g_file_explorer_shell)->on_navigate([](int index) {
         explorer_navigate(index);
     });
+    (*g_text_editor_shell)->on_escape_pressed([]() {
+        if (g_desktop.handleEscape()) {
+            set_shell_state();
+            marker_once(&g_menu_escape_marker_sent, "RAD_SLINT_MENU_ESCAPE_OK");
+        }
+    });
+    (*g_text_editor_shell)->on_focus_editor_window([]() {
+        g_desktop.focusWindow(TextEditorWindowId);
+        rad_compositor_focus_surface(&g_compositor, g_text_editor_surface_id);
+        marker_once(&g_compositor_z_marker_sent, "RAD_COMPOSITOR_Z_ORDER_OK");
+        if (g_platform) g_platform->focus_editor_document();
+        set_shell_state();
+    });
+    (*g_text_editor_shell)->on_close_editor_window([]() {
+        close_text_editor_model_only();
+    });
+    (*g_text_editor_shell)->on_move_editor_window([](float, float) {
+        if (g_desktop.moveWindow(TextEditorWindowId, g_cursor_x, g_cursor_y)) {
+            marker_once(&g_window_move_marker_sent, "RAD_SLINT_WINDOW_MOVE_OK");
+        }
+        set_shell_state();
+    });
+    (*g_text_editor_shell)->on_resize_editor_window([](float, float) {
+        if (g_desktop.resizeWindow(TextEditorWindowId, g_cursor_x, g_cursor_y)) {
+            marker_once(&g_window_resize_marker_sent, "RAD_SLINT_WINDOW_RESIZE_OK");
+        }
+        set_shell_state();
+    });
+    (*g_text_editor_shell)->on_open_requested([]() {
+        editor_open_requested();
+    });
+    (*g_text_editor_shell)->on_save_requested([](slint::SharedString path) {
+        editor_save_requested(path);
+    });
+    (*g_text_editor_shell)->on_text_changed([](slint::SharedString text) {
+        editor_text_changed(text);
+    });
+    (*g_text_editor_shell)->on_path_changed([](slint::SharedString path) {
+        editor_path_changed(path);
+    });
     set_shell_state("framebuffer=primary shell=radlib state=desktop");
     (*g_desktop_shell)->show();
     (*g_terminal_shell)->show();
     (*g_file_explorer_shell)->show();
+    (*g_text_editor_shell)->show();
     g_slint_started = 1;
     (void)terminal_text;
     render_ticks(2);
