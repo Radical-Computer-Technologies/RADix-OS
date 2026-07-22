@@ -85,7 +85,7 @@ lands.
 
 ## Branch and commit conventions
 
-- Work on a topic branch (current line: `crimson-v0.1.4`); do not commit directly
+- Work on a topic branch (current line: `crimson-v0.1.5`); do not commit directly
   to `main`.
 - Keep commits small, incremental, and green — each commit should build and pass
   the relevant tests/smoke.
