@@ -95,7 +95,9 @@ int main(void) {
         return 1;
     }
     put_str("radwc-demo: RAD_WC_DEMO_CLIENT_OK window is up\n");
-    rad_wc_surface_focus(&surface);
+    /* Do NOT steal keyboard focus on launch -- a client takes keyboard focus
+     * only when the user clicks it, so the WM (login, terminal, ...) keeps input
+     * by default. */
 
     uint32_t frame = 0;
     uint32_t color_index = 0;
