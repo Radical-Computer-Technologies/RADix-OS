@@ -278,6 +278,7 @@ export component RadDesktopSurface inherits Window {
     in property <float> surface_width: 640;
     in property <float> surface_height: 360;
     in property <bool> applications_open: false;
+    in property <bool> terminal_open: false;
 
     callback toggle_applications();
     callback launch_terminal();
@@ -314,38 +315,78 @@ export component RadDesktopSurface inherits Window {
         }
     }
 
+    // Left dock: a gradient panel (black at the top fading to light gray at the bottom)
+    // spanning below the top bar. It holds the Apps launcher and icons for the currently
+    // open apps; the icons render on top of the gradient.
     Rectangle {
         x: 0px;
         y: 38px;
         width: 86px;
-        height: 82px;
-        background: root.applications_open ? #1d4ed8 : #0b1729;
-        border-color: root.applications_open ? #93c5fd : #1d4ed8;
-        border-width: 1px;
+        height: parent.height - 38px;
+        background: @linear-gradient(180deg, #050506 0%, #17171a 32%, #4b4b53 70%, #b9b9c1 100%);
 
-        Text {
+        // Apps launcher toggle (top of the dock).
+        Rectangle {
             x: 0px;
-            y: 10px;
+            y: 0px;
             width: parent.width;
-            horizontal-alignment: center;
-            text: "Apps";
-            color: #f8fafc;
-            font-size: 15px;
-            font-weight: 700;
+            height: 82px;
+            background: root.applications_open ? #1d4ed8 : #0b1729;
+            border-color: root.applications_open ? #93c5fd : #1d4ed8;
+            border-width: 1px;
+
+            Text {
+                x: 0px;
+                y: 10px;
+                width: parent.width;
+                horizontal-alignment: center;
+                text: "Apps";
+                color: #f8fafc;
+                font-size: 15px;
+                font-weight: 700;
+            }
+
+            Text {
+                x: 0px;
+                y: 36px;
+                width: parent.width;
+                horizontal-alignment: center;
+                text: "Applications";
+                color: #bfdbfe;
+                font-size: 11px;
+            }
+
+            TouchArea {
+                clicked => { root.toggle_applications(); }
+            }
         }
 
-        Text {
-            x: 0px;
-            y: 36px;
-            width: parent.width;
-            horizontal-alignment: center;
-            text: "Applications";
-            color: #bfdbfe;
-            font-size: 11px;
-        }
+        // Open-app icon: the terminal, a black tile with a ">_" prompt glyph, shown while
+        // the terminal window is open.
+        Rectangle {
+            x: 13px;
+            y: 94px;
+            width: 60px;
+            height: 60px;
+            visible: root.terminal_open;
+            background: #000000;
+            border-radius: 9px;
+            border-color: #2f2f33;
+            border-width: 1px;
 
-        TouchArea {
-            clicked => { root.toggle_applications(); }
+            Text {
+                x: 0px;
+                y: 0px;
+                width: parent.width;
+                height: parent.height;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                text: ">_";
+                color: #4ade80;
+                font-size: 24px;
+                font-weight: 800;
+                font-family: "monospace";
+            }
         }
     }
 

@@ -1221,6 +1221,7 @@ void set_shell_state(const char *status) {
     (*g_desktop_shell)->set_backend(shared_string("x86_64_grub / RADPx-OS"));
     (*g_desktop_shell)->set_status(shared_string(status ? status : shell_status_text()));
     (*g_desktop_shell)->set_applications_open(g_desktop.applicationsMenuOpen());
+    (*g_desktop_shell)->set_terminal_open(g_desktop.terminalOpen());
     (*g_terminal_shell)->set_terminal(shared_string(g_terminal_visible_text));
     (*g_terminal_shell)->set_terminal_loading(g_desktop.terminalLaunching());
     if (terminal) {
