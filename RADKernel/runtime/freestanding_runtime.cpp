@@ -2,6 +2,8 @@
 #include <stdint.h>
 #include <stdarg.h>
 #include <new>
+#include <typeinfo>
+#include <memory>
 
 // Portable early-console + halt hooks (implemented by each platform HAL; weak so
 // this freestanding runtime links on any target).
@@ -497,6 +499,41 @@ void operator delete(void *ptr, size_t) noexcept { free(ptr); }
 void operator delete[](void *ptr, size_t) noexcept { free(ptr); }
 void operator delete(void *ptr, const std::nothrow_t&) noexcept { free(ptr); }
 void operator delete[](void *ptr, const std::nothrow_t&) noexcept { free(ptr); }
+
+// libstdc++'s std::vector / std::shared_ptr call these __throw_* helpers on unrecoverable
+// errors (out of memory, container length/index violations). They are the real error
+// handlers for those paths -- with -nostdlib we own them, and because the kernel is built
+// -fno-exceptions there is no stack to unwind: the only correct behavior is to report the
+// specific fault and halt (a kernel panic), which is what these do. They are what lets
+// dynamic Slint UIs (for-Repeaters over model list properties) link and run in the
+// freestanding kernel; they only fire on genuine allocation/bounds failure, not in normal
+// operation.
+namespace std {
+[[noreturn]] static void rad_container_panic(const char *what) {
+    if (rad_hal_early_console_write) {
+        rad_hal_early_console_write("RAD_KERNEL_PANIC std-container: ");
+        rad_hal_early_console_write(what);
+        rad_hal_early_console_write("\n");
+    }
+    abort();
+}
+void __throw_bad_alloc() { rad_container_panic("bad_alloc (out of memory)"); }
+void __throw_length_error(const char *m) { rad_container_panic(m ? m : "length_error"); }
+void __throw_bad_array_new_length() { rad_container_panic("bad_array_new_length"); }
+void __throw_out_of_range(const char *m) { rad_container_panic(m ? m : "out_of_range"); }
+void __throw_out_of_range_fmt(const char *m, ...) { rad_container_panic(m ? m : "out_of_range"); }
+void __throw_logic_error(const char *m) { rad_container_panic(m ? m : "logic_error"); }
+void __throw_bad_function_call() { rad_container_panic("bad_function_call"); }
+
+// make_shared tags its inline control block so shared_ptr::get_deleter can recognise a
+// make_shared'd object. The WM never queries deleters, so this comparison is always false.
+bool _Sp_make_shared_tag::_S_eq(const type_info &) noexcept { return false; }
+}
+
+// libstdc++'s shared_ptr refcount reads __libc_single_threaded to choose atomic vs. plain
+// increments. The WM's Slint models (Repeater / VectorModel control blocks) are only touched
+// from the single-threaded shell tick, so single-threaded refcounting is correct and faster.
+extern "C" { char __libc_single_threaded = 1; }
 void operator delete(void *ptr, std::align_val_t) noexcept { free(ptr); }
 void operator delete[](void *ptr, std::align_val_t) noexcept { free(ptr); }
 void operator delete(void *ptr, size_t, std::align_val_t) noexcept { free(ptr); }

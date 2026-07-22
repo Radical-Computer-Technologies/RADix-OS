@@ -763,8 +763,15 @@ export component RadTerminalSurface inherits Window {
 // and close, focus-on-click body, resize handle). The body shows a single multi-line Text
 // bound to `entries` (newline-joined listing) -- Repeater-free so the freestanding kernel
 // links (-nostdlib / -fno-exceptions cannot pull in std::make_shared for Slint models).
+export struct RadFileEntry {
+    name: string,
+    is-dir: bool,
+}
+
 export component RadFileExplorerSurface inherits Window {
     in property <string> entries: "";
+    in property <[RadFileEntry]> entries-model: [];
+    in property <string> current-path: "/";
     in property <bool> explorer_loading: false;
     in property <string> explorer_window_title: "Files";
     in property <bool> explorer_window_focused: true;
@@ -775,6 +782,7 @@ export component RadFileExplorerSurface inherits Window {
     callback close_explorer_window();
     callback move_explorer_window(float, float);
     callback resize_explorer_window(float, float);
+    callback navigate(int);
     callback escape_pressed();
 
     title: "RAD Files";
@@ -867,29 +875,81 @@ export component RadFileExplorerSurface inherits Window {
             clicked => { root.focus_explorer_window(); }
         }
 
-        // Header label for the current listing.
+        // Current-path breadcrumb.
         Text {
             x: 10px;
             y: 34px;
             width: parent.width - 20px;
-            text: "Files";
+            text: root.current-path;
             color: #7dd3fc;
-            font-size: 13px;
+            font-size: 12px;
             font-weight: 700;
+            font-family: "monospace";
+            overflow: elide;
         }
 
-        // Directory listing: one newline-joined string in a single multi-line Text.
-        Text {
-            x: 10px;
-            y: 54px;
-            width: parent.width - 20px;
-            height: parent.height - 62px;
-            text: root.entries;
-            color: #d1fae5;
-            font-family: "monospace";
-            font-size: 13px;
-            wrap: word-wrap;
-            overflow: clip;
+        // Directory listing: one clickable row per entry with a folder/file icon.
+        Rectangle {
+            x: 6px;
+            y: 52px;
+            width: parent.width - 12px;
+            height: parent.height - 60px;
+            clip: true;
+
+            VerticalLayout {
+                alignment: start;
+                for entry[i] in root.entries-model : Rectangle {
+                    height: 24px;
+                    background: row-touch.has-hover ? #16324f : transparent;
+                    border-radius: 4px;
+
+                    // Folder icon: amber body with a tab.
+                    Rectangle {
+                        visible: entry.is-dir;
+                        x: 8px;
+                        y: 7px;
+                        width: 16px;
+                        height: 11px;
+                        background: #f5c451;
+                        border-radius: 2px;
+                        Rectangle {
+                            x: 0px;
+                            y: -3px;
+                            width: 7px;
+                            height: 4px;
+                            background: #f5c451;
+                            border-radius: 1px;
+                        }
+                    }
+                    // File icon: light page.
+                    Rectangle {
+                        visible: !entry.is-dir;
+                        x: 10px;
+                        y: 5px;
+                        width: 12px;
+                        height: 15px;
+                        background: #cbd5e1;
+                        border-radius: 2px;
+                    }
+
+                    Text {
+                        x: 34px;
+                        width: parent.width - 42px;
+                        height: parent.height;
+                        text: entry.name;
+                        color: entry.is-dir ? #93c5fd : #e2e8f0;
+                        font-size: 13px;
+                        font-family: "monospace";
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+
+                    row-touch := TouchArea {
+                        clicked => { root.navigate(i); }
+                        mouse-cursor: entry.is-dir ? MouseCursor.pointer : MouseCursor.default;
+                    }
+                }
+            }
         }
 
         resize-handle := TouchArea {

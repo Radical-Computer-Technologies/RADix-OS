@@ -7,6 +7,7 @@
 #include "RADCompositorCore.h"
 
 #include <memory>
+#include <vector>
 #include <span>
 #include <string_view>
 #include <utility>
@@ -397,6 +398,15 @@ uint32_t g_file_explorer_surface_id = 0;
 // is the newline-joined listing pushed into the explorer window's `entries` property.
 char g_explorer_path[256] = "/";
 char g_explorer_entries[MaxShellText];
+
+// Parallel record of the rows currently shown in the explorer, so a navigate(index) click
+// from the Slint Repeater can resolve back to a name/kind without reading the model.
+struct ExplorerRow {
+    char name[128];
+    bool is_dir;
+};
+ExplorerRow g_explorer_rows[256];
+int g_explorer_row_count = 0;
 
 slint::ComponentHandle<RadDesktopSurface> *g_desktop_shell = nullptr;
 slint::ComponentHandle<RadTerminalSurface> *g_terminal_shell = nullptr;
@@ -1478,35 +1488,75 @@ void launch_terminal(const char *terminal_text) {
     marker_once(&g_terminal_window_marker_sent, "RAD_SLINT_APP_TERMINAL_WINDOW_OK");
 }
 
-// Enumerate g_explorer_path with the in-kernel VFS and build the newline-joined listing
-// pushed into the explorer window. Directories are prefixed with "/". Navigation/clicking
-// is not wired yet -- this just shows the contents of the current path (hardcoded "/").
+bool explorer_is_dot_entry(const char *name) {
+    return name[0] == '.' && (name[1] == '\0' || (name[1] == '.' && name[2] == '\0'));
+}
+
+// Enumerate g_explorer_path with the in-kernel VFS and push it into the explorer window as a
+// real Slint model (one RadFileEntry per row) so the Repeater renders a clickable, icon'd
+// list. A synthetic ".." row leads the list whenever we are below root. The parallel
+// g_explorer_rows array lets navigate() resolve a clicked index back to a name/kind.
 void populate_explorer_listing() {
-    size_t len = 0;
-    g_explorer_entries[0] = '\0';
+    std::vector<RadFileEntry> rows;
+    g_explorer_row_count = 0;
+
+    const bool at_root = g_explorer_path[0] == '/' && g_explorer_path[1] == '\0';
+    auto add_row = [&](const char *name, bool is_dir) {
+        if (g_explorer_row_count >= static_cast<int>(sizeof(g_explorer_rows) / sizeof(g_explorer_rows[0]))) return;
+        ExplorerRow &rec = g_explorer_rows[g_explorer_row_count++];
+        const size_t copy = strnlen(name, sizeof(rec.name) - 1u);
+        memcpy(rec.name, name, copy);
+        rec.name[copy] = '\0';
+        rec.is_dir = is_dir;
+        RadFileEntry row{};
+        row.name = shared_string(rec.name);
+        row.is_dir = is_dir;
+        rows.push_back(std::move(row));
+    };
+
+    if (!at_root) add_row("..", true);
+
     rad_dir_t dir = nullptr;
     if (rad_vfs_opendir(g_explorer_path, &dir) == RAD_STATUS_OK && dir) {
         rad_vfs_dirent_t entry{};
         while (rad_vfs_readdir(dir, &entry) == RAD_STATUS_OK) {
-            const bool is_dir = entry.stat.is_directory != 0;
-            const char *name = entry.name;
-            const size_t name_len = strnlen(name, sizeof(entry.name));
-            const size_t need = name_len + (is_dir ? 1u : 0u) + 1u; // optional '/' + '\n'
-            if (len + need >= sizeof(g_explorer_entries)) break;
-            if (is_dir) g_explorer_entries[len++] = '/';
-            memcpy(g_explorer_entries + len, name, name_len);
-            len += name_len;
-            g_explorer_entries[len++] = '\n';
+            if (strnlen(entry.name, sizeof(entry.name)) == 0 || explorer_is_dot_entry(entry.name)) continue;
+            add_row(entry.name, entry.stat.is_directory != 0);
         }
         rad_vfs_closedir(dir);
     }
-    if (len == 0) {
-        const char *empty = "(empty)";
-        const size_t empty_len = strlen(empty);
-        memcpy(g_explorer_entries, empty, empty_len);
-        len = empty_len;
+
+    if (g_file_explorer_shell) {
+        (*g_file_explorer_shell)->set_entries_model(
+            std::make_shared<slint::VectorModel<RadFileEntry>>(std::move(rows)));
+        (*g_file_explorer_shell)->set_current_path(shared_string(g_explorer_path));
     }
-    g_explorer_entries[len] = '\0';
+}
+
+// Handle a click on explorer row `index`: descend into a directory (or ".." to the parent),
+// re-list, and redraw. Files are inert for now.
+void explorer_navigate(int index) {
+    if (index < 0 || index >= g_explorer_row_count) return;
+    const ExplorerRow &row = g_explorer_rows[index];
+    if (!row.is_dir) return;
+
+    if (strcmp(row.name, "..") == 0) {
+        size_t last_slash = 0;
+        const size_t len = strlen(g_explorer_path);
+        for (size_t i = 0; i < len; ++i) if (g_explorer_path[i] == '/') last_slash = i;
+        g_explorer_path[last_slash == 0 ? 1u : last_slash] = '\0';
+    } else {
+        size_t len = strlen(g_explorer_path);
+        const size_t nlen = strlen(row.name);
+        const bool root = (len == 1);
+        if ((root ? 1u : len + 1u) + nlen + 1u > sizeof(g_explorer_path)) return;
+        if (!root) g_explorer_path[len++] = '/';
+        memcpy(g_explorer_path + len, row.name, nlen);
+        g_explorer_path[len + nlen] = '\0';
+    }
+    populate_explorer_listing();
+    if (g_platform) g_platform->request_explorer_redraw();
+    set_shell_state();
 }
 
 void launch_file_explorer() {
@@ -1878,6 +1928,9 @@ extern "C" rad_status_t rad_slint_shell_start(rad_framebuffer_t framebuffer, con
             marker_once(&g_window_resize_marker_sent, "RAD_SLINT_WINDOW_RESIZE_OK");
         }
         set_shell_state();
+    });
+    (*g_file_explorer_shell)->on_navigate([](int index) {
+        explorer_navigate(index);
     });
     set_shell_state("framebuffer=primary shell=radlib state=desktop");
     (*g_desktop_shell)->show();
