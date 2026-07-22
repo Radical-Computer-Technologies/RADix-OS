@@ -1111,14 +1111,7 @@ public:
         poll_input_device(pointer_);
         apply_pending_terminal_resize();
         apply_pending_explorer_resize();
-        // Freeze the terminal's live output while the terminal window is being dragged or
-        // resized. Re-rendering radsh output every frame during a gesture adds per-frame
-        // Slint render cost that makes the moving window stutter -- which is why dragging
-        // the (continuously re-rendering) terminal glitched while dragging the static file
-        // explorer did not. The PTY buffers the output; drain resumes on release.
-        const bool terminal_gesture_active = pointer_grab_active_
-            && pointer_grab_surface_ == g_terminal_surface_id;
-        if (!terminal_gesture_active) drain_terminal_pty();
+        drain_terminal_pty();
         bool rendered = false;
         bool any_rendered = false;
         if (desktop_window_) {
