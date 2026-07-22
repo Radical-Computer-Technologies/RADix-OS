@@ -72,6 +72,7 @@ struct DesktopWindow {
     DesktopWindowState state = DesktopWindowState::Closed;
     uint32_t z = 1;
     bool focused = false;
+    uint32_t open_seq = 0;   // order the window was last opened, for dock ordering
 };
 
 class EmbeddedDesktopShellModel {
@@ -188,6 +189,12 @@ public:
     }
 
     void beginTerminalLaunch() {
+        // Opening a closed window starts fresh: reset to default geometry so a previous
+        // drag/resize does not persist across a close/reopen.
+        if (terminal_window_.state == DesktopWindowState::Closed) {
+            terminal_window_.bounds = DesktopWindowBounds{ 134, 110, 640, 380 };
+            terminal_window_.open_seq = next_open_seq_++;
+        }
         terminal_window_.state = DesktopWindowState::Loading;
         focusTerminal();
         applications_menu_open_ = false;
@@ -199,6 +206,10 @@ public:
     }
 
     void beginFileExplorerLaunch() {
+        if (file_explorer_window_.state == DesktopWindowState::Closed) {
+            file_explorer_window_.bounds = DesktopWindowBounds{ 220, 150, 560, 360 };
+            file_explorer_window_.open_seq = next_open_seq_++;
+        }
         file_explorer_window_.state = DesktopWindowState::Loading;
         focusWindowRecord(&file_explorer_window_);
         applications_menu_open_ = false;
@@ -239,6 +250,20 @@ public:
 
     void closeDockMenu() {
         dock_menu_app_ = 0;
+    }
+
+    // Fill `out` with the ids of currently-open windows in open order (first opened first) and
+    // return the count (0..2). Drives the dock icon model + anchors the Close dropdown.
+    int dockOrder(uint32_t out[2]) const {
+        const DesktopWindow *open[2] = { nullptr, nullptr };
+        int n = 0;
+        if (terminal_window_.state != DesktopWindowState::Closed) open[n++] = &terminal_window_;
+        if (file_explorer_window_.state != DesktopWindowState::Closed) open[n++] = &file_explorer_window_;
+        if (n == 2 && open[0]->open_seq > open[1]->open_seq) {
+            const DesktopWindow *tmp = open[0]; open[0] = open[1]; open[1] = tmp;
+        }
+        for (int i = 0; i < n; ++i) out[i] = open[i]->id;
+        return n;
     }
 
 private:
@@ -292,8 +317,9 @@ private:
     }
 
     bool applications_menu_open_ = false;
-    int dock_menu_app_ = 0;   // 0=none, 1=terminal, 2=files (dock right-click dropdown)
+    int dock_menu_app_ = 0;   // 0=none, else the app-id whose dock Close dropdown is open
     uint32_t next_z_ = 2;
+    uint32_t next_open_seq_ = 1;   // increments each time a window opens, for dock ordering
     uint32_t desktop_width_ = MaxSurfaceWidth;
     uint32_t desktop_height_ = MaxSurfaceHeight;
     bool move_active_ = false;
@@ -1399,6 +1425,23 @@ const char *shell_status_text() {
     }
 }
 
+// Rebuild the dock's open-app icon model (in open order). Only called when the open set
+// changes (launch/close) -- not every frame -- so the dock Repeater is not re-created and
+// re-rendered on every set_shell_state.
+void update_dock_icons() {
+    if (!g_desktop_shell) return;
+    uint32_t order[2];
+    const int n = g_desktop.dockOrder(order);
+    std::vector<RadDockIcon> icons;
+    for (int i = 0; i < n; ++i) {
+        RadDockIcon icon{};
+        icon.app_id = static_cast<int>(order[i]);
+        icon.kind = order[i] == TerminalWindowId ? 1 : 2;
+        icons.push_back(icon);
+    }
+    (*g_desktop_shell)->set_dock_icons(std::make_shared<slint::VectorModel<RadDockIcon>>(std::move(icons)));
+}
+
 void set_shell_state(const char *status) {
     if (!g_desktop_shell || !g_terminal_shell || !g_file_explorer_shell) return;
     const DesktopWindow *terminal = g_desktop.terminalWindow();
@@ -1411,6 +1454,17 @@ void set_shell_state(const char *status) {
     (*g_desktop_shell)->set_terminal_open(g_desktop.terminalOpen());
     (*g_desktop_shell)->set_file_explorer_open(g_desktop.fileExplorerOpen());
     (*g_desktop_shell)->set_dock_menu_app(g_desktop.dockMenuApp());
+    {
+        // Anchor the single Close dropdown to the Y of whichever open-app icon is selected.
+        uint32_t order[2];
+        const int n = g_desktop.dockOrder(order);
+        const int menu_app = g_desktop.dockMenuApp();
+        float menu_y = 132.0f;
+        for (int i = 0; i < n; ++i) {
+            if (static_cast<int>(order[i]) == menu_app) menu_y = 94.0f + static_cast<float>(i) * 70.0f + 15.0f;
+        }
+        (*g_desktop_shell)->set_dock_menu_y(menu_y);
+    }
     (*g_terminal_shell)->set_terminal(shared_string(g_terminal_visible_text));
     (*g_terminal_shell)->set_terminal_loading(g_desktop.terminalLaunching());
     if (terminal) {
@@ -1441,6 +1495,7 @@ void render_ticks(uint32_t count) {
 
 void launch_terminal(const char *terminal_text) {
     g_desktop.beginTerminalLaunch();
+    update_dock_icons();
     set_shell_state();
     render_ticks(2);
     marker_once(&g_loading_marker_sent, "RAD_SLINT_TERMINAL_LOADING_OK");
@@ -1565,6 +1620,7 @@ void launch_file_explorer() {
     render_ticks(2);
     populate_explorer_listing();
     g_desktop.fileExplorerReady();
+    update_dock_icons();
     set_shell_state();
     if (g_platform) g_platform->request_explorer_redraw();
     render_ticks(2);
@@ -1574,6 +1630,7 @@ void launch_file_explorer() {
 void close_file_explorer_model_only() {
     g_desktop.closeWindow(FileExplorerWindowId);
     g_explorer_entries[0] = '\0';
+    update_dock_icons();
     set_shell_state();
 }
 
@@ -1597,6 +1654,7 @@ void close_terminal_model_only() {
     if (const DesktopWindow *window = g_desktop.terminalWindow()) {
         g_desktop.closeWindow(window->id);
         teardown_terminal_process();
+        update_dock_icons();
         set_shell_state();
         marker_once(&g_terminal_close_marker_sent, "RAD_SLINT_TERMINAL_CLOSE_OK");
     }
@@ -1847,14 +1905,11 @@ extern "C" rad_status_t rad_slint_shell_start(rad_framebuffer_t framebuffer, con
         }
         set_shell_state();
     });
-    (*g_desktop_shell)->on_close_terminal_from_dock([]() {
+    (*g_desktop_shell)->on_close_app_from_dock([](int app) {
         g_desktop.closeDockMenu();
-        close_terminal_model_only();
+        if (app == static_cast<int>(TerminalWindowId)) close_terminal_model_only();
+        else if (app == static_cast<int>(FileExplorerWindowId)) close_file_explorer_model_only();
         set_shell_state();
-    });
-    (*g_desktop_shell)->on_close_file_explorer_from_dock([]() {
-        g_desktop.closeDockMenu();
-        close_file_explorer_model_only();
     });
     (*g_desktop_shell)->on_escape_pressed([]() {
         if (!g_desktop_shell) return;
