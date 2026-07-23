@@ -15,6 +15,13 @@ and this project aims to adhere to [Semantic Versioning](https://semver.org/spec
   kernel composites it, routes pointer/keyboard input to it (per-surface event
   ring with surface-local coordinates), and reaps its surfaces when the process
   exits. New ioctls: `DESTROY_SURFACE`, `SET_BOUNDS`, `FOCUS`, `POLL_INPUT`.
+- **Server-side window decorations.** The compositor owns each client window's
+  frame: it creates a WM-owned decoration surface behind the content and draws
+  the title/drag bar, border and a close (X) button. Clients render only
+  content. Title-bar drag moves the whole window; the close button sends the
+  client a `RAD_WC_EVENT_CLOSE` event so it can shut down (the WM then reaps
+  both surfaces). New markers: `RAD_COMPOSITOR_DECORATION_OK`,
+  `RAD_COMPOSITOR_DECORATION_CLOSE_OK`.
 - `userland/lib/radcompositor`: a freestanding C client library for the surface
   protocol. `/bin/radwc-demo`: the reference interactive client (draggable,
   color-cycles on keypress), auto-launched on the WM target and gated in the

@@ -95,6 +95,11 @@ typedef struct rad_wc_ipc_input {
 #define RAD_WC_EVENT_POINTER_MOTION 2u
 #define RAD_WC_EVENT_POINTER_BUTTON 3u
 #define RAD_WC_EVENT_POINTER_SCROLL 4u
+/* Window-manager -> client events, delivered through the same input queue. The
+ * compositor owns the window frame (title bar + close button); when the user
+ * clicks the frame's close button the WM sends CLOSE so the client can shut
+ * down gracefully (destroy its surface and exit). */
+#define RAD_WC_EVENT_CLOSE 100u
 
 #define RAD_WC_IOCTL_CREATE_SURFACE  RAD_WC_IOCTL(RAD_WC_IOCTL_READWRITE, RAD_WC_IOCTL_TYPE, 1u, sizeof(rad_wc_ipc_surface_t))
 #define RAD_WC_IOCTL_QUEUE_DAMAGE    RAD_WC_IOCTL(RAD_WC_IOCTL_WRITE,     RAD_WC_IOCTL_TYPE, 2u, sizeof(rad_wc_ipc_damage_t))

@@ -441,6 +441,8 @@ int g_compositor_copy_forward_marker_sent = 0;
 int g_compositor_exposed_marker_sent = 0;
 int g_compositor_empty_marker_sent = 0;
 int g_compositor_ipc_marker_sent = 0;
+int g_compositor_decor_marker_sent = 0;
+int g_compositor_decor_close_marker_sent = 0;
 int g_cursor_marker_sent = 0;
 int g_cursor_move_marker_sent = 0;
 int g_key_input_marker_sent = 0;
@@ -835,10 +837,28 @@ bool alloc_surface_buffers(uint32_t stride, uint32_t height) {
 #define RAD_IPC_INPUT_RING 64u
 #endif
 
+// Server-side window decoration geometry (the compositor owns the frame).
+constexpr int32_t DecorTitleH = 26;   // title/drag bar height above the content
+constexpr int32_t DecorBorder = 2;    // frame border around the content
+constexpr int32_t DecorCloseSize = 14;
+
+// Window-manager -> client event delivered through the input queue. Mirrors
+// RAD_WC_EVENT_CLOSE in the client library.
+constexpr uint32_t RadWcEventClose = 100u;
+
 struct IpcSurfaceRecord {
-    uint32_t surface_id;
+    uint32_t surface_id;         // client content surface (shm-backed)
     int32_t owner_pid;
     int used;
+    // Server-side decoration: a WM-owned surface drawn as the window frame
+    // (title/drag bar + border + close button) sitting just behind the content.
+    uint32_t decor_surface_id;
+    uint32_t *decor_pixels;
+    int32_t frame_w;
+    int32_t frame_h;
+    int32_t content_w;
+    int32_t content_h;
+    int focused;
     rad_input_event_t ring[RAD_IPC_INPUT_RING];
     uint32_t ring_head;
     uint32_t ring_count;
@@ -894,6 +914,53 @@ int ipc_pop_input(uint32_t surface_id, rad_input_event_t *out) {
     return 1;
 }
 
+// Find the client record that owns a given decoration surface.
+IpcSurfaceRecord *ipc_find_by_decor(uint32_t decor_surface_id) {
+    if (decor_surface_id == 0) return nullptr;
+    for (auto &record : g_ipc_surfaces) {
+        if (record.used && record.decor_surface_id == decor_surface_id) return &record;
+    }
+    return nullptr;
+}
+
+// The close-button rectangle in decoration-local coordinates (top-right of the bar).
+void decor_close_button_rect(const IpcSurfaceRecord &record, int32_t *x, int32_t *y,
+                             int32_t *w, int32_t *h) {
+    *w = DecorCloseSize;
+    *h = DecorCloseSize;
+    *x = record.frame_w - DecorCloseSize - 8;
+    *y = (DecorTitleH - DecorCloseSize) / 2;
+}
+
+// Paint the window frame into the decoration buffer: border, title/drag bar, and
+// a close (X) button. Called on create and whenever focus changes.
+void draw_decoration(IpcSurfaceRecord &record) {
+    uint32_t *px = record.decor_pixels;
+    if (!px) return;
+    const int32_t w = record.frame_w;
+    const int32_t h = record.frame_h;
+    const uint32_t border = record.focused ? 0xff2f6fe0u : 0xff333a48u;
+    const uint32_t bar = record.focused ? 0xff2f6fe0u : 0xff394050u;
+    // Whole frame = border color (the content region is covered by the client surface).
+    for (int32_t i = 0; i < w * h; ++i) px[i] = border;
+    // Title/drag bar strip.
+    for (int32_t yy = 0; yy < DecorTitleH && yy < h; ++yy) {
+        for (int32_t xx = 0; xx < w; ++xx) px[yy * w + xx] = bar;
+    }
+    // Close button: red tile with a white X.
+    int32_t cx, cy, cw, ch;
+    decor_close_button_rect(record, &cx, &cy, &cw, &ch);
+    for (int32_t yy = 0; yy < ch; ++yy) {
+        for (int32_t xx = 0; xx < cw; ++xx) {
+            const int32_t fx = cx + xx, fy = cy + yy;
+            if (fx < 0 || fy < 0 || fx >= w || fy >= h) continue;
+            uint32_t c = 0xffd94b4bu;
+            if (xx == yy || xx == (cw - 1 - yy)) c = 0xffffffffu;   // the X strokes
+            px[fy * w + fx] = c;
+        }
+    }
+}
+
 // Fetch a live surface's screen bounds from the compositor by id (for exposed
 // damage when a client surface is torn down).
 bool compositor_surface_bounds(uint32_t surface_id, rad_compositor_rect_t *out) {
@@ -908,19 +975,95 @@ bool compositor_surface_bounds(uint32_t surface_id, rad_compositor_rect_t *out) 
     return false;
 }
 
-// Destroy a client surface: queue exposed damage over its footprint (while it
-// still exists, so the region repaints), then remove it and drop its owner slot.
-void ipc_destroy_surface(uint32_t surface_id) {
+// Destroy one compositor surface, queuing exposed damage over its footprint
+// first (while it still exists) so the region repaints.
+void destroy_surface_with_damage(uint32_t surface_id) {
+    if (surface_id == 0) return;
     rad_compositor_rect_t bounds{};
     if (compositor_surface_bounds(surface_id, &bounds)) {
         rad_compositor_queue_damage(&g_compositor, surface_id, &bounds, RAD_COMPOSITOR_DAMAGE_EXPOSED);
     }
     rad_compositor_destroy_surface(&g_compositor, surface_id);
-    if (IpcSurfaceRecord *record = ipc_find(surface_id)) {
+}
+
+// Destroy a client window: both its content surface and its WM-owned decoration
+// surface, freeing the decoration buffer, then drop the owner slot.
+void ipc_destroy_surface(uint32_t surface_id) {
+    IpcSurfaceRecord *record = ipc_find(surface_id);
+    destroy_surface_with_damage(surface_id);
+    if (record) {
+        destroy_surface_with_damage(record->decor_surface_id);
+        if (record->decor_pixels) rad_memory_free(record->decor_pixels);
         record->used = 0;
         record->surface_id = 0;
+        record->decor_surface_id = 0;
+        record->decor_pixels = nullptr;
     }
     if (g_focused_ipc_surface == surface_id) g_focused_ipc_surface = 0;
+}
+
+// Create the WM-owned decoration surface (window frame) behind a client content
+// surface at (cx,cy) size (cw,ch) z=cz. Returns true on success.
+bool ipc_setup_decoration(IpcSurfaceRecord *record, int32_t cx, int32_t cy,
+                          int32_t cw, int32_t ch, int32_t cz) {
+    if (!record) return false;
+    const int32_t fw = cw + 2 * DecorBorder;
+    const int32_t fh = DecorTitleH + ch + DecorBorder;
+    uint32_t *buf = static_cast<uint32_t*>(rad_memory_alloc(static_cast<size_t>(fw) * fh * sizeof(uint32_t)));
+    if (!buf) return false;
+    record->decor_pixels = buf;
+    record->frame_w = fw;
+    record->frame_h = fh;
+    record->content_w = cw;
+    record->content_h = ch;
+    record->focused = 1;
+    draw_decoration(*record);
+    rad_compositor_surface_config_t cfg{};
+    cfg.size = sizeof(cfg);
+    cfg.app_id = "rad.decor";
+    cfg.title = "";
+    cfg.x = cx - DecorBorder;
+    cfg.y = cy - DecorTitleH;
+    cfg.width = fw;
+    cfg.height = fh;
+    cfg.z = cz - 1;                 // just behind the content
+    cfg.flags = 0;
+    cfg.pixels = buf;
+    cfg.stride_pixels = static_cast<uint32_t>(fw);
+    uint32_t decor_id = 0;
+    if (rad_compositor_create_surface(&g_compositor, &cfg, &decor_id) != RAD_STATUS_OK) {
+        rad_memory_free(buf);
+        record->decor_pixels = nullptr;
+        return false;
+    }
+    record->decor_surface_id = decor_id;
+    return true;
+}
+
+// Make one client window active (raise its frame + content, refresh title-bar
+// focus colors, optionally take keyboard focus); pass nullptr to deactivate all
+// (e.g. when a WM window or the desktop is clicked).
+void ipc_set_active_window(IpcSurfaceRecord *active, int give_keyboard) {
+    for (auto &r : g_ipc_surfaces) {
+        if (!r.used) continue;
+        const int want = (&r == active) ? 1 : 0;
+        if (r.focused != want) {
+            r.focused = want;
+            draw_decoration(r);
+            rad_compositor_rect_t db{};
+            if (compositor_surface_bounds(r.decor_surface_id, &db)) {
+                rad_compositor_queue_damage(&g_compositor, r.decor_surface_id, &db, 0);
+            }
+        }
+    }
+    if (active) {
+        // Raise the frame first, then the content, so content sits directly above it.
+        if (active->decor_surface_id) rad_compositor_focus_surface(&g_compositor, active->decor_surface_id);
+        rad_compositor_focus_surface(&g_compositor, active->surface_id);
+        if (give_keyboard) g_focused_ipc_surface = active->surface_id;
+    } else if (give_keyboard) {
+        g_focused_ipc_surface = 0;
+    }
 }
 
 // Is a pid a live (non-zombie) process? A pid that has exited and been reaped no
@@ -969,7 +1112,14 @@ rad_status_t compositor_device_ioctl(void*, uint32_t request, void *argument) {
         config.stride_pixels = surface->stride_pixels;
         const rad_status_t status = rad_compositor_create_surface(&g_compositor, &config, &surface->surface_id);
         if (status == RAD_STATUS_OK) {
-            ipc_alloc(surface->surface_id, rad_process_current_pid());
+            IpcSurfaceRecord *record = ipc_alloc(surface->surface_id, rad_process_current_pid());
+            if (record) {
+                // Give the client a server-side window frame (title/drag bar + close
+                // button + border) and raise it -- without stealing keyboard focus.
+                ipc_setup_decoration(record, config.x, config.y, config.width, config.height, config.z);
+                ipc_set_active_window(record, 0);
+                marker_once(&g_compositor_decor_marker_sent, "RAD_COMPOSITOR_DECORATION_OK");
+            }
             marker_once(&g_compositor_ipc_marker_sent, "RAD_COMPOSITOR_IPC_SURFACE_OK");
         }
         return status;
@@ -1614,6 +1764,34 @@ private:
         int32_t local_x = 0;
         int32_t local_y = 0;
 
+        // A title/drag-bar drag in progress moves the whole window -- both the
+        // WM-owned frame and the client's content surface -- using the global
+        // cursor so it stays glued even when the pointer outruns the window.
+        if (window_drag_decor_ && !is_press) {
+            IpcSurfaceRecord *drec = ipc_find_by_decor(window_drag_decor_);
+            rad_compositor_rect_t fb{};
+            if (drec && compositor_surface_bounds(window_drag_decor_, &fb)) {
+                const int32_t new_fx = g_cursor_x - window_drag_off_x_;
+                const int32_t new_fy = g_cursor_y - window_drag_off_y_;
+                const int32_t dx = new_fx - fb.x;
+                const int32_t dy = new_fy - fb.y;
+                if (dx != 0 || dy != 0) {
+                    rad_compositor_rect_t nf = fb;
+                    nf.x = new_fx;
+                    nf.y = new_fy;
+                    rad_compositor_set_surface_bounds(&g_compositor, window_drag_decor_, &nf);
+                    rad_compositor_rect_t cb{};
+                    if (compositor_surface_bounds(drec->surface_id, &cb)) {
+                        cb.x += dx;
+                        cb.y += dy;
+                        rad_compositor_set_surface_bounds(&g_compositor, drec->surface_id, &cb);
+                    }
+                }
+            }
+            if (is_release) { window_drag_decor_ = 0; pointer_grab_active_ = false; }
+            return;
+        }
+
         if (pointer_grab_active_ && !is_press) {
             // A button is held: deliver motion/release to the grabbed surface even when the
             // cursor has moved off it. Without this a fast drag that outruns the window
@@ -1639,13 +1817,43 @@ private:
                 if (is_release) { g_desktop.endPointerGesture(); pointer_grab_active_ = false; }
                 return;
             }
-            // A hit on a client (userland) surface routes to its owning process.
+            // A hit on a client window's decoration (the WM-owned frame): raise +
+            // focus it, and on a title-bar press either close it (X button) or
+            // start a window drag. The client never sees frame input.
+            if (IpcSurfaceRecord *drec = ipc_find_by_decor(result.surface_id)) {
+                if (is_press) {
+                    ipc_set_active_window(drec, 1);
+                    marker_once(&g_compositor_hit_marker_sent, "RAD_COMPOSITOR_HIT_TEST_OK");
+                    int32_t cbx, cby, cbw, cbh;
+                    decor_close_button_rect(*drec, &cbx, &cby, &cbw, &cbh);
+                    if (result.local_x >= cbx && result.local_x < cbx + cbw &&
+                        result.local_y >= cby && result.local_y < cby + cbh) {
+                        // Close button: ask the client to shut down (it destroys its
+                        // surface and exits; the WM then reaps the frame).
+                        rad_input_event_t close_ev{};
+                        close_ev.size = sizeof(close_ev);
+                        close_ev.type = static_cast<rad_input_event_type_t>(RadWcEventClose);
+                        if (IpcSurfaceRecord *cr = ipc_find(drec->surface_id)) ipc_push_input(cr, close_ev);
+                        marker_once(&g_compositor_decor_close_marker_sent, "RAD_COMPOSITOR_DECORATION_CLOSE_OK");
+                    } else if (result.local_y < DecorTitleH) {
+                        window_drag_decor_ = drec->decor_surface_id;
+                        rad_compositor_rect_t fb{};
+                        compositor_surface_bounds(drec->decor_surface_id, &fb);
+                        window_drag_off_x_ = g_cursor_x - fb.x;
+                        window_drag_off_y_ = g_cursor_y - fb.y;
+                        pointer_grab_active_ = true;
+                        pointer_grab_surface_ = drec->decor_surface_id;
+                    }
+                    set_shell_state();
+                }
+                return;
+            }
+            // A hit on a client (userland) content surface routes to its process.
             if (IpcSurfaceRecord *record = ipc_find(result.surface_id)) {
                 if (is_press) {
                     pointer_grab_active_ = true;
                     pointer_grab_surface_ = result.surface_id;
-                    rad_compositor_focus_surface(&g_compositor, result.surface_id);
-                    g_focused_ipc_surface = result.surface_id;   // client takes keyboard focus
+                    ipc_set_active_window(record, 1);   // raise frame+content, take keyboard focus
                     set_shell_state();
                     marker_once(&g_compositor_hit_marker_sent, "RAD_COMPOSITOR_HIT_TEST_OK");
                     marker_once(&g_compositor_input_marker_sent, "RAD_COMPOSITOR_INPUT_TRANSLATE_OK");
@@ -1680,7 +1888,7 @@ private:
                 if (focus_window_id != 0) {
                     rad_compositor_focus_surface(&g_compositor, result.surface_id);
                     g_desktop.focusWindow(focus_window_id);
-                    g_focused_ipc_surface = 0;   // WM window reclaims keyboard focus
+                    ipc_set_active_window(nullptr, 1);   // deactivate client windows + drop kbd focus
                     set_shell_state();
                 }
             }
@@ -1755,6 +1963,9 @@ private:
     uint32_t ipc_reap_ticks_ = 0;      // throttle counter for client-surface reaping
     bool pointer_grab_active_ = false;   // a button is held: route motion/release to this
     uint32_t pointer_grab_surface_ = 0;  // surface even when the cursor leaves its bounds
+    uint32_t window_drag_decor_ = 0;     // decoration surface being title-bar dragged (0 = none)
+    int32_t window_drag_off_x_ = 0;      // cursor offset within the frame at drag start
+    int32_t window_drag_off_y_ = 0;
     bool pending_terminal_resize_ = false;
     uint32_t pending_terminal_width_ = 0;
     uint32_t pending_terminal_height_ = 0;

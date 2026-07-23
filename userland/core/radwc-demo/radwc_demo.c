@@ -134,28 +134,17 @@ static const uint32_t g_body_colors[] = {
 };
 #define N_BODY_COLORS (sizeof(g_body_colors) / sizeof(g_body_colors[0]))
 
-static void render(rad_wc_surface_t *s, uint32_t frame, uint32_t color_index,
-                   int focused, long pid) {
+/* The client renders ONLY its content. The window frame -- title/drag bar,
+ * border and close (X) button -- is drawn and managed by the compositor
+ * (server-side decorations), so this buffer is pure content. */
+static void render(rad_wc_surface_t *s, uint32_t frame, uint32_t color_index, long pid) {
     uint32_t *px = s->pixels;
     const uint32_t stride = s->stride;
     const uint32_t body = g_body_colors[color_index % N_BODY_COLORS];
     const uint32_t ink = 0xffe8ecf4u;
     const uint32_t dim = 0xff8791a5u;
 
-    /* body */
     fill_rect(px, stride, WIN_W, WIN_H, 0, 0, WIN_W, WIN_H, body);
-    /* title bar */
-    const uint32_t bar = focused ? 0xff2f6fe0u : 0xff394050u;
-    fill_rect(px, stride, WIN_W, WIN_H, 0, 0, WIN_W, TITLE_H, bar);
-    /* window control dots, top-right, to read as a titled window */
-    fill_rect(px, stride, WIN_W, WIN_H, (int)WIN_W - 20, 10, 8, 8, 0xffe05050u);
-    fill_rect(px, stride, WIN_W, WIN_H, (int)WIN_W - 36, 10, 8, 8, 0xffe0c050u);
-    fill_rect(px, stride, WIN_W, WIN_H, (int)WIN_W - 52, 10, 8, 8, 0xff50c060u);
-    /* an "app icon" block on the left of the title bar */
-    fill_rect(px, stride, WIN_W, WIN_H, 8, 6, 16, 16, 0xffffffffu);
-    fill_rect(px, stride, WIN_W, WIN_H, 11, 9, 10, 10, bar);
-    /* title text */
-    draw_text(px, stride, WIN_W, WIN_H, 30, 10, "RAD CLIENT", 2, 0xffffffffu);
 
     /* live info lines proving this is a real, separate userland process */
     char line[48];
@@ -163,16 +152,16 @@ static void render(rad_wc_surface_t *s, uint32_t frame, uint32_t color_index,
     for (const char *p = "PID: "; *p; ++p) line[n++] = *p;
     n += u_to_str(line + n, (unsigned long)pid);
     line[n] = 0;
-    draw_text(px, stride, WIN_W, WIN_H, 20, TITLE_H + 16, "USERLAND PROCESS", 2, ink);
-    draw_text(px, stride, WIN_W, WIN_H, 20, TITLE_H + 44, line, 2, dim);
+    draw_text(px, stride, WIN_W, WIN_H, 20, 20, "USERLAND PROCESS", 2, ink);
+    draw_text(px, stride, WIN_W, WIN_H, 20, 48, line, 2, dim);
 
     n = 0;
     for (const char *p = "FRAME: "; *p; ++p) line[n++] = *p;
     n += u_to_str(line + n, frame);
     line[n] = 0;
-    draw_text(px, stride, WIN_W, WIN_H, 20, TITLE_H + 68, line, 2, dim);
-    draw_text(px, stride, WIN_W, WIN_H, 20, TITLE_H + 96, "DRAG BAR - KEY CYCLES", 1, dim);
-    draw_text(px, stride, WIN_W, WIN_H, 20, TITLE_H + 110, "COLOR - ESC CLOSES", 1, dim);
+    draw_text(px, stride, WIN_W, WIN_H, 20, 72, line, 2, dim);
+    draw_text(px, stride, WIN_W, WIN_H, 20, 100, "DRAG THE TITLE BAR TO MOVE", 1, dim);
+    draw_text(px, stride, WIN_W, WIN_H, 20, 112, "X CLOSES - ANY KEY CYCLES COLOR", 1, dim);
 
     /* live content: a bouncing accent square proves the window is redrawing */
     const int span = (int)WIN_W - 60;
@@ -186,13 +175,6 @@ static void render(rad_wc_surface_t *s, uint32_t frame, uint32_t color_index,
     const int barw = (int)((frame % 240u) * (WIN_W - 40) / 240u);
     fill_rect(px, stride, WIN_W, WIN_H, 20, (int)WIN_H - 40, (int)WIN_W - 40, 14, 0xff10131cu);
     fill_rect(px, stride, WIN_W, WIN_H, 20, (int)WIN_H - 40, barw, 14, 0xff4fd08au);
-
-    /* focus border */
-    const uint32_t bcol = focused ? 0xff2f6fe0u : 0xff20242cu;
-    fill_rect(px, stride, WIN_W, WIN_H, 0, 0, WIN_W, 2, bcol);
-    fill_rect(px, stride, WIN_W, WIN_H, 0, (int)WIN_H - 2, WIN_W, 2, bcol);
-    fill_rect(px, stride, WIN_W, WIN_H, 0, 0, 2, WIN_H, bcol);
-    fill_rect(px, stride, WIN_W, WIN_H, (int)WIN_W - 2, 0, 2, WIN_H, bcol);
 }
 
 int main(void) {
@@ -213,9 +195,6 @@ int main(void) {
 
     uint32_t frame = 0;
     uint32_t color_index = 0;
-    int focused = 1;
-    int dragging = 0;
-    int grab_x = 0, grab_y = 0;
     int running = 1;
     int announced_input = 0;
 
@@ -227,41 +206,19 @@ int main(void) {
                 announced_input = 1;
                 put_str("radwc-demo: RAD_WC_DEMO_INPUT_OK routed input received\n");
             }
-            if (ev.type == RAD_WC_EVENT_POINTER_BUTTON) {
-                if (ev.pressed) {
-                    focused = 1;
-                    if (ev.y < TITLE_H) {          /* grab the title bar */
-                        dragging = 1;
-                        grab_x = ev.x;
-                        grab_y = ev.y;
-                    }
-                } else {
-                    dragging = 0;
-                }
-            } else if (ev.type == RAD_WC_EVENT_POINTER_MOTION) {
-                if (dragging) {
-                    /* Keep the grabbed point under the cursor using surface-local
-                     * coordinates only: the window has not moved yet this event,
-                     * so delta = (new local) - (grab offset). */
-                    const int dx = ev.x - grab_x;
-                    const int dy = ev.y - grab_y;
-                    if (dx != 0 || dy != 0) {
-                        rad_wc_surface_set_position(&surface, surface.x + dx, surface.y + dy);
-                    }
-                }
-            } else if (ev.type == RAD_WC_EVENT_KEY) {
-                if (ev.pressed) {
-                    if (ev.codepoint == 0x1b) {    /* Escape closes the window */
-                        running = 0;
-                    } else {
-                        color_index = (color_index + 1) % N_BODY_COLORS;
-                    }
-                }
+            if (ev.type == RAD_WC_EVENT_CLOSE) {
+                /* The compositor's window frame close button was clicked. */
+                put_str("radwc-demo: RAD_WC_DEMO_CLOSE_OK close requested by WM\n");
+                running = 0;
+            } else if (ev.type == RAD_WC_EVENT_KEY && ev.pressed) {
+                /* Window dragging + closing are handled by the compositor frame;
+                 * the content just reacts to keys routed to it while focused. */
+                color_index = (color_index + 1) % N_BODY_COLORS;
             }
         }
         if (r < 0) break;
 
-        render(&surface, frame, color_index, focused, pid);
+        render(&surface, frame, color_index, pid);
         rad_wc_surface_commit(&surface, 0, 0, (int)WIN_W, (int)WIN_H);
         ++frame;
         rad_wc_sleep_ms(16);

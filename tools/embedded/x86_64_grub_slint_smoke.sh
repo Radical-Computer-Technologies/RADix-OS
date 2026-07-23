@@ -222,6 +222,9 @@ if [[ "${ui_profile}" == "wm" ]]; then
         # was accepted and composited by the kernel.
         grep -q "RAD_WC_DEMO_LAUNCH_OK" "${qemu_log}"
         grep -q "RAD_COMPOSITOR_IPC_SURFACE_OK" "${qemu_log}"
+        # The compositor draws server-side window decorations (title/drag bar +
+        # close button + border) around each client surface.
+        grep -q "RAD_COMPOSITOR_DECORATION_OK" "${qemu_log}"
     else
         echo "WM VM reached base terminal before timeout; hosted Slint smoke covers UI markers."
     fi

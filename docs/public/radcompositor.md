@@ -92,6 +92,14 @@ buffer the kernel composites — the direction the shell is moving in for the
   per-surface ring (with surface-local pointer coordinates) and the client
   dequeues it with `POLL_INPUT` — the compositor never dispatches it into an
   in-kernel adapter.
+- **The compositor owns the window frame (server-side decorations).** For each
+  client surface it creates a WM-owned decoration surface just behind the
+  content and draws the title/drag bar, border, and a close (X) button. The
+  client renders only its content. Dragging the title bar moves the whole
+  window (frame + content); clicking the close button sends the client a
+  `RAD_WC_EVENT_CLOSE` event through its input queue so it can shut down
+  gracefully, after which the WM reaps both surfaces. Apps therefore get
+  consistent, WM-controlled decorations without drawing any chrome themselves.
 
 `userland/lib/radcompositor` is a small freestanding C client library over this
 protocol (open surface, commit, set position, focus, poll input, destroy).
