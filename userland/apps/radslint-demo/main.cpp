@@ -36,37 +36,59 @@ static void say(const char *msg) {
 class ClientAdapter : public WindowAdapter {
 public:
     ClientAdapter()
-        : renderer_(SoftwareRenderer::RepaintBufferType::NewBuffer),
+        : renderer_(SoftwareRenderer::RepaintBufferType::ReusedBuffer),
           size_({CONTENT_W, CONTENT_H}) {}
 
     AbstractRenderer &renderer() override { return renderer_; }
     slint::PhysicalSize size() override { return size_; }
     void request_redraw() override { needs_redraw_ = true; }
 
-    // Render the Slint scene into the shm surface (XRGB8888) and commit the
-    // touched region to the compositor. Returns true if anything was drawn.
+    // Slint calls this from show(): lay the window out and schedule a repaint.
+    void set_visible(bool visible) override {
+        if (visible) {
+            window().dispatch_resize_event(
+                slint::LogicalSize({(float)CONTENT_W, (float)CONTENT_H}));
+            needs_redraw_ = true;
+        }
+    }
+
+    // Render the Slint scene, line by line, into the shm surface (XRGB8888) and
+    // commit the touched region to the compositor. Mirrors the kernel windows.
     bool render_frame() {
+        if (!needs_redraw_) return false;
         needs_redraw_ = false;
         uint32_t *pixels = g_surface.pixels;
         const uint32_t stride = g_surface.stride;
         if (!pixels) return false;
-        // Render the whole scene into an Rgb8 scratch buffer, then convert to the
-        // surface's XRGB8888 shared memory.
-        renderer_.render(std::span<slint::Rgb8Pixel>(rgb_buffer_, CONTENT_W * CONTENT_H), CONTENT_W);
-        for (uint32_t y = 0; y < CONTENT_H; ++y) {
-            const slint::Rgb8Pixel *src = rgb_buffer_ + (y * CONTENT_W);
-            uint32_t *dst = pixels + (y * stride);
-            for (uint32_t x = 0; x < CONTENT_W; ++x) {
-                dst[x] = 0xff000000u | (uint32_t(src[x].r) << 16) | (uint32_t(src[x].g) << 8) | uint32_t(src[x].b);
-            }
+
+        std::size_t min_x = CONTENT_W, min_y = CONTENT_H, max_x = 0, max_y = 0;
+        renderer_.render_by_line<slint::Rgb8Pixel>(
+            [&](std::size_t line, std::size_t begin, std::size_t end, auto render_line) {
+                if (line >= CONTENT_H || begin >= end || end > CONTENT_W) return;
+                const std::size_t count = end - begin;
+                if (count > CONTENT_W) return;
+                if (begin < min_x) min_x = begin;
+                if (line < min_y) min_y = line;
+                if (end > max_x) max_x = end;
+                if (line + 1u > max_y) max_y = line + 1u;
+                std::span<slint::Rgb8Pixel> span(line_buffer_, count);
+                render_line(span);
+                uint32_t *dst = pixels + (line * stride) + begin;
+                for (std::size_t i = 0; i < count; ++i) {
+                    const auto &s = line_buffer_[i];
+                    dst[i] = 0xff000000u | (uint32_t(s.r) << 16) | (uint32_t(s.g) << 8) | uint32_t(s.b);
+                }
+            });
+        if (min_x < max_x && min_y < max_y) {
+            rad_wc_surface_commit(&g_surface, (int)min_x, (int)min_y,
+                                  (int)(max_x - min_x), (int)(max_y - min_y));
         }
-        rad_wc_surface_commit(&g_surface, 0, 0, (int)CONTENT_W, (int)CONTENT_H);
         return true;
     }
 
     SoftwareRenderer renderer_;
     slint::PhysicalSize size_;
-    slint::Rgb8Pixel rgb_buffer_[CONTENT_W * CONTENT_H];
+    slint::Rgb8Pixel line_buffer_[CONTENT_W];
     bool needs_redraw_ = true;
 };
 
@@ -102,16 +124,13 @@ int main(void) {
     slint::platform::set_platform(std::move(platform));
 
     auto app = AppWindow::create();
-    app->show();
-    // Tell Slint the window size so it lays out and renders the scene (without a
-    // resize event the component is never laid out and the surface stays blank).
-    if (g_platform->adapter_) {
-        auto &w = g_platform->adapter_->window();
-        w.dispatch_scale_factor_change_event(1.0f);
-        w.dispatch_resize_event(slint::LogicalSize({(float)CONTENT_W, (float)CONTENT_H}));
-        w.dispatch_window_active_changed_event(true);
-        g_platform->adapter_->request_redraw();
-    }
+    // Accessing window() binds the component and creates our adapter (via the
+    // platform). Drive layout + first repaint manually, like the kernel windows
+    // do -- do NOT call show() (that hands the window to an event loop we don't
+    // run, and leaves the scene unrendered).
+    auto &win = app->window();
+    win.dispatch_resize_event(slint::LogicalSize({(float)CONTENT_W, (float)CONTENT_H}));
+    if (g_platform->adapter_) g_platform->adapter_->request_redraw();
     say("radslint-demo: RAD_SLINT_USERLAND_APP_OK window is up\n");
 
     int running = 1;
