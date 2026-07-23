@@ -838,10 +838,13 @@ bool alloc_surface_buffers(uint32_t stride, uint32_t height) {
 #define RAD_IPC_INPUT_RING 64u
 #endif
 
-// Server-side window decoration geometry (the compositor owns the frame).
-constexpr int32_t DecorTitleH = 26;   // title/drag bar height above the content
-constexpr int32_t DecorBorder = 2;    // frame border around the content
-constexpr int32_t DecorCloseSize = 14;
+// Server-side window decoration geometry (the compositor owns the frame). These
+// match the built-in Terminal / File Explorer / Text Editor window chrome so all
+// windows look identical: a 28px dark-blue gradient title bar, a 1px accent
+// border, a focus underline, and a white "x" close button at width-28.
+constexpr int32_t DecorTitleH = 28;   // title/drag bar height above the content
+constexpr int32_t DecorBorder = 1;    // frame border around the content
+constexpr int32_t DecorRadius = 8;    // rounded outer corners (via ARGB alpha)
 
 // Window-manager -> client event delivered through the input queue. Mirrors
 // RAD_WC_EVENT_CLOSE in the client library.
@@ -924,40 +927,73 @@ IpcSurfaceRecord *ipc_find_by_decor(uint32_t decor_surface_id) {
     return nullptr;
 }
 
-// The close-button rectangle in decoration-local coordinates (top-right of the bar).
+// The close-button hit rectangle in decoration-local coordinates -- matches the
+// built-in windows' close TouchArea (24x24 at x = width-28, y = 2).
 void decor_close_button_rect(const IpcSurfaceRecord &record, int32_t *x, int32_t *y,
                              int32_t *w, int32_t *h) {
-    *w = DecorCloseSize;
-    *h = DecorCloseSize;
-    *x = record.frame_w - DecorCloseSize - 8;
-    *y = (DecorTitleH - DecorCloseSize) / 2;
+    *w = 24;
+    *h = 24;
+    *x = record.frame_w - 28;
+    *y = 2;
 }
 
-// Paint the window frame into the decoration buffer: border, title/drag bar, and
-// a close (X) button. Called on create and whenever focus changes.
+// Interpolate two opaque XRGB colors (0..steps).
+uint32_t decor_lerp(uint32_t a, uint32_t b, int32_t i, int32_t steps) {
+    if (steps <= 0) return a;
+    const int32_t ar = (a >> 16) & 0xff, ag = (a >> 8) & 0xff, ab = a & 0xff;
+    const int32_t br = (b >> 16) & 0xff, bg = (b >> 8) & 0xff, bb = b & 0xff;
+    const int32_t r = ar + (br - ar) * i / steps;
+    const int32_t g = ag + (bg - ag) * i / steps;
+    const int32_t bl = ab + (bb - ab) * i / steps;
+    return 0xff000000u | (uint32_t(r) << 16) | (uint32_t(g) << 8) | uint32_t(bl);
+}
+
+// Paint the window frame into the (ARGB) decoration buffer, styled identically to
+// the built-in Terminal / File Explorer / Text Editor windows: dark-blue gradient
+// title/drag bar, accent border, focus underline, white "x", rounded corners.
 void draw_decoration(IpcSurfaceRecord &record) {
     uint32_t *px = record.decor_pixels;
     if (!px) return;
     const int32_t w = record.frame_w;
     const int32_t h = record.frame_h;
-    const uint32_t border = record.focused ? 0xff2f6fe0u : 0xff333a48u;
-    const uint32_t bar = record.focused ? 0xff2f6fe0u : 0xff394050u;
-    // Whole frame = border color (the content region is covered by the client surface).
+    const uint32_t border = record.focused ? 0xff38bdf8u : 0xff2a3a4fu;
+    const uint32_t t0 = record.focused ? 0xff1b3e64u : 0xff132a41u;  // title gradient top
+    const uint32_t t1 = record.focused ? 0xff0f2942u : 0xff0a1c30u;  // title gradient bottom
+    // Whole frame = border color; the content region is covered by the client surface.
     for (int32_t i = 0; i < w * h; ++i) px[i] = border;
-    // Title/drag bar strip.
+    // Title/drag bar: vertical gradient.
     for (int32_t yy = 0; yy < DecorTitleH && yy < h; ++yy) {
-        for (int32_t xx = 0; xx < w; ++xx) px[yy * w + xx] = bar;
+        const uint32_t c = decor_lerp(t0, t1, yy, DecorTitleH - 1);
+        for (int32_t xx = 0; xx < w; ++xx) px[yy * w + xx] = c;
     }
-    // Close button: red tile with a white X.
-    int32_t cx, cy, cw, ch;
-    decor_close_button_rect(record, &cx, &cy, &cw, &ch);
-    for (int32_t yy = 0; yy < ch; ++yy) {
-        for (int32_t xx = 0; xx < cw; ++xx) {
-            const int32_t fx = cx + xx, fy = cy + yy;
-            if (fx < 0 || fy < 0 || fx >= w || fy >= h) continue;
-            uint32_t c = 0xffd94b4bu;
-            if (xx == yy || xx == (cw - 1 - yy)) c = 0xffffffffu;   // the X strokes
-            px[fy * w + fx] = c;
+    // Focus accent underline along the base of the title bar.
+    if (record.focused && DecorTitleH - 1 < h) {
+        for (int32_t xx = 0; xx < w; ++xx) px[(DecorTitleH - 1) * w + xx] = 0xff38bdf8u;
+    }
+    // Close "x": two white diagonal strokes centered in the 24x24 button.
+    int32_t cbx, cby, cbw, cbh;
+    decor_close_button_rect(record, &cbx, &cby, &cbw, &cbh);
+    const uint32_t xcol = 0xfff8fafcu;
+    const int32_t gx = cbx + (cbw - 9) / 2, gy = cby + (cbh - 9) / 2;
+    for (int32_t i = 0; i < 9; ++i) {
+        for (int32_t t = 0; t <= 1; ++t) {
+            const int32_t a1 = gx + i + t, b1 = gy + i;
+            if (a1 >= 0 && a1 < w && b1 >= 0 && b1 < h) px[b1 * w + a1] = xcol;
+            const int32_t a2 = gx + (8 - i) + t, b2 = gy + i;
+            if (a2 >= 0 && a2 < w && b2 >= 0 && b2 < h) px[b2 * w + a2] = xcol;
+        }
+    }
+    // Rounded outer corners: make pixels outside the radius transparent (ARGB).
+    const int32_t r = DecorRadius;
+    for (int32_t cy = 0; cy < r; ++cy) {
+        for (int32_t cx = 0; cx < r; ++cx) {
+            const int32_t dx = (r - 1) - cx, dy = (r - 1) - cy;
+            if (dx * dx + dy * dy > (r - 1) * (r - 1)) {
+                px[cy * w + cx] = 0;
+                px[cy * w + (w - 1 - cx)] = 0;
+                px[(h - 1 - cy) * w + cx] = 0;
+                px[(h - 1 - cy) * w + (w - 1 - cx)] = 0;
+            }
         }
     }
 }
@@ -1028,7 +1064,7 @@ bool ipc_setup_decoration(IpcSurfaceRecord *record, int32_t cx, int32_t cy,
     cfg.width = fw;
     cfg.height = fh;
     cfg.z = cz - 1;                 // just behind the content
-    cfg.flags = 0;
+    cfg.flags = RAD_COMPOSITOR_SURFACE_ALPHA;   // rounded corners are transparent
     cfg.pixels = buf;
     cfg.stride_pixels = static_cast<uint32_t>(fw);
     uint32_t decor_id = 0;
