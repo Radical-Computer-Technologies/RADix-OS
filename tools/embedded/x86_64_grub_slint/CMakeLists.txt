@@ -814,7 +814,11 @@ if(RAD_X86_UI_PROFILE STREQUAL "wm")
         OUTPUT "${RAD_RADSLINT_DEMO_ELF}"
         # 1. Generate app.h from the .slint UI into a build dir (it is an artifact;
         #    main.cpp includes it via the include path, not from source).
+        #    --embed-resources embed-for-software-renderer is REQUIRED: it embeds
+        #    the font glyphs the software renderer needs; without it, rendering any
+        #    Text hangs the renderer.
         COMMAND "$<TARGET_FILE:slint-compiler>" -f cpp --style fluent
+                --embed-resources embed-for-software-renderer
                 "${RAD_USERLAND_RADSLINT_DEMO_SOURCE_DIR}/app.slint" -o "${RAD_RADSLINT_GEN_DIR}/app.h"
         # 2. Compile the C++ TUs (Slint client + C++ runtime support) freestanding.
         COMMAND "${CMAKE_CXX_COMPILER}" -std=gnu++20 -m64 -O2 -ffreestanding

@@ -99,11 +99,18 @@ public:
         adapter_ = adapter.get();
         return adapter;
     }
-    // Slint animations need a monotonic clock; frame*16ms is close enough.
+    // Slint needs a REAL monotonic clock that always advances -- if it returned a
+    // frame counter (constant during a render) Slint's timer/animation code can
+    // spin waiting for time to pass and never returns from rendering.
     std::chrono::milliseconds duration_since_start() override {
-        return std::chrono::milliseconds((long long)g_frame * 16);
+        long tv[2] = {0, 0};   // { tv_sec, tv_usec }
+        rad_syscall6(8 /* gettimeofday */, (long)tv, 0, 0, 0, 0, 0);
+        unsigned long long ms = (unsigned long long)tv[0] * 1000ull + (unsigned long long)tv[1] / 1000ull;
+        if (start_ms_ == 0) start_ms_ = ms;
+        return std::chrono::milliseconds((long long)(ms - start_ms_));
     }
     ClientAdapter *adapter_ = nullptr;
+    unsigned long long start_ms_ = 0;
 };
 
 static ClientPlatform *g_platform = nullptr;
@@ -112,9 +119,22 @@ static slint::LogicalPosition pos_of(const rad_wc_input_event_t &e) {
     return slint::LogicalPosition({(float)e.x, (float)e.y});
 }
 
+// Run C++ static constructors (.init_array). The userland entry stub (c_entry.S)
+// jumps straight to main without running them, but Slint's generated code puts
+// global initializers (e.g. embedded-font registration) here -- without which
+// text rendering hangs.
+extern "C" void (*__init_array_start[])(void) __attribute__((weak));
+extern "C" void (*__init_array_end[])(void) __attribute__((weak));
+static void run_init_array(void) {
+    for (void (**f)(void) = __init_array_start; f != __init_array_end; ++f) {
+        if (*f) (*f)();
+    }
+}
+
 int main(void) {
+    run_init_array();
     say("radslint-demo: starting userland Slint client\n");
-    if (rad_wc_surface_open(&g_surface, "radslint-demo", CONTENT_W, CONTENT_H, 560, 200, 27) != 0) {
+    if (rad_wc_surface_open(&g_surface, "radslint-demo", CONTENT_W, CONTENT_H, 1010, 200, 27) != 0) {
         say("radslint-demo: FAILED to open surface\n");
         return 1;
     }
@@ -124,13 +144,7 @@ int main(void) {
     slint::platform::set_platform(std::move(platform));
 
     auto app = AppWindow::create();
-    // Accessing window() binds the component and creates our adapter (via the
-    // platform). Drive layout + first repaint manually, like the kernel windows
-    // do -- do NOT call show() (that hands the window to an event loop we don't
-    // run, and leaves the scene unrendered).
-    auto &win = app->window();
-    win.dispatch_resize_event(slint::LogicalSize({(float)CONTENT_W, (float)CONTENT_H}));
-    if (g_platform->adapter_) g_platform->adapter_->request_redraw();
+    app->show();   // like the kernel: create() then show() (triggers set_visible)
     say("radslint-demo: RAD_SLINT_USERLAND_APP_OK window is up\n");
 
     int running = 1;
